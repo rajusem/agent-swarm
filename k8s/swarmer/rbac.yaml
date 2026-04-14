@@ -1,0 +1,55 @@
+---
+# ServiceAccount for the swarmer dashboard pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarmer
+  namespace: swarmer
+
+---
+# ClusterRole: swarmer must manage resources across ALL workspace namespaces,
+# not just its own — it creates namespaces, secrets, PVCs, pods and services
+# on behalf of the user.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: swarmer
+rules:
+  # Namespace management (creating/deleting workspaces)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Secret management (opencode-secret, github-pat-* in workspace namespaces)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # PVC management (session workspace storage)
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Pod management (session execution)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Service management (interactive/server-mode sessions)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: swarmer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: swarmer
+subjects:
+  - kind: ServiceAccount
+    name: swarmer
+    namespace: swarmer

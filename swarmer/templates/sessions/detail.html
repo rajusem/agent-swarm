@@ -1,0 +1,568 @@
+{% extends "base.html" %}
+{% block title %}{{ session.name }} — {{ ws.display_name }} — Agent Swarm{% endblock %}
+
+{% block head %}
+{% if session.mode == 'tui' and session.phase == 'running' %}
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+{% endif %}
+<style>
+  /* Save button: amber when the form has unsaved changes */
+  .btn-save-dirty {
+    --bs-btn-color: #000;
+    --bs-btn-bg: #d97706;
+    --bs-btn-border-color: #d97706;
+    --bs-btn-hover-bg: #b45309;
+    --bs-btn-hover-border-color: #b45309;
+    --bs-btn-active-bg: #92400e;
+    --bs-btn-active-border-color: #92400e;
+    color: var(--bs-btn-color);
+    background-color: var(--bs-btn-bg);
+    border-color: var(--bs-btn-border-color);
+  }
+  .btn-save-dirty:hover {
+    background-color: var(--bs-btn-hover-bg);
+    border-color: var(--bs-btn-hover-border-color);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
+  <span class="text-muted">/</span>
+  <a href="/workspaces/{{ ws.id }}" class="text-muted text-decoration-none mx-2">{{ ws.display_name }}</a>
+  <span class="text-muted">/</span>
+  <a href="/workspaces/{{ ws.id }}/sessions" class="text-muted text-decoration-none mx-2">Sessions</a>
+  <span class="text-muted">/</span>
+  <span class="ms-2">{{ session.name }}</span>
+</div>
+
+{# ── Title with inline rename ── #}
+<div class="mb-3">
+  <div class="d-flex align-items-center gap-2" id="name-display">
+    <h1 class="h3 mb-0">{{ session.name }}</h1>
+    {% if not session.is_active %}
+    <button class="btn btn-sm btn-link p-0 text-muted" title="Rename"
+            onclick="showRename()">
+      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
+        <path d="M15.502 1.94a.5.5 0 0 1 0 .706L14.459 3.69l-2-2L13.502.646a.5.5 0 0 1 .707 0l1.293 1.293zm-1.75 2.456-2-2L4.939 9.21a.5.5 0 0 0-.121.196l-.805 2.414a.25.25 0 0 0 .316.316l2.414-.805a.5.5 0 0 0 .196-.12l6.813-6.814z"/>
+        <path fill-rule="evenodd" d="M1 13.5A1.5 1.5 0 0 0 2.5 15h11a1.5 1.5 0 0 0 1.5-1.5v-6a.5.5 0 0 0-1 0v6a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5H9a.5.5 0 0 0 0-1H2.5A1.5 1.5 0 0 0 1 2.5v11z"/>
+      </svg>
+    </button>
+    {% endif %}
+  </div>
+  <form method="post"
+        action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/set-name"
+        class="align-items-center gap-2 mt-1"
+        id="rename-form" style="display:none">
+    <input type="text" class="form-control form-control-sm" name="name"
+           value="{{ session.name }}" style="max-width:300px" required>
+    <button type="submit" class="btn btn-sm btn-primary">Rename</button>
+    <button type="button" class="btn btn-sm btn-link text-muted"
+            onclick="hideRename()">Cancel</button>
+  </form>
+</div>
+
+{# ── Status + actions ── #}
+<div class="d-flex align-items-center mb-4 gap-2 flex-wrap">
+  {% include "sessions/_status_badge.html" %}
+
+  <div class="d-flex gap-2 ms-2" id="session-actions">
+    {% if session.is_active %}
+    <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
+      <button type="submit" class="btn btn-warning btn-sm" id="stop-btn">■ Stop</button>
+    </form>
+    {% else %}
+    <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
+      <button type="submit" class="btn btn-success btn-sm">▶ Launch</button>
+    </form>
+    {% endif %}
+
+    {% if session.mode == 'server' %}
+    <a href="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/chat"
+       target="_blank" rel="noopener"
+       class="btn btn-info btn-sm{% if session.phase != 'running' %} d-none{% endif %}"
+       id="server-chat-btn">Open Web Chat ↗</a>
+    {% endif %}
+  </div>
+
+  <div class="ms-auto">
+    <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/delete"
+          onsubmit="return confirm('Delete session \'{{ session.name }}\'?')">
+      <button type="submit" class="btn btn-outline-danger btn-sm"
+              {% if session.is_active %}disabled title="Stop the session first"{% endif %}>
+        Delete
+      </button>
+    </form>
+  </div>
+</div>
+
+{# ── Two-column row: config (left, all modes) + repos or last output (right) ── #}
+<div class="row g-4">
+
+  {# Left column: Configuration (all modes) + Git Repos (prompt only) #}
+  <div class="col-md-5">
+
+    <div class="card mb-3">
+      <div class="card-header fw-semibold">Configuration</div>
+      <div class="card-body">
+
+        {# All settings in one Save form #}
+        <form method="post" id="cfg-edit-form"
+              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/edit">
+          <input type="hidden" name="name" value="{{ session.name }}">
+
+          <div class="row align-items-center mb-3">
+            <label class="col-5 text-muted small col-form-label-sm">Mode</label>
+            <div class="col-7">
+              <select name="mode" class="form-select form-select-sm"
+                      {% if session.is_active %}disabled title="Stop session to change mode"{% endif %}>
+                <option value="prompt" {{ 'selected' if session.mode == 'prompt' }}>Prompt</option>
+                <option value="server" {{ 'selected' if session.mode == 'server' }}>Server</option>
+                <option value="tui"    {{ 'selected' if session.mode == 'tui' }}>TUI</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row align-items-center mb-2">
+            <label class="col-5 text-muted small col-form-label-sm"
+                   for="cfg_pat">GitHub PAT</label>
+            <div class="col-7">
+              <select class="form-select form-select-sm" name="github_pat_id"
+                      id="cfg_pat"
+                      {% if session.is_active %}disabled{% endif %}>
+                <option value="">— None —</option>
+                {% for pat in pats %}
+                <option value="{{ pat.id }}"
+                        {{ 'selected' if session.github_pat and session.github_pat.id == pat.id }}>
+                  {{ pat.name }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="row align-items-center mb-2">
+            <div class="col-5 text-muted small">Persist workspace</div>
+            <div class="col-7">
+              <div class="form-check">
+                <input type="checkbox" class="form-check-input" name="persist"
+                       id="cfg_persist" value="true"
+                       {{ 'checked' if session.persist }}
+                       {% if session.is_active %}disabled{% endif %}
+                       onchange="syncResume()">
+              </div>
+            </div>
+          </div>
+
+          <div class="row align-items-center mb-3" id="cfg_resume_row"
+               {% if not session.persist %}style="display:none"{% endif %}>
+            <div class="col-5 text-muted small">Resume on relaunch</div>
+            <div class="col-7">
+              <div class="form-check">
+                <input type="checkbox" class="form-check-input" name="resume"
+                       id="cfg_resume" value="true"
+                       {{ 'checked' if session.resume }}
+                       {% if session.is_active %}disabled{% endif %}>
+              </div>
+            </div>
+          </div>
+
+          <div class="row align-items-center mb-3">
+            <div class="col-5 text-muted small">Privileged (root)</div>
+            <div class="col-7">
+              <div class="form-check">
+                <input type="checkbox" class="form-check-input" name="privileged"
+                       id="cfg_privileged" value="true"
+                       {{ 'checked' if session.privileged }}
+                       {% if session.is_active %}disabled{% endif %}>
+              </div>
+            </div>
+          </div>
+
+          {% if session.mode == 'prompt' %}
+          <div class="mb-3">
+            <label class="text-muted small form-label">Instruction Prompt</label>
+            <textarea class="form-control form-control-sm" name="instruction_prompt"
+                      rows="3" placeholder="Describe the task for opencode to run…"
+                      {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
+          </div>
+
+          {% if model_options %}
+          <div class="mb-3">
+            <label class="text-muted small form-label">Model</label>
+            <select class="form-select form-select-sm" name="model"
+                    {% if session.is_active %}disabled{% endif %}>
+              {% set ns = namespace(prev_group="") %}
+              {% for opt in model_options %}
+                {% if opt.group != ns.prev_group %}
+                  {% if ns.prev_group %}</optgroup>{% endif %}
+                  <optgroup label="{{ opt.group }}">
+                  {% set ns.prev_group = opt.group %}
+                {% endif %}
+                <option value="{{ opt.value }}"
+                        {{ 'selected' if session.model == opt.value or (loop.first and not session.model) }}>
+                  {{ opt.label }}
+                </option>
+              {% endfor %}
+              {% if ns.prev_group %}</optgroup>{% endif %}
+            </select>
+          </div>
+          {% else %}
+          <input type="hidden" name="model" value="{{ session.model }}">
+          {% endif %}
+
+          {% else %}
+          <input type="hidden" name="instruction_prompt" value="{{ session.instruction_prompt }}">
+
+          {% if model_options %}
+          <div class="mb-3">
+            <label class="text-muted small form-label">Model</label>
+            <select class="form-select form-select-sm" name="model"
+                    {% if session.is_active %}disabled{% endif %}>
+              {% set ns = namespace(prev_group="") %}
+              {% for opt in model_options %}
+                {% if opt.group != ns.prev_group %}
+                  {% if ns.prev_group %}</optgroup>{% endif %}
+                  <optgroup label="{{ opt.group }}">
+                  {% set ns.prev_group = opt.group %}
+                {% endif %}
+                <option value="{{ opt.value }}"
+                        {{ 'selected' if session.model == opt.value or (loop.first and not session.model) }}>
+                  {{ opt.label }}
+                </option>
+              {% endfor %}
+              {% if ns.prev_group %}</optgroup>{% endif %}
+            </select>
+          </div>
+          {% else %}
+          <input type="hidden" name="model" value="{{ session.model }}">
+          {% endif %}
+
+          {% endif %}
+
+          <div class="text-muted small mb-3">
+            PVC: <code class="font-monospace">{{ session.pvc_name or '—' }}</code>
+          </div>
+
+          {% if not session.is_active %}
+          <button type="submit" class="btn btn-sm btn-outline-secondary" id="cfg-save-btn">Save</button>
+          {% else %}
+          <p class="text-muted small mb-0">Stop the session to edit settings.</p>
+          {% endif %}
+        </form>
+
+      </div>
+    </div>
+
+    {# Git Repos: prompt only — server/TUI show them in right column #}
+    {% if session.mode == 'prompt' %}
+    <div class="card">
+      <div class="card-header fw-semibold">Git Repositories</div>
+      <div class="card-body">
+        {% include "sessions/_repo_list.html" with context %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>{# /col-md-5 #}
+
+  {# Right column: last output (prompt) or git repos (server/TUI) #}
+  <div class="col-md-7">
+
+    {% if session.mode == 'prompt' %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+        <span>Last Output</span>
+        {% if session.last_output %}
+        <form method="post"
+              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
+          <button type="submit" class="btn btn-link btn-sm text-muted p-0"
+                  title="Clear output">Clear</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="card-body p-0">
+        {% include "sessions/_last_output.html" with context %}
+      </div>
+    </div>
+
+    {% else %}
+    <div class="card">
+      <div class="card-header fw-semibold">Git Repositories</div>
+      <div class="card-body">
+        {% include "sessions/_repo_list.html" with context %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>{# /col-md-7 #}
+
+</div>{# /row #}
+
+{# ── Server mode: full-width last output ── #}
+{% if session.mode == 'server' %}
+<div class="row mt-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+        <span>Last Output</span>
+        {% if session.last_output %}
+        <form method="post"
+              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
+          <button type="submit" class="btn btn-link btn-sm text-muted p-0"
+                  title="Clear output">Clear</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="card-body p-0">
+        {% include "sessions/_last_output.html" with context %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── TUI mode: full-width terminal, then collapsed last output ── #}
+{% if session.mode == 'tui' %}
+<div class="row mt-3">
+  <div class="col-12">
+    {% if session.phase == 'running' and tui_token %}
+    <div class="card">
+      <div class="card-header fw-semibold d-flex align-items-center gap-2">
+        <span>🖥 Terminal</span>
+        <span class="badge bg-success">● Active</span>
+      </div>
+      <div class="card-body p-0">
+        <div id="terminal"
+             style="height:500px; background:#1e1e1e; border-radius:0 0 .375rem .375rem;"></div>
+      </div>
+    </div>
+    {% else %}
+    <div class="card">
+      <div class="card-header fw-semibold">🖥 Terminal</div>
+      <div class="card-body text-center text-muted py-4">
+        <p class="mb-2">Session is not running.</p>
+        <p class="small mb-0">Launch the session to open the TUI terminal.</p>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row mt-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <button class="btn btn-link p-0 fw-semibold text-decoration-none text-reset"
+                type="button"
+                data-bs-toggle="collapse"
+                data-bs-target="#tui-last-output"
+                aria-expanded="false"
+                aria-controls="tui-last-output">
+          Last Output <span class="text-muted small ms-1">▾</span>
+        </button>
+        {% if session.last_output %}
+        <form method="post"
+              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
+          <button type="submit" class="btn btn-link btn-sm text-muted p-0"
+                  title="Clear output">Clear</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="collapse" id="tui-last-output">
+        <div class="card-body p-0">
+          {% include "sessions/_last_output.html" with context %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Save-button dirty state ──────────────────────────────────────────────────
+(function () {
+  const form = document.getElementById('cfg-edit-form');
+  const btn  = document.getElementById('cfg-save-btn');
+  if (!form || !btn) return;
+
+  // Snapshot every editable field's initial value.
+  const fields = () => form.querySelectorAll(
+    'input:not([type=hidden]), select, textarea'
+  );
+  const snapshot = {};
+  fields().forEach(el => {
+    snapshot[el.id || el.name] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+
+  function checkDirty() {
+    let dirty = false;
+    fields().forEach(el => {
+      const key = el.id || el.name;
+      const val = el.type === 'checkbox' ? el.checked : el.value;
+      if (val !== snapshot[key]) dirty = true;
+    });
+    btn.classList.toggle('btn-outline-secondary', !dirty);
+    btn.classList.toggle('btn-save-dirty', dirty);
+  }
+
+  form.addEventListener('change', checkDirty);
+  form.addEventListener('input',  checkDirty);
+})();
+
+function syncResume() {
+  const persist = document.getElementById('cfg_persist');
+  const row = document.getElementById('cfg_resume_row');
+  const resume = document.getElementById('cfg_resume');
+  if (!persist.checked) {
+    row.style.display = 'none';
+    resume.checked = false;
+  } else {
+    row.style.display = '';
+  }
+}
+
+function showRename() {
+  document.getElementById('name-display').style.display = 'none';
+  const f = document.getElementById('rename-form');
+  f.style.display = 'flex';
+  f.querySelector('input[name=name]').focus();
+}
+function hideRename() {
+  document.getElementById('rename-form').style.display = 'none';
+  document.getElementById('name-display').style.display = '';
+}
+
+// After each HTMX status poll, sync controls with live phase.
+document.addEventListener('htmx:afterSwap', function () {
+  const badge = document.querySelector('#session-status .badge');
+  const isRunning = badge && badge.classList.contains('bg-success');
+  const isActive  = isRunning || (badge && badge.classList.contains('bg-warning'));
+
+  // ── Rename controls: hide when session becomes active ──
+  if (isActive) {
+    const renameForm = document.getElementById('rename-form');
+    if (renameForm) renameForm.style.display = 'none';
+
+    const nameDisplay = document.getElementById('name-display');
+    if (nameDisplay) {
+      nameDisplay.style.display = '';
+      const renameBtn = nameDisplay.querySelector('button[title="Rename"]');
+      if (renameBtn) renameBtn.style.display = 'none';
+    }
+  }
+
+  {% if session.mode == 'tui' %}
+  // ── TUI: reload once when pod transitions to running so the terminal
+  //    card and WebSocket token are included in the fresh page render ──
+  if (isRunning && !document.getElementById('terminal')) {
+    window.location.reload();
+  }
+  {% endif %}
+
+  {% if session.mode == 'server' %}
+  // ── Server: show/hide the Web Chat button as the pod starts/stops ──
+  const chatBtn = document.getElementById('server-chat-btn');
+  if (chatBtn) chatBtn.classList.toggle('d-none', !isRunning);
+  {% endif %}
+
+  {% if session.mode == 'prompt' %}
+  // ── Prompt: relabel Stop → Clean up once the session succeeds ──
+  const isSucceeded = badge && badge.classList.contains('bg-primary');
+  if (isSucceeded) {
+    const stopBtn = document.getElementById('stop-btn');
+    if (stopBtn) {
+      stopBtn.textContent = '↺ Clean up';
+      stopBtn.classList.replace('btn-warning', 'btn-outline-secondary');
+    }
+  }
+  {% endif %}
+});
+</script>
+
+{% if session.mode == 'tui' and session.phase == 'running' and tui_token %}
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script>
+(function() {
+  // Measure one character cell using the same font settings as the terminal.
+  // The #terminal div is already in the DOM so clientWidth is valid here.
+  function measureCell() {
+    const s = document.createElement('span');
+    s.style.cssText =
+      'position:absolute;visibility:hidden;white-space:pre;' +
+      'font-family:Menlo,Monaco,"Courier New",monospace;font-size:13px;line-height:normal';
+    s.textContent = 'W';
+    document.body.appendChild(s);
+    const r = s.getBoundingClientRect();
+    document.body.removeChild(s);
+    return { w: r.width || 7.8, h: r.height || 17 };
+  }
+
+  const el   = document.getElementById('terminal');
+  const cell = measureCell();
+  const cols = Math.max(80, Math.floor(el.clientWidth  / cell.w));
+  const rows = Math.max(24, Math.floor(el.clientHeight / cell.h));
+
+  // Create the terminal with the correct dimensions from the start.
+  const term = new Terminal({
+    cols,
+    rows,
+    cursorBlink: true,
+    theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
+    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+    fontSize: 13,
+  });
+
+  function fitTerm() {
+    const c = measureCell();
+    const newCols = Math.max(80, Math.floor(el.clientWidth  / c.w));
+    const newRows = Math.max(24, Math.floor(el.clientHeight / c.h));
+    if (newCols !== term.cols || newRows !== term.rows) {
+      term.resize(newCols, newRows);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: newCols, rows: newRows }));
+      }
+    }
+  }
+
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = proto + '//' + window.location.host +
+                '/ws/{{ ws.id }}/sessions/{{ session.id }}/tui' +
+                `?cols=${cols}&rows=${rows}`;
+  const ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    ws.send('{{ tui_token }}');
+    term.open(el);
+    term.focus();
+  };
+
+  ws.onmessage = (e) => {
+    term.write(new Uint8Array(e.data));
+  };
+
+  ws.onclose = () => {
+    term.writeln('\r\n\x1b[33m[Connection closed]\x1b[0m');
+  };
+
+  ws.onerror = () => {
+    term.writeln('\r\n\x1b[31m[WebSocket error]\x1b[0m');
+  };
+
+  term.onData((data) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(data));
+    }
+  });
+
+  window.addEventListener('resize', fitTerm);
+})();
+</script>
+{% endif %}
+{% endblock %}

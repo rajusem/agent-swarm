@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarmer
+  namespace: swarmer
+  labels:
+    app: swarmer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: swarmer
+  # Only one replica safe with SQLite — no concurrent writers
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: swarmer
+    spec:
+      serviceAccountName: swarmer
+
+      containers:
+        - name: swarmer
+          # SWARMER_IMAGE is replaced by the deploy Makefile target
+          image: SWARMER_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+
+          env:
+            - name: K8S_IN_CLUSTER
+              value: "true"
+            - name: AUTH_HASH_FILE
+              value: /auth/password.hash
+            - name: DATABASE_URL
+              value: sqlite+aiosqlite:////data/swarmer.db
+
+          volumeMounts:
+            - name: swarmer-data
+              mountPath: /data
+            - name: swarmer-auth
+              mountPath: /auth
+              readOnly: true
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+      volumes:
+        - name: swarmer-data
+          persistentVolumeClaim:
+            claimName: swarmer-data
+        - name: swarmer-auth
+          secret:
+            secretName: swarmer-auth
+            items:
+              - key: password.hash
+                path: password.hash

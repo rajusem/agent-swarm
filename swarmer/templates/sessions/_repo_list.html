@@ -1,0 +1,98 @@
+{# HTMX partial — repo table rows + add form #}
+<div id="repo-list">
+  {% if session.repos %}
+  <table class="table table-sm align-middle mb-2">
+    <thead class="small text-muted">
+      <tr>
+        <th>Repo URL</th>
+        <th>Branch</th>
+        <th>Local Path</th>
+        <th></th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for repo in session.repos %}
+      {% set info = repo_info[repo.id] if repo_info is defined and repo.id in repo_info else none %}
+      <tr>
+        <td class="small font-monospace">{{ repo.repo_url }}</td>
+        <td><code>{{ repo.branch }}</code></td>
+        <td><code>/workspace/{{ repo.local_path }}</code></td>
+        <td>
+          {# Visibility pill #}
+          {% if info is not none and info.is_public is not none %}
+            {% if info.is_public %}
+            <span class="badge bg-success-subtle text-success border border-success-subtle">Public</span>
+            {% else %}
+            <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">Private</span>
+            {% endif %}
+          {% endif %}
+        </td>
+        <td>
+          {# Push / PR access warning #}
+          {% if info is not none and info.can_push is not none %}
+            {% if not info.can_push %}
+            <span class="badge bg-warning-subtle text-warning border border-warning-subtle"
+                  title="This PAT cannot push to this repo — commits and PRs will fail">
+              ⚠ No write access
+            </span>
+            {% endif %}
+          {% endif %}
+        </td>
+        <td>
+          <button class="btn btn-sm btn-outline-danger py-0"
+                  hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/{{ repo.id }}/delete"
+                  hx-target="#repo-list"
+                  hx-swap="outerHTML">✕</button>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="text-muted small mb-2">No repositories configured.</p>
+  {% endif %}
+
+  {# Add repo form #}
+  <form hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
+        hx-target="#repo-list"
+        hx-swap="outerHTML">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-5">
+        <label class="form-label small">Repo URL</label>
+        <input type="text" class="form-control form-control-sm" name="repo_url"
+               placeholder="https://github.com/org/repo.git"
+               id="repo-url-input"
+               oninput="autoFillPath(this)">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small">Branch</label>
+        <input type="text" class="form-control form-control-sm" name="branch"
+               placeholder="main" value="main">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label small">Local Path</label>
+        <input type="text" class="form-control form-control-sm" name="local_path"
+               id="local-path-input" placeholder="auto-derived">
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-sm btn-outline-primary w-100">Add</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<script>
+function autoFillPath(input) {
+  const url = input.value.trim();
+  const pathInput = document.getElementById('local-path-input');
+  if (!pathInput.dataset.edited) {
+    const parts = url.split('/');
+    const last = parts[parts.length - 1].replace(/\.git$/, '');
+    pathInput.value = last;
+  }
+}
+document.getElementById('local-path-input')?.addEventListener('input', function() {
+  this.dataset.edited = 'true';
+});
+</script>

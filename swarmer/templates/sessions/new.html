@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}New Session — {{ ws.display_name }} — Swarmer{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
+  <span class="text-muted">/</span>
+  <a href="/workspaces/{{ ws.id }}" class="text-muted text-decoration-none mx-2">{{ ws.display_name }}</a>
+  <span class="text-muted">/</span>
+  <a href="/workspaces/{{ ws.id }}/sessions" class="text-muted text-decoration-none mx-2">Sessions</a>
+  <span class="text-muted">/</span>
+  <span class="ms-2">New</span>
+</div>
+
+<h1 class="h3 mb-4">New Session</h1>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="/workspaces/{{ ws.id }}/sessions">
+  <div class="row g-4">
+    <div class="col-md-6">
+      <div class="mb-3">
+        <label class="form-label fw-semibold">
+          Session Name <span class="text-danger">*</span>
+        </label>
+        <input type="text" class="form-control" name="name"
+               value="{{ form.name if form else '' }}"
+               placeholder="e.g. backend-refactor" required autofocus>
+        <div class="form-text">Unique within this workspace.</div>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label fw-semibold">GitHub PAT</label>
+        <select class="form-select" name="github_pat_id">
+          <option value="">— None —</option>
+          {% for pat in pats %}
+          <option value="{{ pat.id }}">{{ pat.name }} ({{ pat.github_username }})</option>
+          {% endfor %}
+        </select>
+        <div class="form-text">Required for cloning private repositories.</div>
+      </div>
+
+      <div id="prompt-row">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Instruction Prompt</label>
+          <textarea class="form-control" name="instruction_prompt" rows="4"
+                    placeholder="Describe the task for opencode to perform…">{{ form.instruction_prompt if form else '' }}</textarea>
+          <div class="form-text">
+            Passed as the argument to <code>opencode run</code>.
+          </div>
+        </div>
+      </div>
+
+      {% if model_options %}
+      <div class="mb-3">
+        <label class="form-label fw-semibold">Model</label>
+        <select class="form-select" name="model">
+          {% set ns = namespace(prev_group="") %}
+          {% for opt in model_options %}
+            {% if opt.group != ns.prev_group %}
+              {% if ns.prev_group %}</optgroup>{% endif %}
+              <optgroup label="{{ opt.group }}">
+              {% set ns.prev_group = opt.group %}
+            {% endif %}
+            <option value="{{ opt.value }}"
+                    {% if loop.first %}selected{% endif %}>
+              {{ opt.label }}
+            </option>
+          {% endfor %}
+          {% if ns.prev_group %}</optgroup>{% endif %}
+        </select>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="col-md-6">
+      <!-- Mode -->
+      <div class="card mb-3">
+        <div class="card-header fw-semibold">Mode</div>
+        <div class="card-body">
+          <select class="form-select mb-2" name="mode" id="mode"
+                  onchange="document.getElementById('prompt-row').style.display = this.value === 'prompt' ? '' : 'none'">
+            <option value="prompt">Prompt — runs opencode run with the prompt below, then exits</option>
+            <option value="server">Server — runs opencode serve (API access, persistent)</option>
+            <option value="tui">TUI — interactive terminal in the browser</option>
+          </select>
+          <div class="form-text text-muted small">
+            Can be changed later from the session detail page.
+          </div>
+        </div>
+      </div>
+
+      <!-- Persistence -->
+      <div class="card">
+        <div class="card-header fw-semibold">Persistence</div>
+        <div class="card-body">
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" name="persist"
+                   id="persist" value="true"
+                   onchange="document.getElementById('resume-row').style.display = this.checked ? '' : 'none'">
+            <label class="form-check-label" for="persist">
+              <strong>Persist workspace</strong>
+            </label>
+            <div class="form-text">
+              The PVC (git repos, files) survives when the session is stopped.
+            </div>
+          </div>
+          <div id="resume-row" class="ms-4 mt-1" style="display:none">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="resume"
+                     id="resume" value="true">
+              <label class="form-check-label" for="resume">
+                Resume last opencode session on re-launch
+              </label>
+              <div class="form-text">Passes <code>--continue</code> to opencode.</div>
+            </div>
+          </div>
+          <hr class="my-3">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="privileged"
+                   id="privileged" value="true">
+            <label class="form-check-label" for="privileged">
+              <strong>Privileged (run as root)</strong>
+            </label>
+            <div class="form-text">
+              Runs the container as root with a privileged security context.
+              Fixes git ownership issues and allows <code>apt-get</code> in the session.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mt-4">
+    <button type="submit" class="btn btn-primary">Create Session</button>
+    <a href="/workspaces/{{ ws.id }}/sessions" class="btn btn-link text-muted">Cancel</a>
+  </div>
+  <p class="form-text mt-2">
+    Git repositories can be added from the session detail page after creation.
+  </p>
+</form>
+{% endblock %}

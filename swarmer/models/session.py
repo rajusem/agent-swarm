@@ -1,0 +1,87 @@
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from swarmer.database import Base
+
+# Valid phase values
+PHASES = ("idle", "pending", "running", "succeeded", "failed", "stopped")
+
+# Valid mode values
+#   tui    — pod keeps alive (sleep infinity); browser connects via xterm.js kubectl exec
+#   server — pod runs opencode serve --hostname 0.0.0.0
+#   prompt — pod runs opencode run "<prompt>" once and exits
+MODES = ("tui", "server", "prompt")
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+    __table_args__ = (UniqueConstraint("workspace_id", "name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("workspaces.id"), nullable=False
+    )
+    github_pat_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("github_pats.id"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="prompt", server_default="prompt"
+    )
+    model: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")
+    persist: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    privileged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    instruction_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Runtime state — managed by dashboard
+    pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_output: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="idle")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace: Mapped["Workspace"] = relationship(  # noqa: F821
+        back_populates="sessions"
+    )
+    github_pat: Mapped["GitHubPAT | None"] = relationship(  # noqa: F821
+        back_populates="sessions"
+    )
+    repos: Mapped[list["SessionRepo"]] = relationship(  # noqa: F821
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+    @property
+    def interactive_mode(self) -> bool:
+        """True for modes that keep the pod running persistently."""
+        return self.mode in ("tui", "server")
+
+    @property
+    def is_active(self) -> bool:
+        return self.phase in ("pending", "running")
+
+    @property
+    def phase_badge_class(self) -> str:
+        return {
+            "idle": "secondary",
+            "pending": "warning",
+            "running": "success",
+            "succeeded": "primary",
+            "failed": "danger",
+            "stopped": "secondary",
+        }.get(self.phase, "secondary")

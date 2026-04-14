@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Workspaces — Swarmer{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-end mb-3">
+  <a href="/workspaces/new" class="btn btn-primary btn-sm">+ New Workspace</a>
+</div>
+
+{% if workspaces %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Namespace</th>
+        <th>Description</th>
+        <th>Created</th>
+        <th class="text-end">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for ws in workspaces %}
+      <tr>
+        <td>
+          <a href="/workspaces/{{ ws.id }}" class="fw-semibold text-decoration-none">
+            {{ ws.display_name }}
+          </a>
+        </td>
+        <td><code class="namespace-badge">{{ ws.namespace }}</code></td>
+        <td class="text-muted small">{{ ws.description or '—' }}</td>
+        <td class="text-muted small">{{ ws.created_at.strftime('%Y-%m-%d') }}</td>
+        <td class="text-end">
+          <a href="/workspaces/{{ ws.id }}/edit" class="btn btn-sm btn-outline-secondary me-1">Edit</a>
+          <span id="delete-btn-{{ ws.id }}">
+            <button class="btn btn-sm btn-outline-danger"
+                    hx-get="/workspaces/{{ ws.id }}/delete"
+                    hx-target="#delete-btn-{{ ws.id }}"
+                    hx-swap="outerHTML">Delete</button>
+          </span>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card text-center py-5">
+  <div class="card-body">
+    <h5 class="card-title text-muted">No workspaces yet</h5>
+    <p class="text-muted">Create a workspace to get started. Each workspace maps to a Kubernetes namespace.</p>
+    <a href="/workspaces/new" class="btn btn-primary">Create your first workspace</a>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

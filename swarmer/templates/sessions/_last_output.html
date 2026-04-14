@@ -1,0 +1,27 @@
+{# HTMX partial — polled every 10s while session is active #}
+{% if session.mode == 'server' and not session.last_output %}
+<div id="last-output-pre"
+     class="last-output p-4 mb-0 text-center"
+     {% if session.phase in ('pending', 'running') %}
+     hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/last-output"
+     hx-trigger="every 10s"
+     hx-swap="outerHTML"
+     {% endif %}>
+  {% if session.phase == 'running' %}
+  <p class="text-muted small mb-3">No output yet — use the web chat to interact with the session.</p>
+  <a href="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/chat"
+     target="_blank" rel="noopener"
+     class="btn btn-info btn-sm">Open Web Chat ↗</a>
+  {% else %}
+  <span class="text-muted small">No output yet. Launch the session to see logs here.</span>
+  {% endif %}
+</div>
+{% else %}
+<pre id="last-output-pre"
+     class="last-output p-3 mb-0 rounded-bottom"
+     {% if session.phase in ('pending', 'running') %}
+     hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/last-output"
+     hx-trigger="every 10s"
+     hx-swap="outerHTML"
+     {% endif %}>{% if session.last_output %}{{ session.last_output }}{% else %}<span class="text-muted">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
+{% endif %}

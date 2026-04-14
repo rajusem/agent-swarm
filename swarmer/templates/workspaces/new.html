@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}New Workspace — Swarmer{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
+  <span class="text-muted">/</span>
+  <span class="ms-2">New Workspace</span>
+</div>
+
+<h1 class="h3 mb-4">New Workspace</h1>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="/workspaces">
+  <div class="row g-4">
+    <div class="col-md-6">
+      <div class="mb-3">
+        <label for="display_name" class="form-label fw-semibold">
+          Workspace Name <span class="text-danger">*</span>
+        </label>
+        <input type="text" class="form-control" id="display_name" name="display_name"
+               value="{{ display_name or '' }}"
+               placeholder="e.g. My Agent Workspace"
+               hx-get="/workspaces/preview-namespace"
+               hx-trigger="input delay:300ms"
+               hx-target="#namespace-preview"
+               hx-include="[name='display_name']"
+               required autofocus>
+        <div class="form-text">The display name for this workspace.</div>
+      </div>
+
+      <div class="mb-3">
+        <label for="description" class="form-label fw-semibold">Description</label>
+        <textarea class="form-control" id="description" name="description"
+                  rows="3" placeholder="Optional description">{{ description or '' }}</textarea>
+      </div>
+
+      <button type="submit" class="btn btn-primary">Create Workspace</button>
+      <a href="/workspaces" class="btn btn-link text-muted">Cancel</a>
+    </div>
+
+    <div class="col-md-6">
+      <div class="card bg-body-secondary">
+        <div class="card-body">
+          <h6 class="card-title text-muted small text-uppercase">Kubernetes Namespace</h6>
+          <code id="namespace-preview" class="fs-5 text-info">
+            {{ display_name | lower | replace(' ', '-') if display_name else '&nbsp;' }}
+          </code>
+          <hr>
+          <p class="small text-muted mb-0">
+            The namespace is derived automatically from the workspace name.
+            It is <strong>immutable</strong> after creation and must be unique.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</form>
+{% endblock %}
