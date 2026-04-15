@@ -44,6 +44,11 @@ install:  ## Install Python dependencies
 	pip install -r requirements.txt
 
 dev:  ## Run development server with auto-reload (uses local kubeconfig)
+	@echo ""
+	@echo "╔══════════════════════════════════════════════════════╗"
+	@echo "║  Swarmer dev server → http://localhost:8090          ║"
+	@echo "╚══════════════════════════════════════════════════════╝"
+	@echo ""
 	K8S_IN_CLUSTER=false uvicorn swarmer.main:app --host 0.0.0.0 --port 8090 --reload
 
 lint:  ## Run ruff linter

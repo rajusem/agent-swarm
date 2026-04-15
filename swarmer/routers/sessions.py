@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from swarmer import k8s, k8s_session as k8s_sess
-from swarmer.config import settings
+from swarmer.config import settings, LANGUAGE_OPTIONS
 from swarmer.database import get_db
 from swarmer.deps import require_auth
 from swarmer.flash import flash
@@ -144,6 +144,19 @@ async def session_list(
 # Create
 # ============================================================
 
+async def _image_status(namespace: str) -> dict[str, bool]:
+    """Return reachability status for each language image variant."""
+    results = await asyncio.gather(
+        *[k8s.check_image_reachable(settings.image_for_language(lang), namespace)
+          for lang in LANGUAGE_OPTIONS],
+        return_exceptions=True,
+    )
+    return {
+        lang: (r is True)
+        for lang, r in zip(LANGUAGE_OPTIONS, results)
+    }
+
+
 @router.get("/workspaces/{ws_id}/sessions/new", dependencies=[Depends(require_auth)])
 async def session_new(
     ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
@@ -156,9 +169,17 @@ async def session_new(
     )
     pats = pats_result.scalars().all()
     model_options = await _get_model_options(ws_id, db)
+    image_status = await _image_status(ws.namespace)
     return templates.TemplateResponse(
         "sessions/new.html",
-        {"request": request, "ws": ws, "pats": pats, "model_options": model_options},
+        {
+            "request": request,
+            "ws": ws,
+            "pats": pats,
+            "model_options": model_options,
+            "image_status": image_status,
+            "language_options": LANGUAGE_OPTIONS,
+        },
     )
 
 
@@ -174,6 +195,7 @@ async def session_create(
     privileged: bool = Form(False),
     mode: str = Form("prompt"),
     model: str = Form(""),
+    language: str = Form("golang"),
     db: AsyncSession = Depends(get_db),
 ):
     ws = await _get_workspace(ws_id, db)
@@ -183,6 +205,8 @@ async def session_create(
     pat_id = int(github_pat_id) if github_pat_id else None
     if mode not in ("tui", "server", "prompt"):
         mode = "prompt"
+    if language not in LANGUAGE_OPTIONS:
+        language = "golang"
 
     session = Session(
         workspace_id=ws_id,
@@ -190,6 +214,7 @@ async def session_create(
         name=name.strip(),
         mode=mode,
         model=model.strip(),
+        language=language,
         persist=persist,
         resume=resume,
         privileged=privileged,
@@ -259,6 +284,7 @@ async def session_detail(
     model_options = await _get_model_options(ws_id, db)
     pat_token = session.github_pat.pat if session.github_pat else None
     repo_info = await _fetch_repo_info(session.repos, pat_token)
+    image_status = await _image_status(ws.namespace)
 
     return templates.TemplateResponse(
         "sessions/detail.html",
@@ -274,6 +300,8 @@ async def session_detail(
             "status_detail": status_detail,
             "model_options": model_options,
             "repo_info": repo_info,
+            "image_status": image_status,
+            "language_options": LANGUAGE_OPTIONS,
         },
     )
 
@@ -298,6 +326,7 @@ async def session_edit(
     privileged: bool = Form(False),
     mode: str = Form("prompt"),
     model: str = Form(""),
+    language: str = Form("golang"),
     db: AsyncSession = Depends(get_db),
 ):
     session = await db.get(Session, sid)
@@ -317,6 +346,8 @@ async def session_edit(
     if mode in ("tui", "server", "prompt"):
         session.mode = mode
     session.model = model.strip()
+    if language in LANGUAGE_OPTIONS:
+        session.language = language
     await db.commit()
     flash(request, "Session updated.", "success")
     return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
@@ -376,7 +407,7 @@ async def session_launch(
         pod_spec = k8s_sess.build_session_pod(
             session=session,
             namespace=ws.namespace,
-            image=settings.agent_image,
+            image=settings.image_for_language(session.language),
             suffix=suffix,
             image_pull_secret=k8s.PULL_SECRET_NAME,
             has_adc=has_adc,

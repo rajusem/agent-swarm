@@ -76,6 +76,25 @@
     </div>
 
     <div class="col-md-6">
+      <!-- Agent Image -->
+      <div class="card mb-3">
+        <div class="card-header fw-semibold">Agent Image</div>
+        <div class="card-body">
+          <select class="form-select mb-1" name="language">
+            {% for lang in language_options %}
+            <option value="{{ lang }}" {{ 'selected' if lang == 'golang' }}>opencode-{{ lang }}</option>
+            {% endfor %}
+          </select>
+          <div class="form-text">
+            {% for lang in language_options %}
+            <span class="me-3 text-{{ 'success' if image_status[lang] else 'danger' }}">
+              {{ '✓' if image_status[lang] else '✗' }} {{ lang }}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
       <!-- Mode -->
       <div class="card mb-3">
         <div class="card-header fw-semibold">Mode</div>

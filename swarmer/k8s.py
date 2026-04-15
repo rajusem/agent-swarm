@@ -334,6 +334,98 @@ def delete_pull_secret(namespace: str) -> None:
     _delete_secret(namespace, PULL_SECRET_NAME)
 
 
+async def check_image_reachable(image: str, namespace: str) -> bool:
+    """Return True if the image manifest is accessible using the workspace pull secret."""
+    import json
+    import httpx
+    from kubernetes import client as k8s_client
+
+    # Parse image into registry, repo, tag
+    tag = "latest"
+    if ":" in image.split("/")[-1]:
+        image_no_tag, tag = image.rsplit(":", 1)
+    else:
+        image_no_tag = image
+
+    parts = image_no_tag.split("/", 1)
+    if len(parts) == 2 and ("." in parts[0] or ":" in parts[0]):
+        registry = parts[0]
+        repo = parts[1]
+    else:
+        registry = "registry-1.docker.io"
+        repo = image_no_tag if "/" in image_no_tag else f"library/{image_no_tag}"
+
+    log.debug("check_image_reachable: image=%s registry=%s repo=%s tag=%s namespace=%s",
+              image, registry, repo, tag, namespace)
+
+    # Read pull secret credentials
+    auth_b64 = ""
+    try:
+        v1 = k8s_client.CoreV1Api()
+        secret = v1.read_namespaced_secret(PULL_SECRET_NAME, namespace)
+        raw = base64.b64decode(secret.data[".dockerconfigjson"]).decode()
+        config = json.loads(raw)
+        auths = config.get("auths", {})
+        entry = auths.get(registry) or auths.get(f"https://{registry}") or {}
+        auth_b64 = entry.get("auth", "")
+        log.debug("check_image_reachable: pull secret found, auth_b64 present=%s, auths keys=%s",
+                  bool(auth_b64), list(auths.keys()))
+    except Exception as exc:
+        log.warning("check_image_reachable: could not read pull secret %s/%s: %s",
+                    namespace, PULL_SECRET_NAME, exc)
+
+    url = f"https://{registry}/v2/{repo}/manifests/{tag}"
+    accept = (
+        "application/vnd.docker.distribution.manifest.v2+json,"
+        "application/vnd.oci.image.manifest.v1+json,"
+        "application/vnd.oci.image.index.v1+json,"
+        "*/*"
+    )
+    headers: dict[str, str] = {"Accept": accept}
+    if auth_b64:
+        headers["Authorization"] = f"Basic {auth_b64}"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as http:
+            r = await http.get(url, headers=headers)
+            log.debug("check_image_reachable: GET %s → %s", url, r.status_code)
+            if r.status_code == 200:
+                return True
+
+            # Follow Bearer token challenge
+            if r.status_code == 401 and "www-authenticate" in r.headers:
+                www_auth = r.headers["www-authenticate"]
+                if www_auth.lower().startswith("bearer "):
+                    params: dict[str, str] = {}
+                    for part in www_auth[7:].split(","):
+                        k, _, v = part.strip().partition("=")
+                        params[k.strip()] = v.strip('"')
+                    realm = params.get("realm", "")
+                    log.debug("check_image_reachable: bearer challenge realm=%s", realm)
+                    if realm:
+                        token_params: dict[str, str] = {}
+                        if "service" in params:
+                            token_params["service"] = params["service"]
+                        if "scope" in params:
+                            token_params["scope"] = params["scope"]
+                        creds = None
+                        if auth_b64:
+                            decoded = base64.b64decode(auth_b64).decode()
+                            user, _, pwd = decoded.partition(":")
+                            creds = (user, pwd)
+                        tr = await http.get(realm, params=token_params, auth=creds)
+                        log.debug("check_image_reachable: token fetch → %s", tr.status_code)
+                        if tr.status_code == 200:
+                            token = tr.json().get("token") or tr.json().get("access_token", "")
+                            mr = await http.get(url, headers={"Authorization": f"Bearer {token}"})
+                            log.debug("check_image_reachable: manifest (bearer) → %s", mr.status_code)
+                            return mr.status_code == 200
+            log.warning("check_image_reachable: unhandled response %s for %s", r.status_code, url)
+    except Exception as exc:
+        log.warning("check_image_reachable: HTTP error for %s: %s", url, exc)
+    return False
+
+
 def exec_model_json(pod_name: str, namespace: str, model: str) -> None:
     """Write opencode model.json into a running pod via kubectl exec."""
     import json

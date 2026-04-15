@@ -125,6 +125,25 @@
             </div>
           </div>
 
+          <div class="row align-items-center mb-3">
+            <label class="col-5 text-muted small col-form-label-sm">Agent Image</label>
+            <div class="col-7">
+              <select name="language" class="form-select form-select-sm"
+                      {% if session.is_active %}disabled title="Stop session to change image"{% endif %}>
+                {% for lang in language_options %}
+                <option value="{{ lang }}" {{ 'selected' if session.language == lang }}>opencode-{{ lang }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">
+                {% for lang in language_options %}
+                <span class="me-2 text-{{ 'success' if image_status[lang] else 'danger' }}">
+                  {{ '✓' if image_status[lang] else '✗' }} {{ lang }}
+                </span>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+
           <div class="row align-items-center mb-2">
             <label class="col-5 text-muted small col-form-label-sm"
                    for="cfg_pat">GitHub PAT</label>

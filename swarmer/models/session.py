@@ -40,6 +40,7 @@ class Session(Base):
         String(16), nullable=False, default="prompt", server_default="prompt"
     )
     model: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")
+    language: Mapped[str] = mapped_column(String(32), nullable=False, default="golang", server_default="golang")
     persist: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     privileged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
