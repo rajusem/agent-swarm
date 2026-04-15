@@ -72,8 +72,13 @@ async def session_tui(
         await websocket.close(code=4003, reason="Session not running")
         return
 
-    namespace = ws.namespace
+    namespace = ws.k8s_namespace
     pod_name = session.pod_name
+
+    # Resolve tool-specific container name and TUI command
+    from swarmer.agent_tools.registry import get as get_tool
+    tool = get_tool(session.agent_tool)
+    container_name = tool.get_container_name()
 
     # ---------- Open a PTY pair ----------
     master_fd, slave_fd = pty.openpty()
@@ -85,13 +90,15 @@ async def session_tui(
     loop = asyncio.get_running_loop()
 
     try:
-        opencode_cmd = ["opencode"]
+        tui_cmd_parts = [tool.name]
         if session.resume:
-            opencode_cmd.append("--continue")
+            tui_cmd_parts.append("--continue")
+        tui_shell = "export PATH=\"$HOME/.local/bin:$PATH\" && exec " + " ".join(tui_cmd_parts)
         proc = await asyncio.create_subprocess_exec(
             "kubectl", "exec", "-it", pod_name,
             "-n", namespace,
-            "--", *opencode_cmd,
+            "-c", container_name,
+            "--", "sh", "-c", tui_shell,
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=stderr_w,

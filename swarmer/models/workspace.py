@@ -29,3 +29,8 @@ class Workspace(Base):
     sessions: Mapped[list["Session"]] = relationship(  # noqa: F821
         back_populates="workspace", cascade="all, delete-orphan"
     )
+
+    @property
+    def k8s_namespace(self) -> str:
+        from swarmer.config import settings
+        return settings.k8s_namespace or self.namespace
