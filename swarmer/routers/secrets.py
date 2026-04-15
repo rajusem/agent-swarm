@@ -18,7 +18,7 @@ from swarmer.models.workspace import Workspace
 router = APIRouter()
 templates = Jinja2Templates(directory="swarmer/templates")
 
-_VALID_TABS = ("opencode", "pats", "pull-secret")
+_VALID_TABS = ("credentials", "pats", "pull-secret")
 
 
 async def _get_workspace(ws_id: int, db: AsyncSession) -> Workspace | None:
@@ -39,7 +39,7 @@ async def _secrets_context(ws_id: int, ws, db: AsyncSession) -> dict:
 
     pull_secret_info = None
     try:
-        pull_secret_info = k8s.get_pull_secret_info(ws.namespace)
+        pull_secret_info = k8s.get_pull_secret_info(ws.k8s_namespace)
     except Exception:
         pass
 
@@ -55,14 +55,14 @@ async def _secrets_context(ws_id: int, ws, db: AsyncSession) -> dict:
     dependencies=[Depends(require_auth)],
 )
 async def secrets_tabs(
-    ws_id: int, request: Request, tab: str = "opencode", db: AsyncSession = Depends(get_db)
+    ws_id: int, request: Request, tab: str = "credentials", db: AsyncSession = Depends(get_db)
 ):
     ws = await _get_workspace(ws_id, db)
     if ws is None:
         return RedirectResponse(url="/workspaces", status_code=302)
 
     if tab not in _VALID_TABS:
-        tab = "opencode"
+        tab = "credentials"
 
     ctx = await _secrets_context(ws_id, ws, db)
     return templates.TemplateResponse(
@@ -74,7 +74,7 @@ async def secrets_tabs(
 # Redirect legacy per-tab GET URLs to the tabbed page
 @router.get("/workspaces/{ws_id}/secrets/opencode", dependencies=[Depends(require_auth)])
 async def opencode_redirect(ws_id: int):
-    return RedirectResponse(url=f"/workspaces/{ws_id}/secrets?tab=opencode", status_code=302)
+    return RedirectResponse(url=f"/workspaces/{ws_id}/secrets?tab=credentials", status_code=302)
 
 
 @router.get("/workspaces/{ws_id}/secrets/pats", dependencies=[Depends(require_auth)])
@@ -96,6 +96,8 @@ async def opencode_secret_save(
     google_cloud_project: str = Form(""),
     vertex_location: str = Form(""),
     google_api_key: str = Form(""),
+    anthropic_api_key: str = Form(""),
+    openai_api_key: str = Form(""),
     adc_file: UploadFile | None = File(None),
     db: AsyncSession = Depends(get_db),
 ):
@@ -116,6 +118,10 @@ async def opencode_secret_save(
 
     if google_api_key.strip():
         secret.google_api_key = google_api_key.strip()
+    if anthropic_api_key.strip():
+        secret.anthropic_api_key = anthropic_api_key.strip()
+    if openai_api_key.strip():
+        secret.openai_api_key = openai_api_key.strip()
 
     if adc_file and adc_file.filename:
         content = await adc_file.read()
@@ -129,7 +135,7 @@ async def opencode_secret_save(
                 {
                     "request": request,
                     "ws": ws,
-                    "tab": "opencode",
+                    "tab": "credentials",
                     "opencode_error": "ADC file must be valid JSON.",
                     **ctx,
                 },
@@ -140,12 +146,12 @@ async def opencode_secret_save(
     await db.commit()
 
     try:
-        k8s.apply_opencode_secret(ws.namespace, secret)
-        k8s.apply_opencode_config(ws.namespace, secret)
+        k8s.sync_all_agent_secrets(ws.k8s_namespace, secret)
+        k8s.apply_opencode_config(ws.k8s_namespace, secret)
     except Exception as exc:
         flash(request, f"Saved, but K8s sync failed: {exc}", "warning")
 
-    return RedirectResponse(url=f"/workspaces/{ws_id}/secrets?tab=opencode", status_code=302)
+    return RedirectResponse(url=f"/workspaces/{ws_id}/secrets?tab=credentials", status_code=302)
 
 
 # ============================================================
@@ -211,7 +217,7 @@ async def github_pat_create(
         )
 
     try:
-        k8s.apply_github_pat_secret(ws.namespace, pat)
+        k8s.apply_github_pat_secret(ws.k8s_namespace, pat)
     except Exception as exc:
         flash(request, f"PAT saved, but K8s sync failed: {exc}", "warning")
 
@@ -263,7 +269,7 @@ async def github_pat_update(
     await db.commit()
 
     try:
-        k8s.apply_github_pat_secret(ws.namespace, pat)
+        k8s.apply_github_pat_secret(ws.k8s_namespace, pat)
     except Exception as exc:
         flash(request, f"PAT saved, but K8s sync failed: {exc}", "warning")
 
@@ -286,7 +292,7 @@ async def github_pat_delete(
         return RedirectResponse(url=f"/workspaces/{ws_id}/secrets?tab=pats", status_code=302)
 
     try:
-        k8s.delete_github_pat_secret(ws.namespace, pat)
+        k8s.delete_github_pat_secret(ws.k8s_namespace, pat)
     except Exception as exc:
         flash(request, f"K8s secret deletion failed: {exc}", "warning")
 
@@ -317,13 +323,13 @@ async def pull_secret_save(
         return RedirectResponse(url="/workspaces", status_code=302)
 
     try:
-        k8s.apply_pull_secret(ws.namespace, registry.strip(), username.strip(), password.strip())
+        k8s.apply_pull_secret(ws.k8s_namespace, registry.strip(), username.strip(), password.strip())
     except Exception as exc:
         flash(request, f"Failed to create pull secret: {exc}", "danger")
     else:
         flash(
             request,
-            f"Pull secret '{k8s.PULL_SECRET_NAME}' saved in namespace {ws.namespace}.",
+            f"Pull secret '{k8s.PULL_SECRET_NAME}' saved in namespace {ws.k8s_namespace}.",
             "success",
         )
 
@@ -344,7 +350,7 @@ async def pull_secret_delete(
         return RedirectResponse(url="/workspaces", status_code=302)
 
     try:
-        k8s.delete_pull_secret(ws.namespace)
+        k8s.delete_pull_secret(ws.k8s_namespace)
     except Exception as exc:
         flash(request, f"Failed to delete pull secret: {exc}", "warning")
 
