@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     port: int = 8080
     agent_image: str = "ghcr.io/anomalyco/opencode:latest"
     agent_image_opencode: str = "ghcr.io/anomalyco/opencode:latest"
-    agent_image_crush: str = "registry.access.redhat.com/ubi9/ubi:latest"
+    agent_image_crush: str = "ghcr.io/gurnben/crush-container:latest"
     crush_version: str = "0.57.0"
     default_agent_tool: str = "opencode"
     crush_server_port: int = 4096
