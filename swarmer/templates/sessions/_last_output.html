@@ -8,10 +8,12 @@
      hx-swap="outerHTML"
      {% endif %}>
   {% if session.phase == 'running' %}
-  <p class="text-muted small mb-3">No output yet — use the web chat to interact with the session.</p>
+  <p class="text-muted small mb-3">No output yet — the session is running.</p>
+  {% if session.agent_tool != 'crush' %}
   <a href="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/chat"
      target="_blank" rel="noopener"
      class="btn btn-info btn-sm">Open Web Chat ↗</a>
+  {% endif %}
   {% else %}
   <span class="text-muted small">No output yet. Launch the session to see logs here.</span>
   {% endif %}
