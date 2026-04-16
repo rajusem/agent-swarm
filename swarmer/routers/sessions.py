@@ -97,6 +97,33 @@ async def _get_workspace(ws_id: int, db: AsyncSession) -> Workspace | None:
     return await db.get(Workspace, ws_id)
 
 
+# ============================================================
+# Model options (HTMX partial — reloads when agent tool changes)
+# ============================================================
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/model-options",
+    dependencies=[Depends(require_auth)],
+    response_class=HTMLResponse,
+)
+async def model_options_partial(
+    ws_id: int,
+    request: Request,
+    agent_tool: str = "opencode",
+    selected_model: str = "",
+    db: AsyncSession = Depends(get_db),
+):
+    model_options = await _get_model_options(ws_id, db, agent_tool)
+    return templates.TemplateResponse(
+        "sessions/_model_select.html",
+        {
+            "request": request,
+            "model_options": model_options,
+            "selected_model": selected_model,
+        },
+    )
+
+
 def _session_mode_label(session: Session) -> str:
     """Return a human-readable mode label for the session."""
     return {"tui": "TUI", "server": "Server", "prompt": "Prompt"}.get(session.mode, session.mode)
@@ -156,7 +183,7 @@ async def session_new(
     return templates.TemplateResponse(
         "sessions/new.html",
         {"request": request, "ws": ws, "pats": pats, "model_options": model_options,
-         "agent_tools": all_tools(), "default_agent_tool": settings.default_agent_tool},
+         "selected_model": "", "agent_tools": all_tools(), "default_agent_tool": settings.default_agent_tool},
     )
 
 

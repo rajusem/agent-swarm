@@ -94,7 +94,7 @@ class CrushStrategy(AgentToolStrategy):
         elif session.mode == "tui":
             return "sleep infinity"
         else:
-            cmd_parts = ["crush", "run", "--yolo"]
+            cmd_parts = ["crush", "run"]
             if model:
                 cmd_parts.extend(["--model", model])
             if session.resume:
