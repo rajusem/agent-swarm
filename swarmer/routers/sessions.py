@@ -721,11 +721,15 @@ async def repo_add(
     db.add(repo)
     try:
         await db.commit()
-        await db.refresh(session)
     except IntegrityError:
         await db.rollback()
 
-    session = await db.get(Session, sid, options=[selectinload(Session.repos), selectinload(Session.github_pat)])
+    result = await db.execute(
+        select(Session)
+        .where(Session.id == sid)
+        .options(selectinload(Session.repos), selectinload(Session.github_pat))
+    )
+    session = result.scalar_one()
     pat_token = session.github_pat.pat if session.github_pat else None
     repo_info = await _fetch_repo_info(session.repos, pat_token)
     return templates.TemplateResponse(
