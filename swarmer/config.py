@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     agent_image_pull_secret: str = ""
     k8s_namespace: str = ""
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()
