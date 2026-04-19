@@ -2,7 +2,6 @@
 Kubernetes utility functions used across the dashboard.
 All functions use the official kubernetes-client Python library.
 """
-import asyncio
 import base64
 import logging
 import time
