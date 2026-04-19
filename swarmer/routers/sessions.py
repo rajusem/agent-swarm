@@ -293,13 +293,7 @@ async def session_detail(
             "model_options": model_options,
             "repo_info": repo_info,
             "agent_tools": all_tools(),
-            "tool_image_available": dict(zip(
-                [t.name for t in all_tools()],
-                await asyncio.gather(*[
-                    k8s.get_image_available(t.get_image(), k8s.effective_namespace(ws.k8s_namespace))
-                    for t in all_tools()
-                ]),
-            )),
+            "tool_image_available": {t.name: bool(t.get_image()) for t in all_tools()},
         },
     )
 

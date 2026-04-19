@@ -64,6 +64,21 @@ All other behaviour (config map, secret, K8s volumes, model options) is inherite
 - Added `AGENT_IMAGE_OPENCODE` and `AGENT_IMAGE_CRUSH` to `.env` (were missing after the Crush merge).
 - Added `AGENT_IMAGE_CRUSH` and `AGENT_IMAGE_OPENCODE` to `.env.example` for documentation.
 
+### `swarmer/agent_tools/crush.py` *(post-merge fix)*
+- Corrected four label strings where `"vertexai/gemini-3-pro"` and `"vertexai/gemini-3-flash"` were labelled `"Gemini 2.5 Pro"` / `"Gemini 2.5 Flash (fast)"` instead of `"Gemini 3 Pro"` / `"Gemini 3 Flash (fast)"`. Both the `has_adc` and `has_vertex` option lists were affected.
+
+### `swarmer/routers/tui_ws.py` *(post-merge security fix)*
+- `session.model` and other elements of `tui_cmd_parts` were joined with a bare `" ".join(...)` and interpolated into a `sh -c` string, allowing shell injection via a crafted model name.
+- Added `import shlex` and changed the join to `" ".join(shlex.quote(p) for p in tui_cmd_parts)` so every argv element is safely quoted before being embedded in the shell command.
+
+### `swarmer/routers/sessions.py` *(tool_image_available fix)*
+- The `tool_image_available` dict was built by calling `k8s.get_image_available()`, which does a live HTTP manifest check against the registry. `quay-pull-secret` only has Quay credentials, so private GHCR images (`anomalyco/opencode`) always failed authentication and returned `False`, even though K8s can pull them fine. Public GHCR images (Crush) happened to work anonymously, creating an inconsistent result.
+- Changed to `{t.name: bool(t.get_image()) for t in all_tools()}` — green means the image is configured (non-empty string), matching the original plan's intent.
+
+### `swarmer/k8s.py` *(connection-refused fix)*
+- `get_pod_status` only caught `kubernetes.client.exceptions.ApiException`, so a `MaxRetryError` / `ConnectionRefusedError` (K8s API server unreachable) propagated as an unhandled exception and returned HTTP 500 on the session detail page.
+- Added a bare `except Exception` fallback that returns `("pending", "Cluster Unavailable")`, matching the graceful-degradation pattern already used for 404 responses.
+
 ## Verification
 
 1. Start the server — no `ValidationError` on startup even with `AGENT_IMAGE_PYTHON` set.
