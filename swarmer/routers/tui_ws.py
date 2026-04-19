@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import pty
+import shlex
 import struct
 import termios
 
@@ -95,7 +96,7 @@ async def session_tui(
             tui_cmd_parts.extend(["--model", session.model])
         if session.resume:
             tui_cmd_parts.append("--continue")
-        tui_shell = "export PATH=\"$HOME/.local/bin:$PATH\" && exec " + " ".join(tui_cmd_parts)
+        tui_shell = "export PATH=\"$HOME/.local/bin:$PATH\" && exec " + " ".join(shlex.quote(p) for p in tui_cmd_parts)
         proc = await asyncio.create_subprocess_exec(
             "kubectl", "exec", "-it", pod_name,
             "-n", namespace,

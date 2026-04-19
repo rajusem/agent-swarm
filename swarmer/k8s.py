@@ -239,6 +239,8 @@ def get_pod_status(pod_name: str, namespace: str) -> tuple[str, str]:
         if exc.status == 404:
             return "stopped", "Not Found"
         return "pending", "Unknown"
+    except Exception:
+        return "pending", "Cluster Unavailable"
 
     k8s_phase = pod.status.phase or "Unknown"
     our_phase = _PHASE_MAP.get(k8s_phase, "pending")
