@@ -278,6 +278,10 @@ async def session_detail(
     pat_token = session.github_pat.pat if session.github_pat else None
     repo_info = await _fetch_repo_info(session.repos, pat_token)
 
+    _tools = all_tools()
+    _avail = await asyncio.gather(
+        *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
+    )
     return templates.TemplateResponse(
         "sessions/detail.html",
         {
@@ -292,8 +296,8 @@ async def session_detail(
             "status_detail": status_detail,
             "model_options": model_options,
             "repo_info": repo_info,
-            "agent_tools": all_tools(),
-            "tool_image_available": {t.name: bool(t.get_image()) for t in all_tools()},
+            "agent_tools": _tools,
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail)),
         },
     )
 
