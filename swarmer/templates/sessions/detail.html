@@ -73,7 +73,7 @@
 <div class="row g-4">
 
   {# Left column: Configuration (all modes) + Git Repos (prompt only) #}
-  <div class="col-md-5">
+  <div class="col-md-5" id="left-col">
 
     <div class="card mb-3">
       <div class="card-header fw-semibold">Configuration</div>
@@ -242,7 +242,7 @@
   <div class="col-md-7 d-flex flex-column">
 
     {% if session.mode == 'prompt' %}
-    <div class="card d-flex flex-column flex-grow-1" style="min-height:0">
+    <div class="card d-flex flex-column flex-grow-1" id="last-output-card" style="min-height:0">
       <div class="card-header fw-semibold d-flex justify-content-between align-items-center flex-shrink-0">
         <span>Last Output</span>
         {% if session.last_output %}
@@ -253,7 +253,7 @@
         </form>
         {% endif %}
       </div>
-      <div class="card-body p-0 flex-grow-1 overflow-auto">
+      <div class="card-body p-0 flex-grow-1 overflow-auto" style="min-height:0">
         {% include "sessions/_last_output.html" with context %}
       </div>
     </div>
@@ -326,6 +326,22 @@
 
 {% block scripts %}
 <script>
+// ── Match Last Output card height to left column ──────────────────────────────
+(function () {
+  const leftCol = document.getElementById('left-col');
+  const card = document.getElementById('last-output-card');
+  if (!leftCol || !card) return;
+  function syncHeight() {
+    // Measure left column's natural height before Bootstrap row-stretch inflates it.
+    leftCol.style.alignSelf = 'flex-start';
+    const h = leftCol.offsetHeight;
+    leftCol.style.alignSelf = '';
+    card.style.maxHeight = h + 'px';
+  }
+  syncHeight();
+  window.addEventListener('resize', syncHeight);
+})();
+
 // ── Auto-save configuration fields ───────────────────────────────────────────
 (function () {
   const form = document.getElementById('cfg-edit-form');
