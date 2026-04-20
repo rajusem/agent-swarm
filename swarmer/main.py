@@ -22,12 +22,39 @@ from swarmer.routers import workspaces as workspaces_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Crypto must be initialised before any DB access (model properties call decrypt)
-    init_crypto(settings.auth_hash_file)
+    init_crypto(settings.secret_key_file)
     init_db(settings.database_url)
     await create_tables()
     await migrate_db()
     k8s.init_k8s(settings.k8s_in_cluster)
+    await _restart_prompt_pollers()
     yield
+    from swarmer import log_poller
+    await log_poller.shutdown()
+
+
+async def _restart_prompt_pollers() -> None:
+    """Re-launch background log pollers for prompt sessions still active after a restart."""
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from swarmer import log_poller
+    from swarmer.database import get_db
+    from swarmer.models.session import Session
+
+    async for db in get_db():
+        result = await db.execute(
+            select(Session)
+            .where(
+                Session.mode == "prompt",
+                Session.phase.in_(["pending", "running"]),
+                Session.pod_name.isnot(None),
+            )
+            .options(selectinload(Session.workspace))
+        )
+        for s in result.scalars().all():
+            log_poller.start_log_poller(s.id, s.pod_name, s.workspace.k8s_namespace)
+        break
 
 
 app = FastAPI(title="Swarmer", lifespan=lifespan)
@@ -35,7 +62,7 @@ app = FastAPI(title="Swarmer", lifespan=lifespan)
 # Session middleware must be added before routes are registered
 app.add_middleware(
     SessionMiddleware,
-    secret_key=derive_session_secret(settings.auth_hash_file),
+    secret_key=derive_session_secret(settings.secret_key_file),
     session_cookie="swarmer_session",
     same_site="lax",
     https_only=False,  # set True in production behind TLS

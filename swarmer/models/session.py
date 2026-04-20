@@ -17,7 +17,7 @@ from swarmer.database import Base
 # Valid phase values
 PHASES = ("idle", "pending", "running", "succeeded", "failed", "stopped")
 
-AGENT_TOOLS = ("opencode", "crush")
+AGENT_TOOLS = ("opencode-golang", "opencode-python", "crush")
 
 # Valid mode values
 #   tui    — pod keeps alive (sleep infinity); browser connects via xterm.js kubectl exec
@@ -46,12 +46,13 @@ class Session(Base):
     persist: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     privileged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
-    agent_tool: Mapped[str] = mapped_column(String(32), nullable=False, default="opencode", server_default="opencode")
+    agent_tool: Mapped[str] = mapped_column(String(32), nullable=False, default="opencode-golang", server_default="opencode-golang")
     instruction_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_output: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status_detail: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
     phase: Mapped[str] = mapped_column(String(32), nullable=False, default="idle")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

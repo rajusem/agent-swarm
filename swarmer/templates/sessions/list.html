@@ -48,13 +48,19 @@
 
         <td>
           {% if s.phase == 'running' %}
-            <span class="badge bg-success">
-              ● Active
-            </span>
+            {% if s.mode == 'prompt' %}
+              <span class="badge bg-success">▶ Running</span>
+            {% else %}
+              <span class="badge bg-success">● Active</span>
+            {% endif %}
           {% elif s.phase == 'pending' %}
             <span class="badge bg-warning text-dark">⏳ Pending</span>
           {% elif s.phase == 'succeeded' %}
-            <span class="badge bg-primary">✓ Succeeded</span>
+            {% if s.mode == 'prompt' %}
+              <span class="badge bg-primary">✓ Completed</span>
+            {% else %}
+              <span class="badge bg-primary">✓ Succeeded</span>
+            {% endif %}
           {% elif s.phase == 'failed' %}
             <span class="badge bg-danger">✗ Failed</span>
           {% elif s.phase == 'stopped' %}

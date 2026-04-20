@@ -23,9 +23,5 @@
      hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/last-output"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
-     {% endif %}>{% if session.instruction_prompt %}<span class="text-info">┌─ Instruction ───────────────────────────────────────────────────
-{{ session.instruction_prompt }}
-└─────────────────────────────────────────────────────────────────</span>
-
-{% endif %}{% if session.last_output %}{{ session.last_output }}{% else %}<span class="text-muted">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
+     {% endif %}>{% if session.last_output %}{{ session.last_output }}{% else %}<span class="text-muted">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
 {% endif %}

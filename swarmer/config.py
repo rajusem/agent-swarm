@@ -1,9 +1,10 @@
-from pathlib import Path
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    auth_hash_file: Path = Path("auth/password.hash")
+    secret_key_file: str = "auth/secret.key"
+    openshift_oauth_url: str = ""   # e.g. https://oauth-openshift.apps.example.com
+    k8s_api_url: str = "https://kubernetes.default.svc"
     database_url: str = "sqlite+aiosqlite:///data/swarmer.db"
     k8s_in_cluster: bool = False
     host: str = "0.0.0.0"
@@ -13,7 +14,7 @@ class Settings(BaseSettings):
     agent_image_python: str = ""
     agent_image_crush: str = ""
     crush_version: str = "0.57.0"
-    default_agent_tool: str = "opencode"
+    default_agent_tool: str = "opencode-golang"
     crush_server_port: int = 4096
     agent_image_pull_secret: str = ""
     k8s_namespace: str = ""

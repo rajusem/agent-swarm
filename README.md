@@ -88,6 +88,39 @@ Key variables:
 | `AGENT_IMAGE` | `opencode-golang:latest` | Image used for session pods |
 | `AGENT_IMAGE_PULL_SECRET` | _(empty)_ | Pull secret name in the workspace namespace |
 
+## Access Control
+
+> **These two commands are the primary way to onboard users and control workspace access.**
+
+### Issue a login token
+
+Creates a Kubernetes ServiceAccount for the user (if it doesn't exist) and prints a bearer token they paste into the Swarmer login page:
+
+```sh
+make user-token SA_USER=alice
+make user-token SA_USER=alice TOKEN_DURATION=24h   # default: 8h
+```
+
+Share the printed token with the user — it expires after `TOKEN_DURATION`.
+
+### Grant workspace access
+
+Binds a user to a specific workspace namespace so they can see and manage sessions in it:
+
+```sh
+make grant-workspace SA_USER=alice WORKSPACE_NS=my-project
+```
+
+Run this once per user per namespace. A user with no workspace grants can log in but will see no workspaces.
+
+### Typical onboarding flow
+
+```sh
+make user-token SA_USER=alice                          # 1. create user + print token
+make grant-workspace SA_USER=alice WORKSPACE_NS=team-a # 2. give access to a workspace
+make grant-workspace SA_USER=alice WORKSPACE_NS=team-b # 3. repeat for additional workspaces
+```
+
 ## Other useful targets
 
 ```sh
