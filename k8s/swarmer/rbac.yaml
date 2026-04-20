@@ -40,6 +40,29 @@ rules:
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # ConfigMap management (agent tool config per workspace namespace)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+
+  # ClusterRoleBinding management — used to grant the OpenShift anyuid SCC
+  # to workspace namespace default SAs so session pods can run as root.
+  # No-op on kind/k3s (the anyuid ClusterRole simply does not exist there).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+
+  # Token validation (validating user bearer tokens at login)
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+
+  # OpenShift Routes — expose server-mode sessions directly to the browser.
+  # No-op on kind/k3s where the route.openshift.io CRD does not exist.
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -53,3 +76,20 @@ subjects:
   - kind: ServiceAccount
     name: swarmer
     namespace: swarmer
+
+---
+# Minimal ClusterRole for swarmer dashboard users.
+# Bind this as a RoleBinding (not ClusterRoleBinding) in specific workspace
+# namespaces to grant a user visibility into those namespaces only.
+# Use: make grant-workspace SA_USER=<name> WORKSPACE_NS=<namespace>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: swarmer-user
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]

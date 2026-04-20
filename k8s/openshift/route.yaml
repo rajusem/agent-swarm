@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: swarmer
+  namespace: swarmer
+spec:
+  host: SWARMER_HOST
+  to:
+    kind: Service
+    name: swarmer
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

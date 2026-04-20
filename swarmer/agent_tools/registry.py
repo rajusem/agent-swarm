@@ -7,7 +7,13 @@ def register(strategy: AgentToolStrategy) -> None:
     _REGISTRY[strategy.name] = strategy
 
 
+_ALIASES: dict[str, str] = {
+    "opencode": "opencode-golang",
+}
+
+
 def get(name: str) -> AgentToolStrategy:
+    name = _ALIASES.get(name, name)
     if name not in _REGISTRY:
         raise ValueError(
             f"Unknown agent tool: {name!r}. Available: {list(_REGISTRY)}"

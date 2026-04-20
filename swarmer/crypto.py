@@ -1,53 +1,66 @@
+from __future__ import annotations
 import base64
-import hashlib
+import logging
+import os
 from pathlib import Path
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
+
+logger = logging.getLogger(__name__)
 
 _fernet: Fernet | None = None
-_FALLBACK = "SWARMER_NOT_CONFIGURED_RUN_MAKE_SETUP_AUTH"
+_session_secret: str | None = None
 
 
-def _read_hash_bytes(hash_file: Path) -> bytes:
-    """Read the hash file; return a fallback constant if it doesn't exist yet."""
-    try:
-        return hash_file.read_bytes()
-    except FileNotFoundError:
-        return _FALLBACK.encode()
+def _load_or_create_key(key_file: str) -> bytes:
+    env_val = os.environ.get("SWARMER_SECRET_KEY", "")
+    if env_val:
+        raw = base64.urlsafe_b64decode(env_val.encode())
+        if len(raw) != 32:
+            raise ValueError("SWARMER_SECRET_KEY must decode to exactly 32 bytes")
+        return raw
+
+    path = Path(key_file)
+    if path.exists():
+        raw = path.read_bytes().strip()
+        return base64.urlsafe_b64decode(raw)
+
+    raw = os.urandom(32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(base64.urlsafe_b64encode(raw))
+    logger.warning("Generated new secret key at %s — existing encrypted secrets will be unreadable", key_file)
+    return raw
 
 
-def init_crypto(hash_file: Path) -> None:
-    """
-    Derive a Fernet key from the contents of the auth hash file.
-    Called once during app lifespan startup before any DB access.
-
-    SHA-256(b"fernet:" + hash_file_contents) → 32 bytes → base64url → Fernet key
-    A separate SHA-256 (with prefix b"session:") is used for cookie signing.
-    """
-    global _fernet
-    raw = _read_hash_bytes(hash_file)
-    key_bytes = hashlib.sha256(b"fernet:" + raw).digest()
-    fernet_key = base64.urlsafe_b64encode(key_bytes)
+def init_crypto(key_file: str) -> None:
+    global _fernet, _session_secret
+    raw = _load_or_create_key(key_file)
+    fernet_key = base64.urlsafe_b64encode(raw)
     _fernet = Fernet(fernet_key)
+    # session secret: HMAC-safe hex of raw key with prefix
+    import hashlib
+    _session_secret = hashlib.sha256(b"session:" + raw).hexdigest()
 
 
-def derive_session_secret(hash_file: Path) -> str:
-    """Return a hex string for use as the Starlette session cookie secret.
-
-    Safe to call at import time — falls back to a deterministic constant if
-    the hash file does not yet exist (user hasn't run make setup-auth).
-    """
-    raw = _read_hash_bytes(hash_file)
-    return hashlib.sha256(b"session:" + raw).hexdigest()
+def derive_session_secret(key_file: str) -> str:
+    if _session_secret is None:
+        init_crypto(key_file)
+    return _session_secret
 
 
 def encrypt(plaintext: str) -> str:
     if _fernet is None:
-        raise RuntimeError("crypto not initialised — call init_crypto() first")
+        raise RuntimeError("crypto not initialized")
     return _fernet.encrypt(plaintext.encode()).decode()
 
 
 def decrypt(ciphertext: str) -> str:
     if _fernet is None:
-        raise RuntimeError("crypto not initialised — call init_crypto() first")
-    return _fernet.decrypt(ciphertext.encode()).decode()
+        raise RuntimeError("crypto not initialized")
+    if not ciphertext:
+        return ""
+    try:
+        return _fernet.decrypt(ciphertext.encode()).decode()
+    except InvalidToken:
+        logger.warning("Failed to decrypt value — key may have been rotated")
+        return ""

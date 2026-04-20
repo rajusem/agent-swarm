@@ -56,7 +56,12 @@ def init_k8s(in_cluster: bool) -> None:
 # ---------- Namespace helpers ----------
 
 def ensure_namespace(namespace: str) -> None:
-    """Create the namespace if it doesn't exist; no-op if it does."""
+    """Create the namespace if it doesn't exist; no-op if it does.
+
+    On OpenShift, also grants the anyuid SCC to the namespace's default SA so
+    that session pods can run as root without requiring privileged host access.
+    This is a no-op on kind/k3s where SCCs do not exist.
+    """
     from kubernetes import client
 
     v1 = client.CoreV1Api()
@@ -69,6 +74,44 @@ def ensure_namespace(namespace: str) -> None:
                     metadata=client.V1ObjectMeta(name=namespace)
                 )
             )
+        else:
+            raise
+
+    _grant_anyuid_scc(namespace)
+
+
+def _grant_anyuid_scc(namespace: str) -> None:
+    """Grant the OpenShift anyuid SCC to the default SA in *namespace*.
+
+    Creates a ClusterRoleBinding named ``swarmer-anyuid:<namespace>``.
+    Silently skips if the anyuid ClusterRole does not exist (non-OpenShift).
+    """
+    from kubernetes import client
+
+    rbac = client.RbacAuthorizationV1Api()
+    crb_name = f"swarmer-anyuid:{namespace}"
+    crb = client.V1ClusterRoleBinding(
+        metadata=client.V1ObjectMeta(name=crb_name),
+        role_ref=client.V1RoleRef(
+            api_group="rbac.authorization.k8s.io",
+            kind="ClusterRole",
+            name="system:openshift:scc:anyuid",
+        ),
+        subjects=[client.RbacV1Subject(
+            kind="ServiceAccount",
+            name="default",
+            namespace=namespace,
+        )],
+    )
+    try:
+        rbac.create_cluster_role_binding(crb)
+    except client.exceptions.ApiException as exc:
+        if exc.status == 409:  # already exists
+            pass
+        elif exc.status in (403, 404):
+            # 404: anyuid ClusterRole absent (kind/k3s) — skip silently
+            # 403: swarmer SA lacks CRB create permission — log and skip
+            log.debug("anyuid SCC grant skipped for %s: %s", namespace, exc.status)
         else:
             raise
 
@@ -100,7 +143,7 @@ def get_namespace_status(namespace: str) -> str:
 # ---------- ConfigMap helpers ----------
 
 def apply_agent_config(
-    namespace: str, secret=None, agent_tool: str = "opencode"
+    namespace: str, secret=None, agent_tool: str = "opencode-golang"
 ) -> None:
     """Create or update the agent tool's ConfigMap in the given namespace."""
     from kubernetes import client
@@ -126,7 +169,7 @@ def apply_agent_config(
 
 def apply_opencode_config(namespace: str, secret=None) -> None:
     """Backward-compat wrapper — delegates to apply_agent_config."""
-    apply_agent_config(namespace, secret=secret, agent_tool="opencode")
+    apply_agent_config(namespace, secret=secret, agent_tool="opencode-golang")
 
 
 # ---------- Secret helpers ----------
@@ -162,7 +205,7 @@ def _delete_secret(namespace: str, name: str) -> None:
 
 
 def apply_agent_secret(
-    namespace: str, secret, agent_tool: str = "opencode"
+    namespace: str, secret, agent_tool: str = "opencode-golang"
 ) -> None:
     """Sync the agent tool's K8s Secret from the DB model."""
     from swarmer.agent_tools.registry import get as get_tool
@@ -185,7 +228,7 @@ def sync_all_agent_secrets(namespace: str, secret) -> None:
 
 def apply_opencode_secret(namespace: str, secret) -> None:
     """Backward-compat wrapper — delegates to apply_agent_secret."""
-    apply_agent_secret(namespace, secret, agent_tool="opencode")
+    apply_agent_secret(namespace, secret, agent_tool="opencode-golang")
 
 
 def apply_github_pat_secret(namespace: str, pat) -> None:
@@ -378,10 +421,22 @@ async def check_image_reachable(image: str, namespace: str) -> bool:
         raw = base64.b64decode(secret.data[".dockerconfigjson"]).decode()
         config = json.loads(raw)
         auths = config.get("auths", {})
-        entry = auths.get(registry) or auths.get(f"https://{registry}") or {}
+        entry = auths.get(registry) or auths.get(f"https://{registry}")
+        if not entry:
+            # Longest-prefix match: key "quay.io/org" should match image "quay.io/org/repo"
+            image_path = f"{registry}/{repo}"
+            for key in sorted(auths, key=len, reverse=True):
+                norm = key.removeprefix("https://")
+                if image_path.startswith(norm):
+                    entry = auths[key]
+                    break
+        entry = entry or {}
         auth_b64 = entry.get("auth", "")
-        log.debug("check_image_reachable: pull secret found, auth_b64 present=%s, auths keys=%s",
-                  bool(auth_b64), list(auths.keys()))
+        if auth_b64:
+            log.debug("check_image_reachable: pull secret found, auth present for registry=%s", registry)
+        else:
+            log.warning("check_image_reachable: pull secret found in %s but no auth entry for registry=%s (auths keys=%s)",
+                        namespace, registry, list(auths.keys()))
     except Exception as exc:
         log.warning("check_image_reachable: could not read pull secret %s/%s: %s",
                     namespace, PULL_SECRET_NAME, exc)
@@ -421,17 +476,26 @@ async def check_image_reachable(image: str, namespace: str) -> bool:
                             decoded = base64.b64decode(auth_b64).decode()
                             user, _, pwd = decoded.partition(":")
                             creds = (user, pwd)
+                        used_creds = False
+                        bearer_manifest_status = None
                         for attempt_creds in ([creds, None] if creds else [None]):
                             tr = await http.get(realm, params=token_params, auth=attempt_creds)
                             log.debug("check_image_reachable: token fetch (creds=%s) → %s",
                                       attempt_creds is not None, tr.status_code)
                             if tr.status_code == 200:
+                                used_creds = attempt_creds is not None
                                 token = tr.json().get("token") or tr.json().get("access_token", "")
                                 mr = await http.get(url, headers={"Authorization": f"Bearer {token}", "Accept": accept})
+                                bearer_manifest_status = mr.status_code
                                 log.debug("check_image_reachable: manifest (bearer) → %s", mr.status_code)
                                 if mr.status_code == 200:
                                     return True
                                 break
+                        log.warning(
+                            "check_image_reachable: image not accessible %s (pull_secret=%s, used_creds=%s, manifest_status=%s)",
+                            url, bool(auth_b64), used_creds, bearer_manifest_status,
+                        )
+                        return False
             log.warning("check_image_reachable: unhandled response %s for %s", r.status_code, url)
     except Exception as exc:
         log.warning("check_image_reachable: HTTP error for %s: %s", url, exc)
@@ -439,7 +503,7 @@ async def check_image_reachable(image: str, namespace: str) -> bool:
 
 
 def exec_model_update(
-    pod_name: str, namespace: str, model: str, agent_tool: str = "opencode"
+    pod_name: str, namespace: str, model: str, agent_tool: str = "opencode-golang"
 ) -> None:
     """Update model selection on a running pod via the tool's strategy."""
     from swarmer.agent_tools.registry import get as get_tool
@@ -450,7 +514,7 @@ def exec_model_update(
 
 def exec_model_json(pod_name: str, namespace: str, model: str) -> None:
     """Backward-compat wrapper — delegates to exec_model_update."""
-    exec_model_update(pod_name, namespace, model, agent_tool="opencode")
+    exec_model_update(pod_name, namespace, model, agent_tool="opencode-golang")
 
 
 def delete_service(service_name: str, namespace: str) -> None:
@@ -462,3 +526,86 @@ def delete_service(service_name: str, namespace: str) -> None:
     except client.exceptions.ApiException as exc:
         if exc.status != 404:
             raise
+
+
+# ---------- OpenShift Route helpers ----------
+
+_ROUTE_GROUP = "route.openshift.io"
+_ROUTE_VERSION = "v1"
+_ROUTE_PLURAL = "routes"
+
+
+def create_session_route(session_id: int, namespace: str, service_name: str, port: int = 4096) -> str:
+    """Create an OpenShift edge-TLS Route for a server-mode session.
+
+    Returns the assigned hostname, or '' if Routes are not supported
+    (non-OpenShift cluster) or the hostname is not yet available.
+    Silently skips on kind/k3s where the route.openshift.io CRD is absent.
+    """
+    from kubernetes import client
+
+    custom = client.CustomObjectsApi()
+    route_name = f"session-{session_id}-chat"
+    body = {
+        "apiVersion": f"{_ROUTE_GROUP}/{_ROUTE_VERSION}",
+        "kind": "Route",
+        "metadata": {"name": route_name, "namespace": namespace},
+        "spec": {
+            "to": {"kind": "Service", "name": service_name},
+            "port": {"targetPort": port},
+            "tls": {
+                "termination": "edge",
+                "insecureEdgeTerminationPolicy": "Redirect",
+            },
+        },
+    }
+    try:
+        result = custom.create_namespaced_custom_object(
+            group=_ROUTE_GROUP, version=_ROUTE_VERSION,
+            namespace=namespace, plural=_ROUTE_PLURAL, body=body,
+        )
+        ingresses = result.get("status", {}).get("ingress", [])
+        return ingresses[0].get("host", "") if ingresses else ""
+    except client.exceptions.ApiException as exc:
+        if exc.status == 409:
+            return get_session_route_host(session_id, namespace)
+        if exc.status in (403, 404):
+            log.debug("OpenShift Routes not available (status %s) — skipping", exc.status)
+            return ""
+        raise
+
+
+def get_session_route_host(session_id: int, namespace: str) -> str:
+    """Return the hostname of an existing session Route, or ''."""
+    from kubernetes import client
+
+    custom = client.CustomObjectsApi()
+    route_name = f"session-{session_id}-chat"
+    try:
+        result = custom.get_namespaced_custom_object(
+            group=_ROUTE_GROUP, version=_ROUTE_VERSION,
+            namespace=namespace, plural=_ROUTE_PLURAL, name=route_name,
+        )
+        ingresses = result.get("status", {}).get("ingress", [])
+        return ingresses[0].get("host", "") if ingresses else ""
+    except client.exceptions.ApiException as exc:
+        if exc.status in (403, 404):
+            return ""
+        raise
+
+
+def delete_session_route(session_id: int, namespace: str) -> None:
+    """Delete the session's OpenShift Route; no-op on non-OpenShift or if absent."""
+    from kubernetes import client
+
+    custom = client.CustomObjectsApi()
+    route_name = f"session-{session_id}-chat"
+    try:
+        custom.delete_namespaced_custom_object(
+            group=_ROUTE_GROUP, version=_ROUTE_VERSION,
+            namespace=namespace, plural=_ROUTE_PLURAL, name=route_name,
+        )
+    except client.exceptions.ApiException as exc:
+        if exc.status in (403, 404):
+            return
+        raise

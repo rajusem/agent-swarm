@@ -1,18 +1,12 @@
 """
-WebSocket endpoint that proxies a browser xterm.js terminal to
-`kubectl exec -it <pod>` using a local pseudo-terminal (pty) so that
-kubectl sees a real TTY and can allocate one inside the pod.
+WebSocket endpoint that proxies a browser xterm.js terminal to a session pod
+using the Kubernetes Python client exec stream (no kubectl subprocess needed).
 """
 import asyncio
-import errno
-import fcntl
 import json
 import logging
-import os
-import pty
 import shlex
-import struct
-import termios
+import threading
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import selectinload
@@ -24,10 +18,8 @@ from swarmer.models.workspace import Workspace
 router = APIRouter()
 log = logging.getLogger(__name__)
 
-
-def _set_winsize(fd: int, rows: int, cols: int) -> None:
-    """Set the PTY window size so the child process sees the correct dimensions."""
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+_STDIN_CHANNEL = 0
+_RESIZE_CHANNEL = 4
 
 
 @router.websocket("/ws/{ws_id}/sessions/{sid}/tui")
@@ -50,6 +42,7 @@ async def session_tui(
     session_data = websocket.session
     tui_tokens: list = session_data.get("tui_tokens", [])
     if token not in tui_tokens:
+        log.warning("TUI WS: invalid/missing token for session %d (have %d tokens)", sid, len(tui_tokens))
         await websocket.close(code=4001, reason="Invalid token")
         return
     tui_tokens.remove(token)
@@ -70,116 +63,130 @@ async def session_tui(
         return
 
     if not session.pod_name or session.phase != "running":
+        log.warning("TUI WS: session %d not running (phase=%s, pod=%s)", sid, session.phase if session else "none", session.pod_name if session else "none")
         await websocket.close(code=4003, reason="Session not running")
         return
 
     namespace = ws.k8s_namespace
     pod_name = session.pod_name
 
-    # Resolve tool-specific container name and TUI command
     from swarmer.agent_tools.registry import get as get_tool
     tool = get_tool(session.agent_tool)
     container_name = tool.get_container_name()
 
-    # ---------- Open a PTY pair ----------
-    master_fd, slave_fd = pty.openpty()
-    _set_winsize(master_fd, rows, cols)
-    # Separate pipe for kubectl stderr so error messages aren't lost if the
-    # PTY closes before xterm can display them.
-    stderr_r, stderr_w = os.pipe()
-    proc = None
+    tui_cmd_parts = [tool.get_tui_binary()]
+    if session.model:
+        tui_cmd_parts.extend(["--model", session.model])
+    if session.resume:
+        tui_cmd_parts.append("--continue")
+    tui_shell = (
+        "export PATH=\"$HOME/.local/bin:$PATH\" && exec "
+        + " ".join(shlex.quote(p) for p in tui_cmd_parts)
+    )
+
+    # ---------- Open kubernetes exec stream ----------
+    from kubernetes import client as k8s_client
+    from kubernetes.stream import stream as k8s_stream
+
+    v1 = k8s_client.CoreV1Api()
+    try:
+        exec_resp = k8s_stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container=container_name,
+            command=["sh", "-c", tui_shell],
+            stderr=True,
+            stdin=True,
+            stdout=True,
+            tty=True,
+            _preload_content=False,
+        )
+    except Exception as exc:
+        log.error("TUI exec stream open failed for pod %s: %s", pod_name, exc)
+        try:
+            await websocket.close(code=4004, reason="Exec failed")
+        except Exception:
+            pass
+        return
+
+    # Send initial terminal size (channel 4 = resize)
+    try:
+        exec_resp.write_channel(
+            _RESIZE_CHANNEL, json.dumps({"Width": cols, "Height": rows})
+        )
+    except Exception:
+        pass
+
     loop = asyncio.get_running_loop()
+    read_q: asyncio.Queue[bytes | None] = asyncio.Queue()
+    stop_event = threading.Event()
+
+    def _stream_reader() -> None:
+        """Pump pod stdout/stderr into read_q (runs in a background thread)."""
+        try:
+            while not stop_event.is_set() and exec_resp.is_open():
+                exec_resp.update(timeout=0.1)
+                if exec_resp.peek_stdout():
+                    data = exec_resp.read_stdout()
+                    if data:
+                        chunk = data if isinstance(data, bytes) else data.encode("utf-8", errors="replace")
+                        loop.call_soon_threadsafe(read_q.put_nowait, chunk)
+                if exec_resp.peek_stderr():
+                    data = exec_resp.read_stderr()
+                    if data:
+                        chunk = data if isinstance(data, bytes) else data.encode("utf-8", errors="replace")
+                        loop.call_soon_threadsafe(read_q.put_nowait, b"\r\n\x1b[31m" + chunk + b"\x1b[0m")
+        except Exception as exc:
+            if not stop_event.is_set():
+                log.error("TUI stream reader error for pod %s: %s", pod_name, exc)
+        finally:
+            if not stop_event.is_set():
+                log.info("TUI stream reader: exec closed for pod %s", pod_name)
+            loop.call_soon_threadsafe(read_q.put_nowait, None)
+
+    reader_thread = threading.Thread(target=_stream_reader, daemon=True)
+    reader_thread.start()
+
+    async def read_loop() -> None:
+        try:
+            while True:
+                chunk = await read_q.get()
+                if chunk is None:
+                    break
+                await websocket.send_bytes(chunk)
+        except Exception:
+            pass
+
+    async def write_loop() -> None:
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("bytes"):
+                    # Raw bytes from xterm.js → pod stdin (channel 0)
+                    exec_resp.write_channel(_STDIN_CHANNEL, msg["bytes"])
+                elif msg.get("text"):
+                    try:
+                        payload = json.loads(msg["text"])
+                        if payload.get("type") == "resize":
+                            exec_resp.write_channel(
+                                _RESIZE_CHANNEL,
+                                json.dumps({
+                                    "Width": payload.get("cols", 80),
+                                    "Height": payload.get("rows", 24),
+                                }),
+                            )
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    read_task = asyncio.create_task(read_loop())
+    write_task = asyncio.create_task(write_loop())
 
     try:
-        tui_cmd_parts = [tool.get_tui_binary()]
-        if session.model:
-            tui_cmd_parts.extend(["--model", session.model])
-        if session.resume:
-            tui_cmd_parts.append("--continue")
-        tui_shell = "export PATH=\"$HOME/.local/bin:$PATH\" && exec " + " ".join(shlex.quote(p) for p in tui_cmd_parts)
-        proc = await asyncio.create_subprocess_exec(
-            "kubectl", "exec", "-it", pod_name,
-            "-n", namespace,
-            "-c", container_name,
-            "--", "sh", "-c", tui_shell,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=stderr_w,
-        )
-        os.close(slave_fd)
-        slave_fd = -1
-        os.close(stderr_w)
-        stderr_w = -1
-
-        # Non-blocking reads so asyncio add_reader works.
-        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-        flags = fcntl.fcntl(stderr_r, fcntl.F_GETFL)
-        fcntl.fcntl(stderr_r, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-        read_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
-
-        def _pty_readable() -> None:
-            try:
-                data = os.read(master_fd, 4096)
-                if data:
-                    loop.call_soon_threadsafe(read_queue.put_nowait, data)
-                # empty read from PTY — treat as EOF
-                else:
-                    loop.call_soon_threadsafe(read_queue.put_nowait, None)
-            except OSError as exc:
-                if exc.errno == errno.EIO:
-                    # Slave side closed: kubectl / opencode exited.
-                    loop.call_soon_threadsafe(read_queue.put_nowait, None)
-                # EAGAIN / EWOULDBLOCK: no data yet — spurious wakeup, ignore.
-
-        def _stderr_readable() -> None:
-            try:
-                data = os.read(stderr_r, 4096)
-                if data:
-                    # Prefix stderr output in red so it's visible in the terminal.
-                    msg = b"\r\n\x1b[31m" + data + b"\x1b[0m"
-                    loop.call_soon_threadsafe(read_queue.put_nowait, msg)
-            except OSError:
-                pass
-
-        loop.add_reader(master_fd, _pty_readable)
-        loop.add_reader(stderr_r, _stderr_readable)
-
-        async def read_loop() -> None:
-            """Forward pty master output → browser."""
-            try:
-                while True:
-                    chunk = await read_queue.get()
-                    if chunk is None:
-                        break
-                    await websocket.send_bytes(chunk)
-            except Exception:
-                pass
-
-        async def write_loop() -> None:
-            """Forward browser keystrokes → pty master; handle resize messages."""
-            try:
-                while True:
-                    msg = await websocket.receive()
-                    if msg.get("bytes"):
-                        os.write(master_fd, msg["bytes"])
-                    elif msg.get("text"):
-                        try:
-                            payload = json.loads(msg["text"])
-                            if payload.get("type") == "resize":
-                                _set_winsize(master_fd, payload["rows"], payload["cols"])
-                        except Exception:
-                            pass
-            except WebSocketDisconnect:
-                pass
-            except Exception:
-                pass
-
-        read_task = asyncio.create_task(read_loop())
-        write_task = asyncio.create_task(write_loop())
-
         done, pending = await asyncio.wait(
             [read_task, write_task],
             return_when=asyncio.FIRST_COMPLETED,
@@ -190,29 +197,15 @@ async def session_tui(
                 await task
             except asyncio.CancelledError:
                 pass
-
     except Exception as exc:
-        log.error("TUI proxy error: %s", exc)
+        log.error("TUI proxy error for pod %s: %s", pod_name, exc)
     finally:
+        stop_event.set()
         try:
-            loop.remove_reader(master_fd)
+            exec_resp.close()
         except Exception:
             pass
-        try:
-            loop.remove_reader(stderr_r)
-        except Exception:
-            pass
-        for fd in (slave_fd, stderr_w, master_fd, stderr_r):
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-        if proc is not None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        reader_thread.join(timeout=2.0)
         try:
             await websocket.close()
         except Exception:

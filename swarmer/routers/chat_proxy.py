@@ -48,7 +48,11 @@ _portforwards: dict[int, tuple[asyncio.subprocess.Process, int, str]] = {}
 _pf_lock = asyncio.Lock()
 
 
-# ── Port-forward lifecycle ────────────────────────────────────────────────────
+# ── Upstream URL resolution ───────────────────────────────────────────────────
+#
+# In-cluster: proxy directly to the session's ClusterIP Service via DNS.
+#   session-{id}-svc.{namespace}.svc.cluster.local:{port}
+# Dev mode: use kubectl port-forward to expose the pod port locally.
 
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -70,7 +74,7 @@ async def _wait_for_port(port: int, timeout: float = 8.0) -> bool:
 
 
 async def _acquire_portforward(session_id: int, pod_name: str, namespace: str, remote_port: int = 4096) -> int:
-    """Return a local port connected via kubectl port-forward to the session pod."""
+    """Return a local port connected via kubectl port-forward (dev mode only)."""
     async with _pf_lock:
         existing = _portforwards.get(session_id)
         if existing:
@@ -96,10 +100,23 @@ async def _acquire_portforward(session_id: int, pod_name: str, namespace: str, r
             with contextlib.suppress(Exception):
                 proc.terminate()
             del _portforwards[session_id]
-            raise RuntimeError(f"kubectl port-forward to {pod_name}:4096 did not become ready")
+            raise RuntimeError(f"kubectl port-forward to {pod_name}:{remote_port} did not become ready")
 
         log.info("Port-forward started: session %d → 127.0.0.1:%d", session_id, local_port)
         return local_port
+
+
+async def _get_upstream_base(session_id: int, pod_name: str, namespace: str, remote_port: int = 4096) -> str:
+    """Return the http base URL for the session's agent process.
+
+    In-cluster: uses the ClusterIP Service DNS — no subprocess needed.
+    Dev mode:   falls back to kubectl port-forward on localhost.
+    """
+    if settings.k8s_in_cluster:
+        svc = f"session-{session_id}-svc"
+        return f"http://{svc}.{namespace}.svc.cluster.local:{remote_port}"
+    local_port = await _acquire_portforward(session_id, pod_name, namespace, remote_port)
+    return f"http://127.0.0.1:{local_port}"
 
 
 # ── HTML rewriting (in-cluster only) ─────────────────────────────────────────
@@ -159,17 +176,20 @@ async def _proxy_root(
     if err:
         return Response(err, status_code=503 if "running" in err else 404, media_type="text/plain")
 
-    # Crush sessions: serve the built-in chat UI
+    from swarmer.k8s import effective_namespace
+    namespace = effective_namespace(ws_obj.k8s_namespace)
+
+    # Crush sessions: serve the built-in chat UI (swarmer renders the page,
+    # the JS inside makes API calls through the /chat/{path} proxy).
     if session.agent_tool == "crush":
         from swarmer.agent_tools.registry import get as get_tool
         tool = get_tool("crush")
-        # Ensure port-forward is established
         port = tool.get_server_port() or 4096
-        await _acquire_portforward(session.id, session.pod_name, ws_obj.k8s_namespace, port)
+        await _get_upstream_base(session.id, session.pod_name, namespace, port)
         return templates.TemplateResponse(
+            request,
             "sessions/crush_chat.html",
             {
-                "request": request,
                 "ws": ws_obj,
                 "session": session,
                 "model_name": session.model.split("/")[-1] if session.model else "default",
@@ -177,15 +197,20 @@ async def _proxy_root(
             },
         )
 
-    local_port = await _acquire_portforward(session.id, session.pod_name, ws_obj.k8s_namespace)
-
     if not settings.k8s_in_cluster:
-        # Dev mode: browser and port-forward are on the same machine.
-        # Redirect the browser directly to localhost:{port}/ — the SPA loads
-        # at the root with no sub-path, so all its asset/API/WS URLs work.
+        # Dev mode: port-forward binds locally; redirect the browser straight
+        # to localhost so the SPA loads at root with no sub-path mangling.
+        local_port = await _acquire_portforward(session.id, session.pod_name, namespace)
         return RedirectResponse(url=f"http://localhost:{local_port}/", status_code=302)
 
-    # In-cluster: redirect to /chat/ so the sub-path proxy can serve assets.
+    # In-cluster: use the OpenShift Route if one exists — the browser then
+    # connects directly to opencode with no sub-path mangling.
+    from swarmer.k8s import get_session_route_host
+    host = get_session_route_host(session.id, namespace)
+    if host:
+        return RedirectResponse(url=f"https://{host}/", status_code=302)
+
+    # Fallback: sub-path HTTP proxy (works for HTTP assets, not ideal for WebSockets).
     return RedirectResponse(
         url=f"/workspaces/{ws_id}/sessions/{sid}/chat/",
         status_code=302,
@@ -208,14 +233,16 @@ async def _chat_http_proxy(
     if err:
         return Response(err, status_code=503 if "running" in err else 404, media_type="text/plain")
 
+    from swarmer.k8s import effective_namespace
+    namespace = effective_namespace(ws_obj.k8s_namespace)
     try:
-        local_port = await _acquire_portforward(session.id, session.pod_name, ws_obj.k8s_namespace)
+        upstream_base = await _get_upstream_base(session.id, session.pod_name, namespace)
     except Exception as exc:
-        log.warning("Could not establish port-forward for session %d: %s", sid, exc)
+        log.warning("Could not connect to session %d: %s", sid, exc)
         return Response(f"Could not connect to session: {exc}", status_code=503, media_type="text/plain")
 
     query = str(request.url.query)
-    upstream_url = f"http://127.0.0.1:{local_port}/{path}"
+    upstream_url = f"{upstream_base}/{path}"
     if query:
         upstream_url += f"?{query}"
 
@@ -262,8 +289,6 @@ async def _chat_http_proxy(
                 timeout=30.0,
             )
     except httpx.ConnectError as exc:
-        async with _pf_lock:
-            _portforwards.pop(sid, None)
         return Response(f"Could not connect to session: {exc}", status_code=503, media_type="text/plain")
 
     content_type = upstream_resp.headers.get("content-type", "")
@@ -321,6 +346,10 @@ async def chat_ws_proxy(
 ):
     await websocket.accept()
 
+    if not websocket.session.get("authenticated"):
+        await websocket.close(code=4001, reason="Not authenticated")
+        return
+
     async for db in get_db():
         ws_obj = await db.get(Workspace, ws_id)
         session = await db.get(Session, sid)
@@ -337,15 +366,17 @@ async def chat_ws_proxy(
         await websocket.close(code=4004, reason="Session unavailable")
         return
 
+    from swarmer.k8s import effective_namespace
+    namespace = effective_namespace(ws_obj.k8s_namespace)
     try:
-        local_port = await _acquire_portforward(session.id, session.pod_name, ws_obj.k8s_namespace)
+        upstream_base = await _get_upstream_base(session.id, session.pod_name, namespace)
     except Exception as exc:
-        log.warning("Port-forward failed for WS session %d: %s", sid, exc)
+        log.warning("Could not connect to session %d for WS: %s", sid, exc)
         await websocket.close(code=4004, reason="Could not connect to session")
         return
 
     query = websocket.url.query
-    upstream_url = f"ws://127.0.0.1:{local_port}/{path}"
+    upstream_url = upstream_base.replace("http://", "ws://") + f"/{path}"
     if query:
         upstream_url += f"?{query}"
 

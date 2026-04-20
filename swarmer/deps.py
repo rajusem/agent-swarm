@@ -1,5 +1,7 @@
 from fastapi import Request
 
+from swarmer.crypto import decrypt
+
 
 class NotAuthenticated(Exception):
     """Raised by require_auth when the session cookie is missing or invalid."""
@@ -15,3 +17,13 @@ def require_auth(request: Request) -> None:
     """
     if not request.session.get("authenticated"):
         raise NotAuthenticated()
+
+
+def get_user_token(request: Request) -> str:
+    """Return the decrypted K8s bearer token from the session.
+
+    Raises NotAuthenticated if the session is not authenticated.
+    """
+    if not request.session.get("authenticated"):
+        raise NotAuthenticated()
+    return decrypt(request.session.get("k8s_token", ""))
