@@ -1,10 +1,11 @@
-{# HTMX partial — repo table rows + add form #}
+{# HTMX partial — git repo list #}
 <div id="repo-list">
   {% if session.repos %}
   <table class="table table-sm align-middle mb-2">
     <thead class="small text-muted">
       <tr>
         <th>Repo URL / Local Path</th>
+        <th></th>
         <th></th>
         <th></th>
       </tr>
@@ -42,6 +43,7 @@
           <button class="btn btn-sm btn-outline-danger py-0"
                   hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/{{ repo.id }}/delete"
                   hx-target="#repo-list"
+                  hx-select="#repo-list"
                   hx-swap="outerHTML">✕</button>
         </td>
       </tr>
@@ -51,35 +53,42 @@
   {% else %}
   <p class="text-muted small mb-2">No repositories configured.</p>
   {% endif %}
-
-  {# Add repo form #}
-  <form hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
-        hx-target="#repo-list"
-        hx-swap="outerHTML">
-    <div class="row g-2 align-items-end">
-      <div class="col-md-5">
-        <label class="form-label small">Repo URL</label>
-        <input type="text" class="form-control form-control-sm" name="repo_url"
-               placeholder="https://github.com/org/repo.git"
-               id="repo-url-input"
-               oninput="autoFillPath(this)">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label small">Branch</label>
-        <input type="text" class="form-control form-control-sm" name="branch"
-               placeholder="main" value="main">
-      </div>
-      <div class="col-md-3">
-        <label class="form-label small">Local Path</label>
-        <input type="text" class="form-control form-control-sm" name="local_path"
-               id="local-path-input" placeholder="auto-derived">
-      </div>
-      <div class="col-md-2">
-        <button type="submit" class="btn btn-sm btn-outline-primary w-100">Add</button>
-      </div>
-    </div>
-  </form>
 </div>
+
+{# Add repo form — lives OUTSIDE #repo-list so HTMX can settle after the outerHTML swap #}
+<form hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
+      hx-target="#repo-list"
+      hx-select="#repo-list"
+      hx-swap="outerHTML"
+      hx-on::after-swap="
+        this.querySelector('[name=repo_url]').value='https://github.com/';
+        this.querySelector('[name=branch]').value='main';
+        this.querySelector('[name=local_path]').value='';
+        delete this.querySelector('[name=local_path]').dataset.edited;">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-5">
+      <label class="form-label small">Repo URL</label>
+      <input type="text" class="form-control form-control-sm" name="repo_url"
+             placeholder="org/repo.git"
+             id="repo-url-input"
+             value="https://github.com/"
+             oninput="autoFillPath(this)">
+    </div>
+    <div class="col-md-2">
+      <label class="form-label small">Branch</label>
+      <input type="text" class="form-control form-control-sm" name="branch"
+             placeholder="main" value="main">
+    </div>
+    <div class="col-md-3">
+      <label class="form-label small">Local Path</label>
+      <input type="text" class="form-control form-control-sm" name="local_path"
+             id="local-path-input" placeholder="auto-derived">
+    </div>
+    <div class="col-md-2">
+      <button type="submit" class="btn btn-sm btn-outline-primary w-100">Add</button>
+    </div>
+  </div>
+</form>
 
 <script>
 function autoFillPath(input) {

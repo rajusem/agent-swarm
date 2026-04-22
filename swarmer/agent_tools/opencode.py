@@ -14,7 +14,7 @@ class OpenCodeStrategy(AgentToolStrategy):
 
     @property
     def name(self) -> str:
-        return "opencode"
+        return "opencode-golang"
 
     @property
     def display_name(self) -> str:

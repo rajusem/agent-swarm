@@ -2,20 +2,28 @@
 <div id="session-status"
   {% if session.phase in ('pending', 'running') %}
   hx-get="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/status"
-  hx-trigger="every 10s"
+  hx-trigger="every 5s"
   hx-swap="outerHTML"
   {% endif %}>
 
   <div class="d-flex align-items-center gap-2 flex-wrap">
 
     {% if session.phase == 'running' %}
-      <span class="badge bg-success">● Active</span>
+      {% if session.mode == 'prompt' %}
+        <span class="badge bg-success">▶ Running</span>
+      {% else %}
+        <span class="badge bg-success">● Active</span>
+      {% endif %}
     {% elif session.phase == 'pending' %}
       <span class="badge bg-warning text-dark">
         ⏳ Pending{% if status_detail and status_detail not in ('Pending',) %} — {{ status_detail }}{% endif %}
       </span>
     {% elif session.phase == 'succeeded' %}
-      <span class="badge bg-primary">✓ Succeeded</span>
+      {% if session.mode == 'prompt' %}
+        <span class="badge bg-primary">✓ Completed</span>
+      {% else %}
+        <span class="badge bg-primary">✓ Succeeded</span>
+      {% endif %}
     {% elif session.phase == 'failed' %}
       <span class="badge bg-danger">
         ✗ Failed{% if status_detail and status_detail not in ('Failed',) %} — {{ status_detail }}{% endif %}

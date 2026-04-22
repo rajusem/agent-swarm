@@ -10,7 +10,6 @@ spec:
   selector:
     matchLabels:
       app: swarmer
-  # Only one replica safe with SQLite — no concurrent writers
   strategy:
     type: Recreate
   template:
@@ -22,9 +21,8 @@ spec:
 
       containers:
         - name: swarmer
-          # SWARMER_IMAGE is replaced by the deploy Makefile target
           image: SWARMER_IMAGE
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
@@ -43,8 +41,14 @@ spec:
               value: "https://kubernetes.default.svc"
             - name: OPENSHIFT_OAUTH_URL
               value: "OPENSHIFT_OAUTH_URL_VALUE"
-            - name: REDIRECT_BASE_URL
-              value: "REDIRECT_BASE_URL_VALUE"
+            - name: AGENT_IMAGE_OPENCODE
+              value: "AGENT_IMAGE_OPENCODE_VALUE"
+            - name: AGENT_IMAGE_PYTHON
+              value: "AGENT_IMAGE_PYTHON_VALUE"
+            - name: AGENT_IMAGE_CRUSH
+              value: "AGENT_IMAGE_CRUSH_VALUE"
+            - name: DEFAULT_AGENT_TOOL
+              value: "opencode-golang"
 
           volumeMounts:
             - name: swarmer-data

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import uuid
 
@@ -23,8 +24,11 @@ from swarmer.models.session import Session
 from swarmer.models.session_repo import SessionRepo
 from swarmer.models.workspace import Workspace
 
+log = logging.getLogger(__name__)
+
+
 async def _get_model_options(
-    ws_id: int, db: AsyncSession, agent_tool: str = "opencode"
+    ws_id: int, db: AsyncSession, agent_tool: str = "opencode-golang"
 ) -> list[dict]:
     """Return the available model choices for this workspace's sessions."""
     tool = get_tool(agent_tool)
@@ -50,15 +54,14 @@ async def _fetch_repo_info(repos: list, pat: str | None) -> dict:
     if pat:
         headers["Authorization"] = f"token {pat}"
 
-    async def _check(repo) -> tuple[int, dict]:
+    async def _check(client: httpx.AsyncClient, repo) -> tuple[int, dict]:
         slug = _github_slug(repo.repo_url)
         if not slug:
             return repo.id, {"is_public": None, "can_push": None}
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                r = await client.get(
-                    f"https://api.github.com/repos/{slug}", headers=headers
-                )
+            r = await client.get(
+                f"https://api.github.com/repos/{slug}", headers=headers
+            )
             if r.status_code == 200:
                 data = r.json()
                 perms = data.get("permissions", {})
@@ -71,7 +74,8 @@ async def _fetch_repo_info(repos: list, pat: str | None) -> dict:
         except Exception:
             return repo.id, {"is_public": None, "can_push": None}
 
-    results = await asyncio.gather(*[_check(r) for r in repos])
+    async with httpx.AsyncClient(timeout=5) as client:
+        results = await asyncio.gather(*[_check(client, r) for r in repos])
     return dict(results)
 
 
@@ -95,15 +99,15 @@ async def _get_workspace(ws_id: int, db: AsyncSession) -> Workspace | None:
 async def model_options_partial(
     ws_id: int,
     request: Request,
-    agent_tool: str = "opencode",
+    agent_tool: str = "opencode-golang",
     selected_model: str = "",
     db: AsyncSession = Depends(get_db),
 ):
     model_options = await _get_model_options(ws_id, db, agent_tool)
     return templates.TemplateResponse(
+        request,
         "sessions/_model_select.html",
         {
-            "request": request,
             "model_options": model_options,
             "selected_model": selected_model,
         },
@@ -138,10 +142,22 @@ async def session_list(
         .order_by(Session.name)
     )
     sessions = result.scalars().all()
+
+    # Sync K8s phase for any sessions the DB still thinks are active
+    dirty = False
+    for s in sessions:
+        if s.phase in ("pending", "running") and s.pod_name:
+            live_phase, _ = await asyncio.to_thread(k8s.get_pod_status, s.pod_name, ws.k8s_namespace)
+            if live_phase != s.phase:
+                s.phase = live_phase
+                dirty = True
+    if dirty:
+        await db.commit()
+
     return templates.TemplateResponse(
+        request,
         "sessions/list.html",
         {
-            "request": request,
             "ws": ws,
             "sessions": sessions,
             "mode_label": _session_mode_label,
@@ -167,8 +183,9 @@ async def session_new(
     pats = pats_result.scalars().all()
     model_options = await _get_model_options(ws_id, db)
     return templates.TemplateResponse(
+        request,
         "sessions/new.html",
-        {"request": request, "ws": ws, "pats": pats, "model_options": model_options,
+        {"ws": ws, "pats": pats, "model_options": model_options,
          "selected_model": "", "agent_tools": all_tools(), "default_agent_tool": settings.default_agent_tool},
     )
 
@@ -185,7 +202,7 @@ async def session_create(
     privileged: bool = Form(False),
     mode: str = Form("prompt"),
     model: str = Form(""),
-    agent_tool: str = Form("opencode"),
+    agent_tool: str = Form("opencode-golang"),
     db: AsyncSession = Depends(get_db),
 ):
     ws = await _get_workspace(ws_id, db)
@@ -199,7 +216,7 @@ async def session_create(
     try:
         get_tool(agent_tool)
     except ValueError:
-        agent_tool = "opencode"
+        agent_tool = "opencode-golang"
 
     session = Session(
         workspace_id=ws_id,
@@ -224,9 +241,9 @@ async def session_create(
         )
         pats = pats_result.scalars().all()
         return templates.TemplateResponse(
+            request,
             "sessions/new.html",
             {
-                "request": request,
                 "ws": ws,
                 "pats": pats,
                 "error": f"A session named '{name}' already exists in this workspace.",
@@ -261,18 +278,22 @@ async def session_detail(
     tui_token = None
     if session.mode == "tui" and session.phase == "running":
         tui_token = str(uuid.uuid4())
-        tokens = request.session.setdefault("tui_tokens", [])
+        tokens = list(request.session.get("tui_tokens", []))
         tokens.append(tui_token)
+        request.session["tui_tokens"] = tokens
 
     pats_result = await db.execute(
         select(GitHubPAT).where(GitHubPAT.workspace_id == ws_id).order_by(GitHubPAT.name)
     )
     pats = pats_result.scalars().all()
 
-    # Fetch live K8s detail for the initial page render
+    # Fetch live K8s detail for the initial page render and sync phase
     status_detail = ""
     if session.pod_name:
-        _, status_detail = k8s.get_pod_status(session.pod_name, ws.k8s_namespace)
+        live_phase, status_detail = await asyncio.to_thread(k8s.get_pod_status, session.pod_name, ws.k8s_namespace)
+        if live_phase != session.phase:
+            session.phase = live_phase
+            await db.commit()
 
     model_options = await _get_model_options(ws_id, db, session.agent_tool)
     pat_token = session.github_pat.pat if session.github_pat else None
@@ -283,9 +304,9 @@ async def session_detail(
         *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
     )
     return templates.TemplateResponse(
+        request,
         "sessions/detail.html",
         {
-            "request": request,
             "ws": ws,
             "ws_id": ws_id,
             "session": session,
@@ -322,7 +343,7 @@ async def session_edit(
     privileged: bool = Form(False),
     mode: str = Form("prompt"),
     model: str = Form(""),
-    agent_tool: str = Form("opencode"),
+    agent_tool: str = Form("opencode-golang"),
     db: AsyncSession = Depends(get_db),
 ):
     session = await db.get(Session, sid)
@@ -456,14 +477,27 @@ async def session_launch(
         session.pod_name = pod.metadata.name
         session.phase = "pending"
 
-        # Create a Service for server-mode sessions (exposes opencode serve port)
+        if session.mode == "prompt":
+            prompt_display = f"Prompt:\n{session.instruction_prompt or '(no prompt)'}"
+            if session.repos:
+                prompt_display += "\n\nContext Repositories:"
+                for repo in session.repos:
+                    prompt_display += f"\n- {repo.repo_url} ({repo.branch}) /workspace/{repo.local_path}"
+            session.last_output = prompt_display
+
+        # Create a Service (and OpenShift Route) for server-mode sessions
         if session.mode == "server":
             tool = get_tool(session.agent_tool)
             port = tool.get_server_port() or 4096
-            k8s_sess.create_session_service(session.id, ws.k8s_namespace, port=port)
+            svc_name = k8s_sess.create_session_service(session.id, ws.k8s_namespace, port=port)
+            k8s.create_session_route(session.id, ws.k8s_namespace, svc_name, port)
 
         await db.commit()
+        if session.mode in ("prompt", "server"):
+            from swarmer import log_poller
+            log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace)
     except Exception as exc:
+        log.error("session_launch failed for session %d: %s", sid, exc, exc_info=True)
         flash(request, f"Launch failed: {exc}", "danger")
 
     return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
@@ -485,9 +519,15 @@ async def session_stop(
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
 
     if session.pod_name:
-        k8s.delete_pod(session.pod_name, ws.k8s_namespace)
-        if session.mode == "server":
-            k8s.delete_service(f"session-{session.id}-svc", ws.k8s_namespace)
+        from swarmer import log_poller
+        log_poller.stop_log_poller(sid)
+        try:
+            k8s.delete_pod(session.pod_name, ws.k8s_namespace)
+            if session.mode == "server":
+                k8s.delete_service(f"session-{session.id}-svc", ws.k8s_namespace)
+                k8s.delete_session_route(session.id, ws.k8s_namespace)
+        except Exception as exc:
+            flash(request, f"Pod deletion failed: {exc}", "warning")
 
     if not session.persist and session.pvc_name:
         try:
@@ -522,19 +562,24 @@ async def session_status(
     if ws is None or session is None:
         return HTMLResponse("")
 
-    status_detail = ""
-    if session.pod_name:
-        phase, status_detail = k8s.get_pod_status(session.pod_name, ws.k8s_namespace)
-        session.phase = phase
-        logs = k8s.get_pod_logs(session.pod_name, ws.k8s_namespace)
-        if logs:
-            session.last_output = logs
-        await db.commit()
+    # Sync live pod phase into the DB so the badge reflects actual K8s state.
+    # The log_poller handles this for prompt mode; for TUI/server we do it here
+    # on each poll so the JS handler can detect the running→Active transition.
+    status_detail = session.status_detail
+    if session.pod_name and session.phase in ("pending", "running"):
+        live_phase, live_detail = await asyncio.to_thread(
+            k8s.get_pod_status, session.pod_name, ws.k8s_namespace
+        )
+        if live_phase != session.phase or live_detail != session.status_detail:
+            session.phase = live_phase
+            session.status_detail = live_detail
+            await db.commit()
+        status_detail = live_detail
 
     return templates.TemplateResponse(
+        request,
         "sessions/_status_badge.html",
         {
-            "request": request,
             "ws": ws,
             "session": session,
             "mode_label": _session_mode_label(session),
@@ -562,8 +607,9 @@ async def session_last_output(
     if session is None or session.workspace_id != ws_id:
         return HTMLResponse("")
     return templates.TemplateResponse(
+        request,
         "sessions/_last_output.html",
-        {"request": request, "ws_id": ws_id, "session": session},
+        {"ws_id": ws_id, "session": session},
     )
 
 
@@ -722,7 +768,7 @@ async def session_set_model(
 
 
 # ============================================================
-# Git Repos (HTMX)
+# Git Repos
 # ============================================================
 
 @router.post(
@@ -753,10 +799,7 @@ async def repo_add(
         local_path=local_path.strip(),
     )
     db.add(repo)
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
+    await db.commit()
 
     result = await db.execute(
         select(Session)
@@ -767,8 +810,9 @@ async def repo_add(
     pat_token = session.github_pat.pat if session.github_pat else None
     repo_info = await _fetch_repo_info(session.repos, pat_token)
     return templates.TemplateResponse(
+        request,
         "sessions/_repo_list.html",
-        {"request": request, "ws_id": ws_id, "session": session, "repo_info": repo_info},
+        {"ws_id": ws_id, "session": session, "repo_info": repo_info},
     )
 
 
@@ -790,9 +834,12 @@ async def repo_delete(
         await db.commit()
 
     session = await db.get(Session, sid, options=[selectinload(Session.repos), selectinload(Session.github_pat)])
+    if session is None or session.workspace_id != ws_id:
+        return HTMLResponse("")
     pat_token = session.github_pat.pat if session.github_pat else None
     repo_info = await _fetch_repo_info(session.repos, pat_token)
     return templates.TemplateResponse(
+        request,
         "sessions/_repo_list.html",
-        {"request": request, "ws_id": ws_id, "session": session, "repo_info": repo_info},
+        {"ws_id": ws_id, "session": session, "repo_info": repo_info},
     )

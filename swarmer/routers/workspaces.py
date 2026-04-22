@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from swarmer import k8s
+from swarmer import k8s_auth
 from swarmer.config import settings
 from swarmer.database import get_db
-from swarmer.deps import require_auth
+from swarmer.deps import get_user_token, require_auth
 from swarmer.flash import flash
 from swarmer.models.workspace import Workspace
 
@@ -28,10 +29,23 @@ def _derive_namespace(display_name: str) -> str:
 
 @router.get("/workspaces", dependencies=[Depends(require_auth)])
 async def workspace_list(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Workspace).order_by(Workspace.display_name))
-    workspaces = result.scalars().all()
+    result = await db.execute(select(Workspace))
+    all_workspaces = result.scalars().all()
+
+    user_token = get_user_token(request)
+    if user_token:
+        ns_to_ws = {ws.k8s_namespace: ws for ws in all_workspaces}
+        accessible_ns = await k8s_auth.get_accessible_namespaces(
+            user_token, list(ns_to_ws), settings.k8s_api_url, settings.k8s_in_cluster
+        )
+        workspaces = sorted([ns_to_ws[ns] for ns in accessible_ns], key=lambda w: w.display_name)
+    else:
+        workspaces = sorted(all_workspaces, key=lambda w: w.display_name)
+
     return templates.TemplateResponse(
-        "workspaces/list.html", {"request": request, "workspaces": workspaces}
+        request,
+        "workspaces/list.html",
+        {"workspaces": workspaces},
     )
 
 
@@ -51,7 +65,8 @@ async def preview_namespace(name: str = ""):
 @router.get("/workspaces/new", dependencies=[Depends(require_auth)])
 async def workspace_new(request: Request):
     return templates.TemplateResponse(
-        "workspaces/new.html", {"request": request}
+        request,
+        "workspaces/new.html",
     )
 
 
@@ -65,8 +80,9 @@ async def workspace_create(
     namespace = _derive_namespace(display_name)
     if not namespace:
         return templates.TemplateResponse(
+            request,
             "workspaces/new.html",
-            {"request": request, "error": "Display name must contain at least one alphanumeric character."},
+            {"error": "Display name must contain at least one alphanumeric character."},
             status_code=422,
         )
 
@@ -82,9 +98,9 @@ async def workspace_create(
     except IntegrityError:
         await db.rollback()
         return templates.TemplateResponse(
+            request,
             "workspaces/new.html",
             {
-                "request": request,
                 "error": f"A workspace with namespace '{namespace}' already exists.",
                 "display_name": display_name,
                 "description": description,
@@ -129,8 +145,9 @@ async def workspace_detail(
     )
     sessions = result.scalars().all()
     return templates.TemplateResponse(
+        request,
         "workspaces/detail.html",
-        {"request": request, "ws": ws, "ns_status": ns_status, "sessions": sessions},
+        {"ws": ws, "ns_status": ns_status, "sessions": sessions},
     )
 
 
@@ -144,7 +161,9 @@ async def workspace_edit_form(
     if ws is None:
         return RedirectResponse(url="/workspaces", status_code=302)
     return templates.TemplateResponse(
-        "workspaces/edit.html", {"request": request, "ws": ws}
+        request,
+        "workspaces/edit.html",
+        {"ws": ws},
     )
 
 
@@ -181,8 +200,9 @@ async def workspace_delete_confirm(
     if ws is None:
         return HTMLResponse("")
     return templates.TemplateResponse(
+        request,
         "workspaces/_delete_confirm.html",
-        {"request": request, "ws": ws, "error": None},
+        {"ws": ws, "error": None},
     )
 
 
@@ -199,9 +219,9 @@ async def workspace_delete(
 
     if confirm_name != ws.display_name:
         return templates.TemplateResponse(
+            request,
             "workspaces/_delete_confirm.html",
             {
-                "request": request,
                 "ws": ws,
                 "error": "Name does not match. Please type the workspace name exactly.",
             },
@@ -213,9 +233,9 @@ async def workspace_delete(
             k8s.delete_namespace(ws.k8s_namespace)
     except Exception as exc:
         return templates.TemplateResponse(
+            request,
             "workspaces/_delete_confirm.html",
             {
-                "request": request,
                 "ws": ws,
                 "error": f"Kubernetes error: {exc}",
             },

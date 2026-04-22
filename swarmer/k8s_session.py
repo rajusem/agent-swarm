@@ -3,6 +3,7 @@ Kubernetes operations specific to sessions:
 PVC management, pod spec generation, and Service management.
 """
 import logging
+import shlex
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def build_session_pod(
     has_adc: bool = False,
     has_gemini: bool = False,
     privileged: bool = False,
-    agent_tool: str = "opencode",
+    agent_tool: str = "opencode-golang",
 ):  # -> client.V1Pod
     """Build a V1Pod spec for the given session.
 
@@ -157,10 +158,11 @@ def build_session_pod(
     if session.repos:
         clone_cmds = []
         for repo in session.repos:
+            lp = shlex.quote(repo.local_path)
             clone_cmds.append(
-                f"[ -d /workspace/{repo.local_path}/.git ] || "
-                f"git clone {repo.repo_url} --branch {repo.branch} "
-                f"/workspace/{repo.local_path}"
+                f"[ -d /workspace/{lp}/.git ] || "
+                f"git clone {shlex.quote(repo.repo_url)} --branch {shlex.quote(repo.branch)} "
+                f"/workspace/{lp}"
             )
 
         credential_setup = (
@@ -239,7 +241,7 @@ def build_session_pod(
         f'cp -n {config_path}-ro/* {config_path}/ 2>/dev/null || true && '
     )
     git_setup = (
-        'if [ -n "${GITHUB_PAT}" ]; then '
+        'if [ -n "${GITHUB_PAT}" ] && command -v git >/dev/null 2>&1; then '
         'git config --global credential.helper store && '
         'echo "https://${GITHUB_USERNAME}:${GITHUB_PAT}@github.com" > /root/.git-credentials && '
         'git config --global user.name "${GITHUB_USERNAME}" && '
@@ -252,12 +254,15 @@ def build_session_pod(
     env_from = tool.get_env_from_sources()
 
     # ---------- container ----------
-    security_context = None
-    if privileged:
-        security_context = client.V1SecurityContext(
-            privileged=True,
-            run_as_user=0,
-        )
+    # Always run as root (UID 0) — agent tool images expect a writable home and
+    # workspace.  On OpenShift, ensure_namespace grants the anyuid SCC to the
+    # namespace's default SA so this is permitted without host-level privileges.
+    # The `privileged` flag additionally enables Linux privileged mode (raw
+    # sockets, device access, etc.) which is only needed in rare cases.
+    security_context = client.V1SecurityContext(
+        run_as_user=0,
+        privileged=True if privileged else None,
+    )
 
     container = client.V1Container(
         name=tool.get_container_name(),

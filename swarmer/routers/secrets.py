@@ -66,8 +66,9 @@ async def secrets_tabs(
 
     ctx = await _secrets_context(ws_id, ws, db)
     return templates.TemplateResponse(
+        request,
         "secrets/tabs.html",
-        {"request": request, "ws": ws, "tab": tab, **ctx},
+        {"ws": ws, "tab": tab, **ctx},
     )
 
 
@@ -131,9 +132,9 @@ async def opencode_secret_save(
             ctx = await _secrets_context(ws_id, ws, db)
             ctx["secret"] = secret  # show in-progress values
             return templates.TemplateResponse(
+                request,
                 "secrets/tabs.html",
                 {
-                    "request": request,
                     "ws": ws,
                     "tab": "credentials",
                     "opencode_error": "ADC file must be valid JSON.",
@@ -147,7 +148,9 @@ async def opencode_secret_save(
 
     try:
         k8s.sync_all_agent_secrets(ws.k8s_namespace, secret)
-        k8s.apply_opencode_config(ws.k8s_namespace, secret)
+        from swarmer.agent_tools.registry import all_tools
+        for tool in all_tools():
+            k8s.apply_agent_config(ws.k8s_namespace, secret=secret, agent_tool=tool.name)
     except Exception as exc:
         flash(request, f"Saved, but K8s sync failed: {exc}", "warning")
 
@@ -169,8 +172,9 @@ async def github_pat_new(
     if ws is None:
         return RedirectResponse(url="/workspaces", status_code=302)
     return templates.TemplateResponse(
+        request,
         "secrets/github_pat_form.html",
-        {"request": request, "ws": ws, "pat": None},
+        {"ws": ws, "pat": None},
     )
 
 
@@ -205,9 +209,9 @@ async def github_pat_create(
     except IntegrityError:
         await db.rollback()
         return templates.TemplateResponse(
+            request,
             "secrets/github_pat_form.html",
             {
-                "request": request,
                 "ws": ws,
                 "pat": None,
                 "error": f"A PAT named '{name}' already exists in this workspace.",
@@ -236,8 +240,9 @@ async def github_pat_edit_form(
     if ws is None or pat is None or pat.workspace_id != ws_id:
         return RedirectResponse(url=f"/workspaces/{ws_id}/secrets?tab=pats", status_code=302)
     return templates.TemplateResponse(
+        request,
         "secrets/github_pat_form.html",
-        {"request": request, "ws": ws, "pat": pat},
+        {"ws": ws, "pat": pat},
     )
 
 

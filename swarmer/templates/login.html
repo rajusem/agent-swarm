@@ -10,26 +10,42 @@
         crossorigin="anonymous">
   <style>
     html, body { height: 100%; }
-    .login-card { max-width: 380px; width: 100%; }
+    .login-card { max-width: 440px; width: 100%; }
+    textarea.token-field { font-family: monospace; font-size: .8rem; }
   </style>
 </head>
 <body class="d-flex align-items-center justify-content-center">
 
 <div class="login-card p-4 rounded border bg-body-tertiary">
   <div class="text-center mb-4">
-    <h2 class="fw-bold">⚡ Swarmer</h2>
+    <h2 class="fw-bold">&#x26A1; Swarmer</h2>
     <p class="text-muted small">Agent coordinator dashboard</p>
   </div>
 
-  {% if error %}
-  <div class="alert alert-danger py-2 small" role="alert">{{ error }}</div>
+  {% with messages = request.session.pop('flash_messages', []) %}
+    {% for msg in messages %}
+    <div class="alert alert-{{ msg.type }} py-2 small" role="alert">{{ msg.text }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if openshift_auth_url %}
+  <div class="d-grid mb-3">
+    <a href="{{ openshift_auth_url }}" class="btn btn-danger">Sign in with OpenShift</a>
+  </div>
+  <div class="d-flex align-items-center mb-3">
+    <hr class="flex-grow-1">
+    <span class="px-2 text-muted small">or paste a token</span>
+    <hr class="flex-grow-1">
+  </div>
   {% endif %}
 
   <form method="post" action="/login">
     <div class="mb-3">
-      <label for="password" class="form-label">Password</label>
-      <input type="password" class="form-control" id="password" name="password"
-             autocomplete="current-password" autofocus required>
+      <label for="token" class="form-label">Bearer Token</label>
+      <textarea id="token" name="token" rows="5" required
+                class="form-control token-field"
+                placeholder="Paste your K8s bearer token here"
+                autofocus></textarea>
     </div>
     <div class="d-grid">
       <button type="submit" class="btn btn-primary">Sign in</button>

@@ -1,0 +1,10 @@
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: swarmer
+redirectURIs:
+  - https://SWARMER_HOST/auth/callback
+  - http://localhost:8080/auth/callback
+grantMethod: auto
+responseTypes:
+  - token
