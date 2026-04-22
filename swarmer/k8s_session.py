@@ -84,7 +84,8 @@ def build_session_pod(
     pat = session.github_pat  # may be None
 
     # ---------- env ----------
-    env = list(tool.get_extra_env(has_adc))
+    env = [client.V1EnvVar(name="HOME", value="/workspace")]
+    env.extend(tool.get_extra_env(has_adc))
     if pat:
         env.append(
             client.V1EnvVar(
@@ -169,12 +170,12 @@ def build_session_pod(
             "if [ -n \"${GITHUB_PAT}\" ]; then "
             "git config --global credential.helper store && "
             "echo \"https://${GITHUB_USERNAME}:${GITHUB_PAT}@github.com\" "
-            "> /root/.git-credentials; "
+            "> \"${HOME}/.git-credentials\"; "
             "fi"
         )
         full_cmd = credential_setup + " && " + " && ".join(clone_cmds)
 
-        git_env = []
+        git_env = [client.V1EnvVar(name="HOME", value="/workspace")]
         if pat:
             git_env.append(
                 client.V1EnvVar(
@@ -212,6 +213,10 @@ def build_session_pod(
                         name="session-workspace", mount_path="/workspace"
                     )
                 ],
+                resources=client.V1ResourceRequirements(
+                    requests={"memory": "128Mi", "cpu": "100m"},
+                    limits={"memory": "256Mi", "cpu": "200m"},
+                ),
             )
         )
 
@@ -243,7 +248,7 @@ def build_session_pod(
     git_setup = (
         'if [ -n "${GITHUB_PAT}" ] && command -v git >/dev/null 2>&1; then '
         'git config --global credential.helper store && '
-        'echo "https://${GITHUB_USERNAME}:${GITHUB_PAT}@github.com" > /root/.git-credentials && '
+        'echo "https://${GITHUB_USERNAME}:${GITHUB_PAT}@github.com" > "${HOME}/.git-credentials" && '
         'git config --global user.name "${GITHUB_USERNAME}" && '
         'git config --global user.email "${GITHUB_USERNAME}@users.noreply.github.com"; '
         'fi && '
@@ -259,10 +264,12 @@ def build_session_pod(
     # namespace's default SA so this is permitted without host-level privileges.
     # The `privileged` flag additionally enables Linux privileged mode (raw
     # sockets, device access, etc.) which is only needed in rare cases.
-    security_context = client.V1SecurityContext(
-        run_as_user=0,
-        privileged=True if privileged else None,
-    )
+    security_context = None
+    if privileged:
+        security_context = client.V1SecurityContext(
+            run_as_user=0,
+            privileged=True,
+        )
 
     container = client.V1Container(
         name=tool.get_container_name(),
@@ -278,8 +285,8 @@ def build_session_pod(
         tty=session.mode == "tui",
         security_context=security_context,
         resources=client.V1ResourceRequirements(
-            requests={"memory": "1Gi", "cpu": "500m"},
-            limits={"memory": "4Gi", "cpu": "2000m"},
+            requests={"memory": "256Mi", "cpu": "100m"},
+            limits={"memory": "512Mi", "cpu": "200m"},
         ),
     )
 
