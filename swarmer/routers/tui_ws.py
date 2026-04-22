@@ -75,7 +75,9 @@ async def session_tui(
     container_name = tool.get_container_name()
 
     tui_cmd_parts = [tool.get_tui_binary()]
-    if session.model:
+    if session.model and hasattr(tool, 'get_tui_model_args'):
+        tui_cmd_parts.extend(tool.get_tui_model_args(session.model))
+    elif session.model and tool.name != "crush":
         tui_cmd_parts.extend(["--model", session.model])
     if session.resume:
         tui_cmd_parts.append("--continue")
