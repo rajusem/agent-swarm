@@ -1,46 +1,44 @@
 {# HTMX partial — git repo list #}
 <div id="repo-list">
   {% if session.repos %}
-  <table class="table table-sm align-middle mb-2">
-    <thead class="small text-muted">
-      <tr>
-        <th>Repo URL / Local Path</th>
-        <th></th>
-        <th></th>
-        <th></th>
+  <table class="pf-v6-c-table pf-m-compact pf-m-grid-md" role="grid" style="margin-bottom:var(--pf-t--global--spacer--sm);">
+    <thead class="pf-v6-c-table__thead">
+      <tr class="pf-v6-c-table__tr" role="row">
+        <th class="pf-v6-c-table__th" role="columnheader" style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Repo URL / Local Path</th>
+        <th class="pf-v6-c-table__th" role="columnheader"></th>
+        <th class="pf-v6-c-table__th" role="columnheader"></th>
+        <th class="pf-v6-c-table__th pf-m-fit-content" role="columnheader"></th>
       </tr>
     </thead>
-    <tbody>
+    <tbody class="pf-v6-c-table__tbody" role="rowgroup">
     {% for repo in session.repos %}
       {% set info = repo_info[repo.id] if repo_info is defined and repo.id in repo_info else none %}
-      <tr>
-        <td class="small font-monospace">
+      <tr class="pf-v6-c-table__tr" role="row">
+        <td class="pf-v6-c-table__td" role="cell" style="font-size:var(--pf-t--global--font--size--sm); font-family:var(--pf-t--global--font--family--mono);">
           {{ repo.repo_url }} <code>{{ repo.branch }}</code>
-          <div class="text-muted"><code>/workspace/{{ repo.local_path }}</code></div>
+          <div style="color:var(--pf-t--global--text--color--subtle);"><code>/workspace/{{ repo.local_path }}</code></div>
         </td>
-        <td>
-          {# Visibility pill #}
+        <td class="pf-v6-c-table__td" role="cell">
           {% if info is not none and info.is_public is not none %}
             {% if info.is_public %}
-            <span class="badge bg-success-subtle text-success border border-success-subtle">Public</span>
+            <span class="pf-v6-c-label pf-m-green pf-m-outline"><span class="pf-v6-c-label__content">Public</span></span>
             {% else %}
-            <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">Private</span>
+            <span class="pf-v6-c-label pf-m-grey pf-m-outline"><span class="pf-v6-c-label__content">Private</span></span>
             {% endif %}
           {% endif %}
         </td>
-        <td>
-          {# Push / PR access warning #}
+        <td class="pf-v6-c-table__td" role="cell">
           {% if info is not none and info.can_push is not none %}
             {% if not info.can_push %}
-            <span class="badge bg-warning-subtle text-warning border border-warning-subtle"
+            <span class="pf-v6-c-label pf-m-gold pf-m-outline"
                   title="This PAT cannot push to this repo — commits and PRs will fail">
-              ⚠ No write access
+              <span class="pf-v6-c-label__content">⚠ No write access</span>
             </span>
             {% endif %}
           {% endif %}
         </td>
-        <td>
-          <button class="btn btn-sm btn-outline-danger py-0"
+        <td class="pf-v6-c-table__td pf-m-fit-content" role="cell">
+          <button class="pf-v6-c-button pf-m-danger pf-m-small pf-m-plain"
                   hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/{{ repo.id }}/delete"
                   hx-target="#repo-list"
                   hx-select="#repo-list"
@@ -51,11 +49,11 @@
     </tbody>
   </table>
   {% else %}
-  <p class="text-muted small mb-2">No repositories configured.</p>
+  <p style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--sm);">No repositories configured.</p>
   {% endif %}
 </div>
 
-{# Add repo form — lives OUTSIDE #repo-list so HTMX can settle after the outerHTML swap #}
+{# Add repo form #}
 <form hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
       hx-target="#repo-list"
       hx-select="#repo-list"
@@ -65,27 +63,33 @@
         this.querySelector('[name=branch]').value='main';
         this.querySelector('[name=local_path]').value='';
         delete this.querySelector('[name=local_path]').dataset.edited;">
-  <div class="row g-2 align-items-end">
-    <div class="col-md-5">
-      <label class="form-label small">Repo URL</label>
-      <input type="text" class="form-control form-control-sm" name="repo_url"
+  <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--sm); align-items:flex-end;">
+    <div class="pf-v6-l-grid__item pf-m-5-col-on-md">
+      <label class="pf-v6-c-form__label" style="font-size:var(--pf-t--global--font--size--sm);">
+        <span class="pf-v6-c-form__label-text">Repo URL</span>
+      </label>
+      <input type="text" class="pf-v6-c-form-control" name="repo_url"
              placeholder="org/repo.git"
              id="repo-url-input"
              value="https://github.com/"
              oninput="autoFillPath(this)">
     </div>
-    <div class="col-md-2">
-      <label class="form-label small">Branch</label>
-      <input type="text" class="form-control form-control-sm" name="branch"
+    <div class="pf-v6-l-grid__item pf-m-2-col-on-md">
+      <label class="pf-v6-c-form__label" style="font-size:var(--pf-t--global--font--size--sm);">
+        <span class="pf-v6-c-form__label-text">Branch</span>
+      </label>
+      <input type="text" class="pf-v6-c-form-control" name="branch"
              placeholder="main" value="main">
     </div>
-    <div class="col-md-3">
-      <label class="form-label small">Local Path</label>
-      <input type="text" class="form-control form-control-sm" name="local_path"
+    <div class="pf-v6-l-grid__item pf-m-3-col-on-md">
+      <label class="pf-v6-c-form__label" style="font-size:var(--pf-t--global--font--size--sm);">
+        <span class="pf-v6-c-form__label-text">Local Path</span>
+      </label>
+      <input type="text" class="pf-v6-c-form-control" name="local_path"
              id="local-path-input" placeholder="auto-derived">
     </div>
-    <div class="col-md-2">
-      <button type="submit" class="btn btn-sm btn-outline-primary w-100">Add</button>
+    <div class="pf-v6-l-grid__item pf-m-2-col-on-md">
+      <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small" style="width:100%;">Add</button>
     </div>
   </div>
 </form>

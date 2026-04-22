@@ -1,64 +1,83 @@
 <!doctype html>
-<html lang="en" data-bs-theme="dark">
+<html lang="en" class="pf-v6-theme-dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Swarmer{% endblock %}</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐝</text></svg>">
   <link rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-        crossorigin="anonymous">
+        href="https://unpkg.com/@patternfly/patternfly@6/patternfly.min.css">
+  <link rel="stylesheet"
+        href="https://unpkg.com/@patternfly/patternfly@6/patternfly-addons.css">
   <script src="/static/htmx.min.js"></script>
   <style>
-    body { min-height: 100vh; }
-    .nav-link.active { font-weight: 600; }
-    .phase-idle      { color: var(--bs-secondary); }
-    .phase-pending   { color: var(--bs-warning); }
-    .phase-running   { color: var(--bs-success); }
-    .phase-succeeded { color: var(--bs-primary); }
-    .phase-failed    { color: var(--bs-danger); }
-    .phase-stopped   { color: var(--bs-secondary); }
-    pre.last-output  { font-size: .8rem; }
-    .namespace-badge { font-family: monospace; font-size: .85em; }
+    body { min-height: 100vh; margin: 0; }
+    .pf-v6-c-nav__link.pf-m-current { font-weight: var(--pf-t--global--font--weight--heading--bold); }
+    .phase-idle      { color: var(--pf-t--global--color--status--custom--default); }
+    .phase-pending   { color: var(--pf-t--global--color--status--warning--default); }
+    .phase-running   { color: var(--pf-t--global--color--status--success--default); }
+    .phase-succeeded { color: var(--pf-t--global--color--status--info--default); }
+    .phase-failed    { color: var(--pf-t--global--color--status--danger--default); }
+    .phase-stopped   { color: var(--pf-t--global--color--status--custom--default); }
+    pre.last-output  { font-size: var(--pf-t--global--font--size--xs); }
+    .namespace-badge { font-family: var(--pf-t--global--font--family--mono); font-size: var(--pf-t--global--font--size--sm); }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom mb-4">
-  <div class="container-fluid">
-    <a class="navbar-brand fw-bold" href="/workspaces">🐝 Agent Swarm</a>
-    <button class="navbar-toggler" type="button"
-            data-bs-toggle="collapse" data-bs-target="#navmenu">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div class="collapse navbar-collapse" id="navmenu">
-<form method="post" action="/logout" class="d-flex">
-        <button type="submit" class="btn btn-outline-secondary btn-sm">Logout</button>
-      </form>
-    </div>
+{# ── OpenShift-style Masthead ── #}
+<header class="pf-v6-c-masthead" id="masthead">
+  <span class="pf-v6-c-masthead__brand" style="white-space:nowrap;">
+    <a href="/workspaces" style="text-decoration:none; color:inherit; font-weight:var(--pf-t--global--font--weight--heading--bold); font-size:var(--pf-t--global--font--size--lg);">
+      🐝 Agent Swarm
+    </a>
+  </span>
+  <div class="pf-v6-c-masthead__content" style="display:flex; justify-content:flex-end; flex:1;">
+    <form method="post" action="/logout">
+      <button type="submit" class="pf-v6-c-button pf-m-plain">
+        <span class="pf-v6-c-button__text">Logout</span>
+      </button>
+    </form>
   </div>
-</nav>
+</header>
 
-<div class="container-fluid px-4">
+<main style="padding:var(--pf-t--global--spacer--lg) var(--pf-t--global--spacer--xl);">
 
+  {# ── Flash messages ── #}
   {% with messages = request.session.pop('flash_messages', []) %}
     {% for msg in messages %}
-    <div class="alert alert-{{ msg.type }} alert-dismissible fade show" role="alert">
-      {{ msg.text }}
-      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    <div class="pf-v6-c-alert pf-m-{{ 'success' if msg.type == 'success' else ('danger' if msg.type == 'danger' else ('warning' if msg.type == 'warning' else 'info')) }} pf-m-inline" style="margin-bottom:var(--pf-t--global--spacer--md);" role="alert">
+      <div class="pf-v6-c-alert__icon">
+        <svg class="pf-v6-svg" viewBox="0 0 512 512" fill="currentColor" aria-hidden="true" width="1em" height="1em">
+          {% if msg.type == 'success' %}
+          <path d="M504 256c0 136.967-111.033 248-248 248S8 392.967 8 256 119.033 8 256 8s248 111.033 248 248zM227.314 387.314l184-184c6.248-6.248 6.248-16.379 0-22.627l-22.627-22.627c-6.248-6.249-16.379-6.249-22.628 0L216 308.118l-70.059-70.059c-6.248-6.248-16.379-6.248-22.628 0l-22.627 22.627c-6.248 6.248-6.248 16.379 0 22.627l104 104c6.249 6.249 16.379 6.249 22.628.001z"/>
+          {% elif msg.type == 'danger' %}
+          <path d="M504 256c0 136.997-111.043 248-248 248S8 392.997 8 256C8 119.083 119.043 8 256 8s248 111.083 248 248zm-248 50c-25.405 0-46 20.595-46 46s20.595 46 46 46 46-20.595 46-46-20.595-46-46-46zm-43.673-165.346l7.418 136c.347 6.364 5.609 11.346 11.982 11.346h48.546c6.373 0 11.635-4.982 11.982-11.346l7.418-136c.375-6.874-5.098-12.654-11.982-12.654h-63.383c-6.884 0-12.356 5.78-11.981 12.654z"/>
+          {% elif msg.type == 'warning' %}
+          <path d="M569.517 440.013C587.975 472.007 564.806 512 527.94 512H48.054c-36.937 0-59.999-40.055-41.577-71.987L246.423 23.985c18.467-32.009 64.72-31.951 83.154 0l239.94 416.028z"/>
+          {% else %}
+          <path d="M256 8C119.043 8 8 119.083 8 256c0 136.997 111.043 248 248 248s248-111.003 248-248C504 119.083 392.957 8 256 8zm0 110c23.196 0 42 18.804 42 42s-18.804 42-42 42-42-18.804-42-42 18.804-42 42-42zm56 254c0 6.627-5.373 12-12 12h-88c-6.627 0-12-5.373-12-12v-24c0-6.627 5.373-12 12-12h12v-64h-12c-6.627 0-12-5.373-12-12v-24c0-6.627 5.373-12 12-12h64c6.627 0 12 5.373 12 12v100h12c6.627 0 12 5.373 12 12v24z"/>
+          {% endif %}
+        </svg>
+      </div>
+      <p class="pf-v6-c-alert__title">{{ msg.text }}</p>
+      <div class="pf-v6-c-alert__action">
+        <button class="pf-v6-c-button pf-m-plain" type="button" aria-label="Close"
+                onclick="this.closest('.pf-v6-c-alert').remove()">
+          <svg class="pf-v6-svg" viewBox="0 0 352 512" fill="currentColor" aria-hidden="true" width="1em" height="1em">
+            <path d="M242.72 256l100.07-100.07c12.28-12.28 12.28-32.19 0-44.48l-22.24-22.24c-12.28-12.28-32.19-12.28-44.48 0L176 189.28 75.93 89.21c-12.28-12.28-32.19-12.28-44.48 0L9.21 111.45c-12.28 12.28-12.28 32.19 0 44.48L109.28 256 9.21 356.07c-12.28 12.28-12.28 32.19 0 44.48l22.24 22.24c12.28 12.28 32.19 12.28 44.48 0L176 322.72l100.07 100.07c12.28 12.28 32.19 12.28 44.48 0l22.24-22.24c12.28-12.28 12.28-32.19 0-44.48L242.72 256z"/>
+          </svg>
+        </button>
+      </div>
     </div>
     {% endfor %}
   {% endwith %}
 
   {% block content %}{% endblock %}
 
-</div>
+</main>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmSmLUmjhC8cQ6w6Aiu4Cq9yNPdj"
-        crossorigin="anonymous"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

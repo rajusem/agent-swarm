@@ -2,52 +2,81 @@
 {% block title %}Edit {{ ws.display_name }} — Swarmer{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-3">
-  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
-  <span class="text-muted">/</span>
-  <a href="/workspaces/{{ ws.id }}" class="text-muted text-decoration-none mx-2">{{ ws.display_name }}</a>
-  <span class="text-muted">/</span>
-  <span class="ms-2">Edit</span>
-</div>
+{# ── Breadcrumb ── #}
+<nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--md);">
+  <ol class="pf-v6-c-breadcrumb__list">
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces/{{ ws.id }}" class="pf-v6-c-breadcrumb__link">{{ ws.display_name }}</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__link pf-m-current">Edit</span>
+    </li>
+  </ol>
+</nav>
 
-<h1 class="h3 mb-4">Edit Workspace</h1>
+<h1 class="pf-v6-c-title pf-m-2xl" style="margin-bottom:var(--pf-t--global--spacer--lg);">Edit Workspace</h1>
 
-<div class="col-md-6">
-  <form method="post" action="/workspaces/{{ ws.id }}/edit">
-    <div class="mb-3">
-      <label class="form-label fw-semibold">
-        Workspace Name <span class="text-danger">*</span>
+<div style="max-width:600px;">
+  <form method="post" action="/workspaces/{{ ws.id }}/edit" class="pf-v6-c-form">
+    <div class="pf-v6-c-form__group">
+      <label class="pf-v6-c-form__label">
+        <span class="pf-v6-c-form__label-text">Workspace Name</span>
+        <span class="pf-v6-c-form__label-required" aria-hidden="true">&#42;</span>
       </label>
-      <input type="text" class="form-control" name="display_name"
-             value="{{ ws.display_name }}" required>
+      <div class="pf-v6-c-form__group-control">
+        <input type="text" class="pf-v6-c-form-control" name="display_name"
+               value="{{ ws.display_name }}" required>
+      </div>
     </div>
 
-    <div class="mb-3">
-      <label class="form-label fw-semibold">Description</label>
-      <textarea class="form-control" name="description" rows="3">{{ ws.description }}</textarea>
+    <div class="pf-v6-c-form__group">
+      <label class="pf-v6-c-form__label">
+        <span class="pf-v6-c-form__label-text">Description</span>
+      </label>
+      <div class="pf-v6-c-form__group-control">
+        <textarea class="pf-v6-c-form-control" name="description" rows="3">{{ ws.description }}</textarea>
+      </div>
     </div>
 
-    <div class="mb-3">
-      <label class="form-label fw-semibold text-muted">Namespace (immutable)</label>
-      <input type="text" class="form-control" value="{{ ws.namespace }}" disabled>
-      <div class="form-text">The Kubernetes namespace cannot be changed after creation.</div>
+    <div class="pf-v6-c-form__group">
+      <label class="pf-v6-c-form__label">
+        <span class="pf-v6-c-form__label-text" style="color:var(--pf-t--global--text--color--subtle);">Namespace (immutable)</span>
+      </label>
+      <div class="pf-v6-c-form__group-control">
+        <input type="text" class="pf-v6-c-form-control" value="{{ ws.namespace }}" disabled>
+        <div class="pf-v6-c-form__helper-text">
+          <div class="pf-v6-c-helper-text__item">
+            <span class="pf-v6-c-helper-text__item-text">The Kubernetes namespace cannot be changed after creation.</span>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <button type="submit" class="btn btn-primary">Save Changes</button>
-    <a href="/workspaces/{{ ws.id }}" class="btn btn-link text-muted">Cancel</a>
+    <div class="pf-v6-c-form__group pf-m-action">
+      <div class="pf-v6-c-form__actions">
+        <button type="submit" class="pf-v6-c-button pf-m-primary">Save Changes</button>
+        <a href="/workspaces/{{ ws.id }}" class="pf-v6-c-button pf-m-link">Cancel</a>
+      </div>
+    </div>
   </form>
 
-  <hr class="my-4">
+  <hr style="margin:var(--pf-t--global--spacer--xl) 0;">
 
-  <div class="card border-danger">
-    <div class="card-body">
-      <h6 class="card-title text-danger small text-uppercase mb-2">Danger Zone</h6>
-      <p class="small text-muted mb-3">
+  {# ── Danger zone ── #}
+  <div class="pf-v6-c-card" style="border-color:var(--pf-t--global--color--status--danger--default);">
+    <div class="pf-v6-c-card__body">
+      <h6 class="pf-v6-c-title pf-m-md" style="color:var(--pf-t--global--color--status--danger--default); text-transform:uppercase; margin-bottom:var(--pf-t--global--spacer--sm);">Danger Zone</h6>
+      <p style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
         Permanently deletes all secrets, sessions, and the Kubernetes namespace
         <code>{{ ws.namespace }}</code>. This cannot be undone.
       </p>
       <span id="delete-btn-{{ ws.id }}">
-        <button class="btn btn-sm btn-danger"
+        <button class="pf-v6-c-button pf-m-danger pf-m-small"
                 hx-get="/workspaces/{{ ws.id }}/delete"
                 hx-target="#delete-btn-{{ ws.id }}"
                 hx-swap="outerHTML">

@@ -1,27 +1,27 @@
 {# HTMX partial — polled every 5s while session is active #}
 {% if session.mode == 'server' and not session.last_output %}
 <div id="last-output-pre"
-     class="last-output p-4 mb-0 text-center"
+     class="last-output" style="padding:var(--pf-t--global--spacer--lg); margin:0; text-align:center;"
      {% if session.phase in ('pending', 'running') %}
      hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/last-output"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
      {% endif %}>
   {% if session.phase == 'running' %}
-  <p class="text-muted small mb-3">No output yet — use the chat to interact with the session.</p>
+  <p style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--md);">No output yet — use the chat to interact with the session.</p>
   <a href="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/chat"
      target="_blank" rel="noopener"
-     class="btn btn-info btn-sm">Open Chat ↗</a>
+     class="pf-v6-c-button pf-m-primary pf-m-small">Open Chat ↗</a>
   {% else %}
-  <span class="text-muted small">No output yet. Launch the session to see logs here.</span>
+  <span style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">No output yet. Launch the session to see logs here.</span>
   {% endif %}
 </div>
 {% else %}
 <pre id="last-output-pre"
-     class="last-output p-3 mb-0 rounded-bottom"
+     class="last-output" style="padding:var(--pf-t--global--spacer--md); margin:0;"
      {% if session.phase in ('pending', 'running') %}
      hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/last-output"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
-     {% endif %}>{% if session.last_output %}{{ session.last_output }}{% else %}<span class="text-muted">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
+     {% endif %}>{% if session.last_output %}{{ session.last_output }}{% else %}<span style="color:var(--pf-t--global--text--color--subtle);">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
 {% endif %}

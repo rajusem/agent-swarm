@@ -9,22 +9,33 @@
 {% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-3">
-  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
-  <span class="text-muted">/</span>
-  <a href="/workspaces/{{ ws.id }}" class="text-muted text-decoration-none mx-2">{{ ws.display_name }}</a>
-  <span class="text-muted">/</span>
-  <a href="/workspaces/{{ ws.id }}/sessions" class="text-muted text-decoration-none mx-2">Sessions</a>
-  <span class="text-muted">/</span>
-  <span class="ms-2">{{ session.name }}</span>
-</div>
+{# ── Breadcrumb ── #}
+<nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--md);">
+  <ol class="pf-v6-c-breadcrumb__list">
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces/{{ ws.id }}" class="pf-v6-c-breadcrumb__link">{{ ws.display_name }}</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces/{{ ws.id }}/sessions" class="pf-v6-c-breadcrumb__link">Sessions</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__link pf-m-current">{{ session.name }}</span>
+    </li>
+  </ol>
+</nav>
 
 {# ── Title with inline rename ── #}
-<div class="mb-3">
-  <div class="d-flex align-items-center gap-2" id="name-display">
-    <h1 class="h3 mb-0">{{ session.name }}</h1>
+<div style="margin-bottom:var(--pf-t--global--spacer--md);">
+  <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);" id="name-display">
+    <h1 class="pf-v6-c-title pf-m-2xl" style="margin:0;">{{ session.name }}</h1>
     {% if not session.is_active %}
-    <button class="btn btn-sm btn-link p-0 text-muted" title="Rename"
+    <button class="pf-v6-c-button pf-m-plain" title="Rename"
             onclick="showRename()">
       <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
         <path d="M15.502 1.94a.5.5 0 0 1 0 .706L14.459 3.69l-2-2L13.502.646a.5.5 0 0 1 .707 0l1.293 1.293zm-1.75 2.456-2-2L4.939 9.21a.5.5 0 0 0-.121.196l-.805 2.414a.25.25 0 0 0 .316.316l2.414-.805a.5.5 0 0 0 .196-.12l6.813-6.814z"/>
@@ -35,33 +46,33 @@
   </div>
   <form method="post"
         action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/set-name"
-        class="align-items-center gap-2 mt-1"
-        id="rename-form" style="display:none">
-    <input type="text" class="form-control form-control-sm" name="name"
+        style="display:none; align-items:center; gap:var(--pf-t--global--spacer--sm); margin-top:var(--pf-t--global--spacer--xs);"
+        id="rename-form">
+    <input type="text" class="pf-v6-c-form-control" name="name"
            value="{{ session.name }}" style="max-width:300px" required>
-    <button type="submit" class="btn btn-sm btn-primary">Rename</button>
-    <button type="button" class="btn btn-sm btn-link text-muted"
+    <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Rename</button>
+    <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
             onclick="hideRename()">Cancel</button>
   </form>
 </div>
 
 {# ── Status + actions ── #}
-<div class="d-flex align-items-center mb-4 gap-2 flex-wrap">
+<div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--lg); gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap;">
   {% include "sessions/_status_badge.html" %}
 
-  <div class="d-flex gap-2 ms-2" id="session-actions">
+  <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-left:var(--pf-t--global--spacer--sm);" id="session-actions">
     {% if session.mode == 'server' %}
     <a href="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/chat"
        target="_blank" rel="noopener"
-       class="btn btn-info btn-sm{% if session.phase != 'running' %} d-none{% endif %}"
+       class="pf-v6-c-button pf-m-primary pf-m-small{% if session.phase != 'running' %}" style="display:none{% endif %}"
        id="server-chat-btn">Open Web Chat ↗</a>
     {% endif %}
   </div>
 
-  <div class="ms-auto">
+  <div style="margin-left:auto;">
     <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/delete"
           onsubmit="return confirm('Delete session \'{{ session.name }}\'?')">
-      <button type="submit" class="btn btn-outline-danger btn-sm"
+      <button type="submit" class="pf-v6-c-button pf-m-danger pf-m-small"
               {% if session.is_active %}disabled title="Stop the session first"{% endif %}>
         Delete
       </button>
@@ -69,25 +80,27 @@
   </div>
 </div>
 
-{# ── Two-column row: config (left, all modes) + repos or last output (right) ── #}
-<div class="row g-4">
+{# ── Two-column row: config (left) + repos or last output (right) ── #}
+<div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
 
-  {# Left column: Configuration (all modes) + Git Repos (prompt only) #}
-  <div class="col-md-5" id="left-col">
+  {# Left column: Configuration #}
+  <div class="pf-v6-l-grid__item pf-m-5-col-on-md" id="left-col">
 
-    <div class="card mb-3">
-      <div class="card-header fw-semibold">Configuration</div>
-      <div class="card-body">
+    <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
+      <div class="pf-v6-c-card__header">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Configuration</h3>
+      </div>
+      <div class="pf-v6-c-card__body">
 
-        {# Launch / Stop buttons — must live OUTSIDE cfg-edit-form to avoid nested-form parsing bugs #}
-        <div class="mb-3">
-          <div class="d-flex gap-2 flex-wrap align-items-center">
+        {# Launch / Stop buttons #}
+        <div style="margin-bottom:var(--pf-t--global--spacer--md);">
+          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; align-items:center;">
             <div id="launch-stop"
                  {% if not session.is_active %}style="display:none"{% endif %}>
               <form method="post"
                     action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
                 <button type="submit" id="launch-stop-btn"
-                        class="btn btn-warning btn-sm">&#9632; Stop</button>
+                        class="pf-v6-c-button pf-m-warning pf-m-small">&#9632; Stop</button>
               </form>
             </div>
             {% for tool in agent_tools %}
@@ -95,7 +108,7 @@
                   action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
               <input type="hidden" name="agent_tool" value="{{ tool.name }}">
               <button type="submit"
-                      class="btn btn-sm launch-tool-btn {% if session.is_active %}btn-outline-secondary{% elif tool_image_available[tool.name] %}btn-success{% else %}btn-outline-secondary{% endif %}"
+                      class="pf-v6-c-button pf-m-small launch-tool-btn {% if session.is_active %}pf-m-secondary{% elif tool_image_available[tool.name] %}pf-m-primary{% else %}pf-m-secondary{% endif %}"
                       data-available="{{ 'true' if tool_image_available[tool.name] else 'false' }}"
                       {% if session.is_active or not tool_image_available[tool.name] %}disabled{% endif %}>
                 ▶ {{ tool.display_name }}
@@ -105,48 +118,50 @@
           </div>
         </div>
 
-        {# Configuration form — no nested forms so all fields are correctly owned by this form #}
-        <form method="post" id="cfg-edit-form"
+        {# Configuration form #}
+        <form method="post" id="cfg-edit-form" class="pf-v6-c-form"
               action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/edit">
           <input type="hidden" name="name" value="{{ session.name }}">
           <input type="hidden" name="agent_tool" value="{{ session.agent_tool }}" id="cfg_agent_tool">
           <input type="hidden" name="save_config" value="1">
 
-          <div class="row align-items-center mb-3">
-            <label class="col-5 text-muted small col-form-label-sm">Mode</label>
-            <div class="col-7">
-              <select name="mode" class="form-select form-select-sm"
-                      {% if session.is_active %}disabled title="Stop session to change mode"{% endif %}>
-                <option value="prompt" {{ 'selected' if session.mode == 'prompt' }}>Prompt</option>
-                <option value="server" {{ 'selected' if session.mode == 'server' }}>Server</option>
-                <option value="tui"    {{ 'selected' if session.mode == 'tui' }}>TUI</option>
-              </select>
+          <div class="pf-v6-c-form__group">
+            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
+              <label style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Mode</label>
+              <div style="flex:1;">
+                <select name="mode" class="pf-v6-c-form-control"
+                        {% if session.is_active %}disabled title="Stop session to change mode"{% endif %}>
+                  <option value="prompt" {{ 'selected' if session.mode == 'prompt' }}>Prompt</option>
+                  <option value="server" {{ 'selected' if session.mode == 'server' }}>Server</option>
+                  <option value="tui"    {{ 'selected' if session.mode == 'tui' }}>TUI</option>
+                </select>
+              </div>
             </div>
           </div>
 
-          <div class="row align-items-center mb-2">
-            <label class="col-5 text-muted small col-form-label-sm"
-                   for="cfg_pat">GitHub PAT</label>
-            <div class="col-7">
-              <select class="form-select form-select-sm" name="github_pat_id"
-                      id="cfg_pat"
-                      {% if session.is_active %}disabled{% endif %}>
-                <option value="">— None —</option>
-                {% for pat in pats %}
-                <option value="{{ pat.id }}"
-                        {{ 'selected' if session.github_pat and session.github_pat.id == pat.id }}>
-                  {{ pat.name }}
-                </option>
-                {% endfor %}
-              </select>
+          <div class="pf-v6-c-form__group">
+            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
+              <label style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);" for="cfg_pat">GitHub PAT</label>
+              <div style="flex:1;">
+                <select class="pf-v6-c-form-control" name="github_pat_id" id="cfg_pat"
+                        {% if session.is_active %}disabled{% endif %}>
+                  <option value="">— None —</option>
+                  {% for pat in pats %}
+                  <option value="{{ pat.id }}"
+                          {{ 'selected' if session.github_pat and session.github_pat.id == pat.id }}>
+                    {{ pat.name }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
             </div>
           </div>
 
-          <div class="row align-items-center mb-2">
-            <div class="col-5 text-muted small">Persist workspace</div>
-            <div class="col-7">
-              <div class="form-check">
-                <input type="checkbox" class="form-check-input" name="persist"
+          <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
+            <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Persist workspace</div>
+            <div style="flex:1;">
+              <div class="pf-v6-c-check">
+                <input type="checkbox" class="pf-v6-c-check__input" name="persist"
                        id="cfg_persist" value="true"
                        {{ 'checked' if session.persist }}
                        {% if session.is_active %}disabled{% endif %}
@@ -155,12 +170,12 @@
             </div>
           </div>
 
-          <div class="row align-items-center mb-3" id="cfg_resume_row"
+          <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);" id="cfg_resume_row"
                {% if not session.persist %}style="display:none"{% endif %}>
-            <div class="col-5 text-muted small">Resume on relaunch</div>
-            <div class="col-7">
-              <div class="form-check">
-                <input type="checkbox" class="form-check-input" name="resume"
+            <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Resume on relaunch</div>
+            <div style="flex:1;">
+              <div class="pf-v6-c-check">
+                <input type="checkbox" class="pf-v6-c-check__input" name="resume"
                        id="cfg_resume" value="true"
                        {{ 'checked' if session.resume }}
                        {% if session.is_active %}disabled{% endif %}>
@@ -168,11 +183,11 @@
             </div>
           </div>
 
-          <div class="row align-items-center mb-3">
-            <div class="col-5 text-muted small">Privileged (root)</div>
-            <div class="col-7">
-              <div class="form-check">
-                <input type="checkbox" class="form-check-input" name="privileged"
+          <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);">
+            <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Privileged (root)</div>
+            <div style="flex:1;">
+              <div class="pf-v6-c-check">
+                <input type="checkbox" class="pf-v6-c-check__input" name="privileged"
                        id="cfg_privileged" value="true"
                        {{ 'checked' if session.privileged }}
                        {% if session.is_active %}disabled{% endif %}>
@@ -180,145 +195,156 @@
             </div>
           </div>
 
-          <div class="mb-3" id="cfg-instruction-section"
+          <div id="cfg-instruction-section"
                {% if session.mode != 'prompt' %}style="display:none"{% endif %}>
-            <label class="text-muted small form-label">Instruction Prompt</label>
-            <textarea class="form-control form-control-sm" name="instruction_prompt"
-                      rows="3" placeholder="Describe the task for the agent to run…"
-                      {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
+            <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
+              <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+                <span class="pf-v6-c-form__label-text">Instruction Prompt</span>
+              </label>
+              <div class="pf-v6-c-form__group-control">
+                <textarea class="pf-v6-c-form-control" name="instruction_prompt"
+                          rows="3" placeholder="Describe the task for the agent to run…"
+                          {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
+              </div>
+            </div>
           </div>
 
           {% if model_options %}
-          <div class="mb-3">
-            <label class="text-muted small form-label">Model</label>
-            <select class="form-select form-select-sm" name="model"
-                    {% if session.is_active %}disabled{% endif %}>
-              {% set ns = namespace(prev_group="") %}
-              {% for opt in model_options %}
-                {% if opt.group != ns.prev_group %}
-                  {% if ns.prev_group %}</optgroup>{% endif %}
-                  <optgroup label="{{ opt.group }}">
-                  {% set ns.prev_group = opt.group %}
-                {% endif %}
-                <option value="{{ opt.value }}"
-                        {{ 'selected' if session.model == opt.value or (loop.first and not session.model) }}>
-                  {{ opt.label }}
-                </option>
-              {% endfor %}
-              {% if ns.prev_group %}</optgroup>{% endif %}
-            </select>
+          <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
+            <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+              <span class="pf-v6-c-form__label-text">Model</span>
+            </label>
+            <div class="pf-v6-c-form__group-control">
+              <select class="pf-v6-c-form-control" name="model"
+                      {% if session.is_active %}disabled{% endif %}>
+                {% set ns = namespace(prev_group="") %}
+                {% for opt in model_options %}
+                  {% if opt.group != ns.prev_group %}
+                    {% if ns.prev_group %}</optgroup>{% endif %}
+                    <optgroup label="{{ opt.group }}">
+                    {% set ns.prev_group = opt.group %}
+                  {% endif %}
+                  <option value="{{ opt.value }}"
+                          {{ 'selected' if session.model == opt.value or (loop.first and not session.model) }}>
+                    {{ opt.label }}
+                  </option>
+                {% endfor %}
+                {% if ns.prev_group %}</optgroup>{% endif %}
+              </select>
+            </div>
           </div>
           {% else %}
           <input type="hidden" name="model" value="{{ session.model }}">
           {% endif %}
 
-          <div class="text-muted small mb-3">
-            PVC: <code class="font-monospace">{{ session.pvc_name or '—' }}</code>
+          <div style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--md);">
+            PVC: <code style="font-family:var(--pf-t--global--font--family--mono);">{{ session.pvc_name or '—' }}</code>
           </div>
 
-          <p class="text-muted small mb-0{% if not session.is_active %} d-none{% endif %}"
+          <p style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin:0;{% if not session.is_active %} display:none;{% endif %}"
              id="cfg-stop-msg">Stop the session to edit settings.</p>
           <div id="cfg-save-indicator"
-               class="text-muted small{% if session.is_active %} d-none{% endif %}"
-               style="min-height:1.25em"></div>
+               style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); min-height:1.25em;{% if session.is_active %} display:none;{% endif %}"></div>
         </form>
 
       </div>
     </div>
 
-    {# Git Repos: prompt only — server/TUI show them in right column #}
+    {# Git Repos: prompt only #}
     {% if session.mode == 'prompt' %}
-    <div class="card">
-      <div class="card-header fw-semibold">Git Repositories</div>
-      <div class="card-body">
+    <div class="pf-v6-c-card">
+      <div class="pf-v6-c-card__header">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
+      </div>
+      <div class="pf-v6-c-card__body">
         {% include "sessions/_repo_list.html" with context %}
       </div>
     </div>
     {% endif %}
 
-  </div>{# /col-md-5 #}
+  </div>
 
-  {# Right column: last output (prompt, scrollable) or git repos (server/TUI) #}
-  <div class="col-md-7 d-flex flex-column">
+  {# Right column #}
+  <div class="pf-v6-l-grid__item pf-m-7-col-on-md" style="display:flex; flex-direction:column;">
 
     {% if session.mode == 'prompt' %}
-    <div class="card d-flex flex-column flex-grow-1" id="last-output-card" style="min-height:0">
-      <div class="card-header fw-semibold d-flex justify-content-between align-items-center flex-shrink-0">
-        <span>Last Output</span>
+    <div class="pf-v6-c-card" id="last-output-card" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
         {% if session.last_output %}
         <form method="post"
               action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
-          <button type="submit" class="btn btn-link btn-sm text-muted p-0"
+          <button type="submit" class="pf-v6-c-button pf-m-link pf-m-small"
                   title="Clear output">Clear</button>
         </form>
         {% endif %}
       </div>
-      <div class="card-body p-0 flex-grow-1 overflow-auto" style="min-height:0">
+      <div class="pf-v6-c-card__body" style="padding:0; flex:1; overflow:auto; min-height:0;">
         {% include "sessions/_last_output.html" with context %}
       </div>
     </div>
 
     {% else %}
-    <div class="card">
-      <div class="card-header fw-semibold">Git Repositories</div>
-      <div class="card-body">
+    <div class="pf-v6-c-card">
+      <div class="pf-v6-c-card__header">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
+      </div>
+      <div class="pf-v6-c-card__body">
         {% include "sessions/_repo_list.html" with context %}
       </div>
     </div>
     {% endif %}
 
-  </div>{# /col-md-7 #}
+  </div>
 
-</div>{# /row #}
+</div>
 
 {# ── Server mode: full-width last output ── #}
 {% if session.mode == 'server' %}
-<div class="row mt-3">
-  <div class="col-12">
-    <div class="card">
-      <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
-        <span>Last Output</span>
-        {% if session.last_output %}
-        <form method="post"
-              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
-          <button type="submit" class="btn btn-link btn-sm text-muted p-0"
-                  title="Clear output">Clear</button>
-        </form>
-        {% endif %}
-      </div>
-      <div class="card-body p-0">
-        {% include "sessions/_last_output.html" with context %}
-      </div>
+<div style="margin-top:var(--pf-t--global--spacer--md);">
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
+      {% if session.last_output %}
+      <form method="post"
+            action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
+        <button type="submit" class="pf-v6-c-button pf-m-link pf-m-small"
+                title="Clear output">Clear</button>
+      </form>
+      {% endif %}
+    </div>
+    <div class="pf-v6-c-card__body" style="padding:0;">
+      {% include "sessions/_last_output.html" with context %}
     </div>
   </div>
 </div>
 {% endif %}
 
-{# ── TUI mode: full-width terminal below the two-column row ── #}
+{# ── TUI mode: full-width terminal ── #}
 {% if session.mode == 'tui' %}
-<div class="row mt-3">
-  <div class="col-12">
-    {% if session.phase == 'running' and tui_token %}
-    <div class="card">
-      <div class="card-header fw-semibold d-flex align-items-center gap-2">
-        <span>🖥 Terminal</span>
-        <span class="badge bg-success">● Active</span>
-      </div>
-      <div class="card-body p-0">
-        <div id="terminal"
-             style="height:500px; background:#1e1e1e; border-radius:0 0 .375rem .375rem;"></div>
-      </div>
+<div style="margin-top:var(--pf-t--global--spacer--md);">
+  {% if session.phase == 'running' and tui_token %}
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__header" style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">🖥 Terminal</h3>
+      <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">● Active</span></span>
     </div>
-    {% else %}
-    <div class="card">
-      <div class="card-header fw-semibold">🖥 Terminal</div>
-      <div class="card-body text-center text-muted py-4">
-        <p class="mb-2">Session is not running.</p>
-        <p class="small mb-0">Launch the session to open the TUI terminal.</p>
-      </div>
+    <div class="pf-v6-c-card__body" style="padding:0;">
+      <div id="terminal"
+           style="height:500px; background:#1e1e1e; border-radius:0 0 .375rem .375rem;"></div>
     </div>
-    {% endif %}
   </div>
+  {% else %}
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__header">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">🖥 Terminal</h3>
+    </div>
+    <div class="pf-v6-c-card__body" style="text-align:center; padding:var(--pf-t--global--spacer--xl); color:var(--pf-t--global--text--color--subtle);">
+      <p style="margin-bottom:var(--pf-t--global--spacer--sm);">Session is not running.</p>
+      <p style="font-size:var(--pf-t--global--font--size--sm); margin:0;">Launch the session to open the TUI terminal.</p>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -326,13 +352,12 @@
 
 {% block scripts %}
 <script>
-// ── Match Last Output card height to left column ──────────────────────────────
+// ── Match Last Output card height to left column ──
 (function () {
   const leftCol = document.getElementById('left-col');
   const card = document.getElementById('last-output-card');
   if (!leftCol || !card) return;
   function syncHeight() {
-    // Measure left column's natural height before Bootstrap row-stretch inflates it.
     leftCol.style.alignSelf = 'flex-start';
     const h = leftCol.offsetHeight;
     leftCol.style.alignSelf = '';
@@ -342,7 +367,7 @@
   window.addEventListener('resize', syncHeight);
 })();
 
-// ── Auto-save configuration fields ───────────────────────────────────────────
+// ── Auto-save configuration fields ──
 (function () {
   const form = document.getElementById('cfg-edit-form');
   if (!form) return;
@@ -353,13 +378,15 @@
   let pendingTextareaChange = false;
 
   function showStatus(msg, cls) {
-    if (!indicator || indicator.classList.contains('d-none')) return;
+    if (!indicator || indicator.style.display === 'none') return;
     indicator.textContent = msg;
-    indicator.className = cls + ' small';
+    indicator.className = '';
+    indicator.style.color = cls === 'text-success' ? 'var(--pf-t--global--color--status--success--default)' :
+                            cls === 'text-danger' ? 'var(--pf-t--global--color--status--danger--default)' :
+                            'var(--pf-t--global--text--color--subtle)';
+    indicator.style.fontSize = 'var(--pf-t--global--font--size--sm)';
   }
 
-  // Returns a promise that resolves when the save completes.
-  // If a save is already in-flight, returns that same promise (no double-post).
   function doSave() {
     if (saving) return savePromise;
     saving = true;
@@ -375,8 +402,6 @@
     return savePromise;
   }
 
-  // Mode select: toggle instruction-prompt visibility immediately, then submit
-  // so the browser follows the redirect and re-renders the correct layout.
   const modeSelect = form.querySelector('select[name=mode]');
   if (modeSelect) {
     modeSelect.addEventListener('change', () => {
@@ -386,12 +411,10 @@
     });
   }
 
-  // All other selects and checkboxes: save immediately on change.
   form.querySelectorAll('select:not([name=mode]), input[type=checkbox]').forEach(el => {
     el.addEventListener('change', doSave);
   });
 
-  // Textarea: track edits and save on blur.
   form.querySelectorAll('textarea').forEach(el => {
     el.addEventListener('input', () => { pendingTextareaChange = true; });
     el.addEventListener('blur', async () => {
@@ -401,8 +424,6 @@
     });
   });
 
-  // Submit all config fields together with the launch request so settings
-  // are saved atomically — no separate fetch that could be lost on navigation.
   document.querySelectorAll('.launch-tool-btn').forEach(btn => {
     btn.closest('form').addEventListener('submit', function (e) {
       e.preventDefault();
@@ -452,11 +473,10 @@ function hideRename() {
 
 // After each HTMX status poll, sync controls with live phase.
 document.addEventListener('htmx:afterSwap', function () {
-  const badge = document.querySelector('#session-status .badge');
-  const isRunning = badge && badge.classList.contains('bg-success');
-  const isActive  = isRunning || (badge && badge.classList.contains('bg-warning'));
+  const badge = document.querySelector('#session-status .pf-v6-c-label');
+  const isRunning = badge && badge.classList.contains('pf-m-green');
+  const isActive  = isRunning || (badge && badge.classList.contains('pf-m-gold'));
 
-  // ── Config form: enable/disable fields and swap stop-message ↔ indicator ──
   const cfgForm = document.getElementById('cfg-edit-form');
   if (cfgForm) {
     cfgForm.querySelectorAll('select, input[type=checkbox], textarea').forEach(el => {
@@ -464,15 +484,13 @@ document.addEventListener('htmx:afterSwap', function () {
     });
   }
   const stopMsg = document.getElementById('cfg-stop-msg');
-  if (stopMsg) stopMsg.classList.toggle('d-none', !isActive);
+  if (stopMsg) stopMsg.style.display = isActive ? '' : 'none';
   const saveInd = document.getElementById('cfg-save-indicator');
-  if (saveInd) saveInd.classList.toggle('d-none', isActive);
+  if (saveInd) saveInd.style.display = isActive ? 'none' : '';
 
-  // ── Rename controls: hide when session becomes active ──
   if (isActive) {
     const renameForm = document.getElementById('rename-form');
     if (renameForm) renameForm.style.display = 'none';
-
     const nameDisplay = document.getElementById('name-display');
     if (nameDisplay) {
       nameDisplay.style.display = '';
@@ -481,8 +499,7 @@ document.addEventListener('htmx:afterSwap', function () {
     }
   }
 
-  // ── Launch row: show/hide stop, dim/restore tool buttons ──
-  const isSucceeded = badge && badge.classList.contains('bg-primary');
+  const isSucceeded = badge && badge.classList.contains('pf-m-blue');
   const launchStop = document.getElementById('launch-stop');
   if (launchStop) launchStop.style.display = (isActive || isSucceeded) ? '' : 'none';
 
@@ -490,40 +507,36 @@ document.addEventListener('htmx:afterSwap', function () {
     const avail = btn.dataset.available === 'true';
     btn.disabled = isActive || isSucceeded || !avail;
     if (isActive || isSucceeded) {
-      btn.classList.remove('btn-success', 'btn-secondary');
-      btn.classList.add('btn-outline-secondary');
+      btn.classList.remove('pf-m-primary');
+      btn.classList.add('pf-m-secondary');
     } else {
-      btn.classList.remove('btn-outline-secondary');
-      btn.classList.add(avail ? 'btn-success' : 'btn-secondary');
+      btn.classList.remove('pf-m-secondary');
+      btn.classList.add(avail ? 'pf-m-primary' : 'pf-m-secondary');
     }
   });
 
   {% if session.mode == 'tui' %}
-  // ── TUI: reload once when pod transitions to running so the terminal
-  //    card and WebSocket token are included in the fresh page render ──
   if (isRunning && !document.getElementById('terminal')) {
     window.location.reload();
   }
   {% endif %}
 
   {% if session.mode == 'server' %}
-  // ── Server: show/hide the Web Chat button as the pod starts/stops ──
   const chatBtn = document.getElementById('server-chat-btn');
-  if (chatBtn) chatBtn.classList.toggle('d-none', !isRunning);
+  if (chatBtn) chatBtn.style.display = isRunning ? '' : 'none';
   {% endif %}
 
   {% if session.mode == 'prompt' %}
-  // ── Prompt: relabel Stop → Clean up once the session succeeds ──
   const launchStopBtn = document.getElementById('launch-stop-btn');
   if (launchStopBtn) {
     if (isSucceeded) {
       launchStopBtn.textContent = '↺ Clean up';
-      launchStopBtn.classList.remove('btn-warning');
-      launchStopBtn.classList.add('btn-outline-secondary');
+      launchStopBtn.classList.remove('pf-m-warning');
+      launchStopBtn.classList.add('pf-m-secondary');
     } else {
       launchStopBtn.textContent = '■ Stop';
-      launchStopBtn.classList.add('btn-warning');
-      launchStopBtn.classList.remove('btn-outline-secondary');
+      launchStopBtn.classList.add('pf-m-warning');
+      launchStopBtn.classList.remove('pf-m-secondary');
     }
   }
   {% endif %}
@@ -534,8 +547,6 @@ document.addEventListener('htmx:afterSwap', function () {
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <script>
 (function() {
-  // Measure one character cell using the same font settings as the terminal.
-  // The #terminal div is already in the DOM so clientWidth is valid here.
   function measureCell() {
     const s = document.createElement('span');
     s.style.cssText =
@@ -553,7 +564,6 @@ document.addEventListener('htmx:afterSwap', function () {
   const cols = Math.max(80, Math.floor(el.clientWidth  / cell.w));
   const rows = Math.max(24, Math.floor(el.clientHeight / cell.h));
 
-  // Create the terminal with the correct dimensions from the start.
   const term = new Terminal({
     cols,
     rows,
