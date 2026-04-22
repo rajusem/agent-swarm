@@ -59,7 +59,7 @@ make kind-delete   # deletes the kind cluster and all data inside it
 Push the image to a registry and deploy to your current `kubectl` context.
 
 ```sh
-make setup-auth
+make setup-secret
 make image-build image-push REGISTRY=your.registry.example.com
 make k8s-deploy    # applies namespace, RBAC, PVC, service, deployment
 make k8s-connect   # port-forward → http://localhost:8080
@@ -69,6 +69,33 @@ Teardown:
 ```sh
 make k8s-delete    # removes all swarmer resources from the namespace
 ```
+
+### Option 4: Kustomize
+
+Declarative deployment using Kustomize overlays instead of `make`. Two flavors:
+
+- **cluster-admin** — full multi-namespace deployment (Namespace, ClusterRole, OAuthClient). Equivalent to `make openshift-deploy`.
+- **namespace-scoped** — deploys into an existing namespace with no cluster-admin required. All workspaces share the target namespace.
+
+```sh
+# Build and push the image
+podman build -f Containerfile -t <registry>/<namespace>/swarmer:latest .
+podman push <registry>/<namespace>/swarmer:latest
+
+# Create the secret key
+oc create secret generic swarmer-secret \
+  --from-literal=SWARMER_SECRET_KEY=$(python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())") \
+  -n <namespace>
+
+# Copy and configure an overlay
+cp -r kustomize/overlays/ephemeral kustomize/overlays/my-env
+# Edit kustomize/overlays/my-env/kustomization.yaml — set NAMESPACE and image
+
+# Deploy
+oc apply -k kustomize/overlays/my-env
+```
+
+See [`kustomize/README.md`](kustomize/README.md) for full documentation, flavor comparison, and teardown instructions.
 
 ## Configuration
 

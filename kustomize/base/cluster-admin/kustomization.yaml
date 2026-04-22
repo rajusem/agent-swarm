@@ -1,0 +1,25 @@
+# Cluster-admin base: follows upstream documented deployment.
+# Requires cluster-admin for ClusterRole, ClusterRoleBinding, Namespace,
+# and OAuthClient creation. Workspaces get their own namespaces.
+#
+# Pre-requisites before applying:
+#   1. Secret "swarmer-secret" with key SWARMER_SECRET_KEY
+#      Generate: python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+#   2. A pre-built swarmer container image (see: make image-build image-push)
+#
+# Usage:
+#   oc apply -k kustomize/base/cluster-admin
+#
+# Then use overlays to set image, namespace, and env vars.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: swarmer
+
+resources:
+  - ../common
+  - namespace.yaml
+  - rbac.yaml
+  - service.yaml
+  - route.yaml
+  - oauth-client.yaml

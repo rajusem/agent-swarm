@@ -148,7 +148,7 @@ def build_session_pod(
         ),
         client.V1VolumeMount(
             name="agent-config",
-            mount_path=tool.get_config_mount_path() + "-ro",
+            mount_path="/tmp/agent-config-ro",
             read_only=True,
         ),
     ]
@@ -243,7 +243,7 @@ def build_session_pod(
     config_path = tool.get_config_mount_path()
     config_setup = (
         f'mkdir -p {config_path} && '
-        f'cp -n {config_path}-ro/* {config_path}/ 2>/dev/null || true && '
+        f'cp -n /tmp/agent-config-ro/* {config_path}/ 2>/dev/null || true && '
     )
     git_setup = (
         'if [ -n "${GITHUB_PAT}" ] && command -v git >/dev/null 2>&1; then '

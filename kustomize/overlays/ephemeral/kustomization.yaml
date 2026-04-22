@@ -1,0 +1,56 @@
+# Example overlay for deploying to a namespace-scoped environment.
+# Copy this directory and fill in the placeholder values for your deployment.
+#
+# Pre-requisites:
+#   1. Target namespace must already exist
+#   2. Build and push the swarmer image to a registry accessible by the cluster
+#   3. Create Secret "swarmer-secret" with SWARMER_SECRET_KEY:
+#      oc create secret generic swarmer-secret \
+#        --from-literal=SWARMER_SECRET_KEY=$(python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())") \
+#        -n <namespace>
+#
+# Usage:
+#   oc apply -k kustomize/overlays/ephemeral
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: NAMESPACE
+
+resources:
+  - ../../base/namespace-scoped
+
+images:
+  - name: SWARMER_IMAGE
+    newName: IMAGE_REGISTRY/NAMESPACE/swarmer
+    newTag: latest
+
+patches:
+  - target:
+      kind: Deployment
+      name: swarmer
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: K8S_NAMESPACE
+          value: NAMESPACE
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AGENT_IMAGE_OPENCODE
+          value: "ghcr.io/anomalyco/opencode:latest"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AGENT_IMAGE_PYTHON
+          value: "ghcr.io/anomalyco/opencode:latest"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AGENT_IMAGE_CRUSH
+          value: "ghcr.io/gurnben/crush-container:latest"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: DEFAULT_AGENT_TOOL
+          value: "opencode-golang"
