@@ -1,0 +1,21 @@
+# Namespace-scoped base: no cluster-admin required.
+# Deploys into an existing namespace with namespace-level RBAC only.
+# All workspaces share the target namespace (K8S_NAMESPACE).
+# No OAuthClient — bearer token login only.
+#
+# Pre-requisites before applying:
+#   1. Target namespace must already exist
+#   2. A pre-built swarmer container image (see: make image-build image-push)
+#   3. Secret "swarmer-secret" with key SWARMER_SECRET_KEY
+#      Create: oc create secret generic swarmer-secret --from-literal=SWARMER_SECRET_KEY=<key>
+#
+# Usage:
+#   oc apply -k kustomize/overlays/<your-overlay>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../common
+  - rbac.yaml
+  - service.yaml
+  - route.yaml
