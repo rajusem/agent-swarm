@@ -2,55 +2,79 @@
 {% block title %}New Workspace — Swarmer{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-3">
-  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
-  <span class="text-muted">/</span>
-  <span class="ms-2">New Workspace</span>
-</div>
+{# ── Breadcrumb ── #}
+<nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--md);">
+  <ol class="pf-v6-c-breadcrumb__list">
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__link pf-m-current">New Workspace</span>
+    </li>
+  </ol>
+</nav>
 
-<h1 class="h3 mb-4">New Workspace</h1>
+<h1 class="pf-v6-c-title pf-m-2xl" style="margin-bottom:var(--pf-t--global--spacer--lg);">New Workspace</h1>
 
 {% if error %}
-<div class="alert alert-danger">{{ error }}</div>
+<div class="pf-v6-c-alert pf-m-danger pf-m-inline" style="margin-bottom:var(--pf-t--global--spacer--md);" role="alert">
+  <p class="pf-v6-c-alert__title">{{ error }}</p>
+</div>
 {% endif %}
 
-<form method="post" action="/workspaces">
-  <div class="row g-4">
-    <div class="col-md-6">
-      <div class="mb-3">
-        <label for="display_name" class="form-label fw-semibold">
-          Workspace Name <span class="text-danger">*</span>
+<form method="post" action="/workspaces" class="pf-v6-c-form">
+  <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
+    <div class="pf-v6-l-grid__item pf-m-6-col-on-md">
+      <div class="pf-v6-c-form__group">
+        <label class="pf-v6-c-form__label" for="display_name">
+          <span class="pf-v6-c-form__label-text">Workspace Name</span>
+          <span class="pf-v6-c-form__label-required" aria-hidden="true">&#42;</span>
         </label>
-        <input type="text" class="form-control" id="display_name" name="display_name"
-               value="{{ display_name or '' }}"
-               placeholder="e.g. My Agent Workspace"
-               hx-get="/workspaces/preview-namespace"
-               hx-trigger="input delay:300ms"
-               hx-target="#namespace-preview"
-               hx-include="[name='display_name']"
-               required autofocus>
-        <div class="form-text">The display name for this workspace.</div>
+        <div class="pf-v6-c-form__group-control">
+          <input type="text" class="pf-v6-c-form-control" id="display_name" name="display_name"
+                 value="{{ display_name or '' }}"
+                 placeholder="e.g. My Agent Workspace"
+                 hx-get="/workspaces/preview-namespace"
+                 hx-trigger="input delay:300ms"
+                 hx-target="#namespace-preview"
+                 hx-include="[name='display_name']"
+                 required autofocus>
+          <div class="pf-v6-c-form__helper-text">
+            <div class="pf-v6-c-helper-text__item">
+              <span class="pf-v6-c-helper-text__item-text">The display name for this workspace.</span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="mb-3">
-        <label for="description" class="form-label fw-semibold">Description</label>
-        <textarea class="form-control" id="description" name="description"
-                  rows="3" placeholder="Optional description">{{ description or '' }}</textarea>
+      <div class="pf-v6-c-form__group">
+        <label class="pf-v6-c-form__label" for="description">
+          <span class="pf-v6-c-form__label-text">Description</span>
+        </label>
+        <div class="pf-v6-c-form__group-control">
+          <textarea class="pf-v6-c-form-control" id="description" name="description"
+                    rows="3" placeholder="Optional description">{{ description or '' }}</textarea>
+        </div>
       </div>
 
-      <button type="submit" class="btn btn-primary">Create Workspace</button>
-      <a href="/workspaces" class="btn btn-link text-muted">Cancel</a>
+      <div class="pf-v6-c-form__group pf-m-action">
+        <div class="pf-v6-c-form__actions">
+          <button type="submit" class="pf-v6-c-button pf-m-primary">Create Workspace</button>
+          <a href="/workspaces" class="pf-v6-c-button pf-m-link">Cancel</a>
+        </div>
+      </div>
     </div>
 
-    <div class="col-md-6">
-      <div class="card bg-body-secondary">
-        <div class="card-body">
-          <h6 class="card-title text-muted small text-uppercase">Kubernetes Namespace</h6>
-          <code id="namespace-preview" class="fs-5 text-info">
-            {{ display_name | lower | replace(' ', '-') if display_name else '&nbsp;' }}
+    <div class="pf-v6-l-grid__item pf-m-6-col-on-md">
+      <div class="pf-v6-c-card">
+        <div class="pf-v6-c-card__body">
+          <h6 class="pf-v6-c-title pf-m-md" style="color:var(--pf-t--global--text--color--subtle); text-transform:uppercase; margin-bottom:var(--pf-t--global--spacer--sm);">Kubernetes Namespace</h6>
+          <code id="namespace-preview" style="font-size:var(--pf-t--global--font--size--lg); color:var(--pf-t--global--color--status--info--default);">
+            {% if display_name %}{{ display_name | lower | replace(' ', '-') }}{% else %}&nbsp;{% endif %}
           </code>
-          <hr>
-          <p class="small text-muted mb-0">
+          <hr style="margin:var(--pf-t--global--spacer--md) 0;">
+          <p style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); margin:0;">
             The namespace is derived automatically from the workspace name.
             It is <strong>immutable</strong> after creation and must be unique.
           </p>

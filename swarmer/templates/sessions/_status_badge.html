@@ -6,39 +6,38 @@
   hx-swap="outerHTML"
   {% endif %}>
 
-  <div class="d-flex align-items-center gap-2 flex-wrap">
+  <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap;">
 
     {% if session.phase == 'running' %}
       {% if session.mode == 'prompt' %}
-        <span class="badge bg-success">▶ Running</span>
+        <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">▶ Running</span></span>
       {% else %}
-        <span class="badge bg-success">● Active</span>
+        <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">● Active</span></span>
       {% endif %}
     {% elif session.phase == 'pending' %}
-      <span class="badge bg-warning text-dark">
-        ⏳ Pending{% if status_detail and status_detail not in ('Pending',) %} — {{ status_detail }}{% endif %}
+      <span class="pf-v6-c-label pf-m-gold">
+        <span class="pf-v6-c-label__content">⏳ Pending{% if status_detail and status_detail not in ('Pending',) %} — {{ status_detail }}{% endif %}</span>
       </span>
     {% elif session.phase == 'succeeded' %}
       {% if session.mode == 'prompt' %}
-        <span class="badge bg-primary">✓ Completed</span>
+        <span class="pf-v6-c-label pf-m-blue"><span class="pf-v6-c-label__content">✓ Completed</span></span>
       {% else %}
-        <span class="badge bg-primary">✓ Succeeded</span>
+        <span class="pf-v6-c-label pf-m-blue"><span class="pf-v6-c-label__content">✓ Succeeded</span></span>
       {% endif %}
     {% elif session.phase == 'failed' %}
-      <span class="badge bg-danger">
-        ✗ Failed{% if status_detail and status_detail not in ('Failed',) %} — {{ status_detail }}{% endif %}
+      <span class="pf-v6-c-label pf-m-red">
+        <span class="pf-v6-c-label__content">✗ Failed{% if status_detail and status_detail not in ('Failed',) %} — {{ status_detail }}{% endif %}</span>
       </span>
     {% elif session.phase == 'stopped' %}
-      <span class="badge bg-secondary">■ Stopped</span>
+      <span class="pf-v6-c-label pf-m-grey"><span class="pf-v6-c-label__content">■ Stopped</span></span>
     {% else %}
-      <span class="badge bg-secondary">○ Idle</span>
+      <span class="pf-v6-c-label pf-m-grey"><span class="pf-v6-c-label__content">○ Idle</span></span>
     {% endif %}
 
     {% if session.pod_name %}
-    <span class="text-muted small font-monospace">{{ session.pod_name }}</span>
+    <span style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); font-family:var(--pf-t--global--font--family--mono);">{{ session.pod_name }}</span>
     {% endif %}
 
   </div>
-
 
 </div>

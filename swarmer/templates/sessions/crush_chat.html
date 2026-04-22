@@ -5,8 +5,8 @@
 <style>
   #chat-messages { min-height: 400px; max-height: 70vh; overflow-y: auto; }
   .msg { padding: .75rem 1rem; border-radius: .75rem; max-width: 85%; word-wrap: break-word; }
-  .msg-user { background: var(--bs-primary); color: #fff; margin-left: auto; }
-  .msg-assistant { background: var(--bs-dark); border: 1px solid var(--bs-border-color); }
+  .msg-user { background: var(--pf-t--global--color--brand--default); color: #fff; margin-left: auto; }
+  .msg-assistant { background: var(--pf-t--global--background--color--secondary--default); border: 1px solid var(--pf-t--global--border--color--default); }
   .msg-assistant pre { margin: 0; white-space: pre-wrap; }
   .msg-thinking { opacity: .6; font-style: italic; }
   #chat-input { resize: none; }
@@ -14,34 +14,47 @@
 {% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-3">
-  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
-  <span class="text-muted">/</span>
-  <a href="/workspaces/{{ ws.id }}" class="text-muted text-decoration-none mx-2">{{ ws.display_name }}</a>
-  <span class="text-muted">/</span>
-  <a href="/workspaces/{{ ws.id }}/sessions" class="text-muted text-decoration-none mx-2">Sessions</a>
-  <span class="text-muted">/</span>
-  <a href="/workspaces/{{ ws.id }}/sessions/{{ session.id }}" class="text-muted text-decoration-none mx-2">{{ session.name }}</a>
-  <span class="text-muted">/</span>
-  <span class="ms-2">Chat</span>
+{# ── Breadcrumb ── #}
+<nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--md);">
+  <ol class="pf-v6-c-breadcrumb__list">
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces/{{ ws.id }}" class="pf-v6-c-breadcrumb__link">{{ ws.display_name }}</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces/{{ ws.id }}/sessions" class="pf-v6-c-breadcrumb__link">Sessions</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces/{{ ws.id }}/sessions/{{ session.id }}" class="pf-v6-c-breadcrumb__link">{{ session.name }}</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__link pf-m-current">Chat</span>
+    </li>
+  </ol>
+</nav>
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);">
+  <h1 class="pf-v6-c-title pf-m-xl" style="margin:0;">{{ session.name }} — Chat</h1>
+  <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">● Connected</span></span>
 </div>
 
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h4 mb-0">{{ session.name }} — Chat</h1>
-  <span class="badge bg-success">● Connected</span>
-</div>
-
-<div id="chat-messages" class="border rounded p-3 mb-3">
-  <div class="text-muted text-center py-4" id="chat-empty">
-    <p class="mb-1">Send a message to start chatting with Crush.</p>
+<div id="chat-messages" class="pf-v6-c-card__body" style="border:1px solid var(--pf-t--global--border--color--default); border-radius:var(--pf-t--global--border--radius--medium); padding:var(--pf-t--global--spacer--md); margin-bottom:var(--pf-t--global--spacer--md); min-height:400px; max-height:70vh; overflow-y:auto;">
+  <div style="color:var(--pf-t--global--text--color--subtle); text-align:center; padding:var(--pf-t--global--spacer--xl);" id="chat-empty">
+    <p style="margin-bottom:var(--pf-t--global--spacer--xs);">Send a message to start chatting with Crush.</p>
     <small>Model: {{ model_name }} via {{ provider_name }}</small>
   </div>
 </div>
 
-<form id="chat-form" class="d-flex gap-2">
-  <textarea id="chat-input" class="form-control" rows="2"
-            placeholder="Type a message…" autofocus></textarea>
-  <button type="submit" class="btn btn-primary align-self-end" id="send-btn">Send</button>
+<form id="chat-form" style="display:flex; gap:var(--pf-t--global--spacer--sm);">
+  <textarea id="chat-input" class="pf-v6-c-form-control" rows="2"
+            placeholder="Type a message…" autofocus style="flex:1;"></textarea>
+  <button type="submit" class="pf-v6-c-button pf-m-primary" id="send-btn" style="align-self:flex-end;">Send</button>
 </form>
 {% endblock %}
 
@@ -65,7 +78,7 @@
   function addMessage(role, text) {
     if (emptyMsg) emptyMsg.remove();
     const div = document.createElement('div');
-    div.className = `d-flex mb-2 ${role === 'user' ? 'justify-content-end' : ''}`;
+    div.style.cssText = `display:flex; margin-bottom:var(--pf-t--global--spacer--sm); ${role === 'user' ? 'justify-content:flex-end;' : ''}`;
     const msg = document.createElement('div');
     msg.className = `msg msg-${role}`;
     if (role === 'assistant') {
@@ -86,7 +99,7 @@
     if (on && !el) {
       el = document.createElement('div');
       el.id = 'thinking-indicator';
-      el.className = 'd-flex mb-2';
+      el.style.cssText = 'display:flex; margin-bottom:var(--pf-t--global--spacer--sm);';
       el.innerHTML = '<div class="msg msg-assistant msg-thinking">Thinking…</div>';
       messagesDiv.appendChild(el);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
@@ -105,7 +118,6 @@
   }
 
   async function init() {
-    // Create Crush workspace
     const workspaces = await apiCall('GET', 'v1/workspaces');
     if (workspaces.length > 0) {
       crushWsId = workspaces[0].id;
@@ -114,11 +126,9 @@
       crushWsId = ws.id;
     }
 
-    // Create or reuse session
     const sessions = await apiCall('GET', `v1/workspaces/${crushWsId}/sessions`);
     if (sessions.length > 0) {
       crushSessionId = sessions[0].id;
-      // Load history
       const msgs = await apiCall('GET', `v1/workspaces/${crushWsId}/sessions/${crushSessionId}/messages`);
       for (const m of msgs) {
         const texts = [];
@@ -132,14 +142,12 @@
       crushSessionId = session.id;
     }
 
-    // Connect SSE
     connectSSE();
   }
 
   async function pollLatestResponse() {
     try {
       const msgs = await apiCall('GET', `v1/workspaces/${crushWsId}/sessions/${crushSessionId}/messages`);
-      // Find the last assistant message
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === 'assistant') {
           const texts = [];
@@ -210,7 +218,6 @@
             sendBtn.disabled = false;
             chatInput.disabled = false;
           } else if (payload.type === 'created' && payload.payload && payload.payload.type === 'agent_finished') {
-            // Agent finished — poll messages for the final response
             setTimeout(pollLatestResponse, 500);
           }
         }
@@ -219,7 +226,6 @@
       }
     }
 
-    // Listen for both unnamed events and common named event types
     eventSource.onmessage = handleEvent;
     eventSource.addEventListener('message', handleEvent);
     eventSource.addEventListener('session', handleEvent);
@@ -248,7 +254,6 @@
         prompt: text,
         session_id: crushSessionId,
       });
-      // Fallback: poll for response if SSE doesn't deliver within 8s
       setTimeout(function() {
         if (document.getElementById('thinking-indicator')) {
           pollLatestResponse();
@@ -262,7 +267,6 @@
     }
   });
 
-  // Ctrl+Enter to send
   chatInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();

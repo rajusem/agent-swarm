@@ -2,101 +2,115 @@
 {% block title %}{{ ws.display_name }} — Swarmer{% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-1">
-  <a href="/workspaces" class="text-muted text-decoration-none me-2">Workspaces</a>
-  <span class="text-muted">/</span>
-  <span class="ms-2">{{ ws.display_name }}</span>
-</div>
+{# ── Breadcrumb ── #}
+<nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--sm);">
+  <ol class="pf-v6-c-breadcrumb__list">
+    <li class="pf-v6-c-breadcrumb__item">
+      <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__link pf-m-current">{{ ws.display_name }}</span>
+    </li>
+  </ol>
+</nav>
 
-<div class="d-flex justify-content-between align-items-start mb-4">
+{# ── Title row ── #}
+<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:var(--pf-t--global--spacer--lg);">
   <div>
-    <h1 class="h3 mb-1">
+    <h1 class="pf-v6-c-title pf-m-2xl" style="margin-bottom:var(--pf-t--global--spacer--xs);">
       {{ ws.display_name }}
-      <code class="namespace-badge fs-6 ms-2 text-info">{{ ws.namespace }}</code>
-      <span class="badge bg-{{ 'success' if ns_status == 'Active' else 'secondary' }} ms-1 fs-6">
-        {{ ns_status }}
+      <code class="namespace-badge" style="font-size:var(--pf-t--global--font--size--md); margin-left:var(--pf-t--global--spacer--sm); color:var(--pf-t--global--color--status--info--default);">{{ ws.namespace }}</code>
+      <span class="pf-v6-c-label pf-m-{{ 'green' if ns_status == 'Active' else 'grey' }}" style="margin-left:var(--pf-t--global--spacer--xs);">
+        <span class="pf-v6-c-label__content">{{ ns_status }}</span>
       </span>
     </h1>
     {% if ws.description %}
-    <p class="text-muted mb-0">{{ ws.description }}</p>
+    <p style="color:var(--pf-t--global--text--color--subtle); margin:0;">{{ ws.description }}</p>
     {% endif %}
   </div>
-  <div class="d-flex gap-2">
-    <a href="/workspaces/{{ ws.id }}/secrets" class="btn btn-sm btn-outline-secondary">Secrets</a>
-    <a href="/workspaces/{{ ws.id }}/edit" class="btn btn-sm btn-outline-secondary">Edit</a>
+  <div style="display:flex; gap:var(--pf-t--global--spacer--sm);">
+    <a href="/workspaces/{{ ws.id }}/secrets" class="pf-v6-c-button pf-m-secondary pf-m-small">Secrets</a>
+    <a href="/workspaces/{{ ws.id }}/edit" class="pf-v6-c-button pf-m-secondary pf-m-small">Edit</a>
   </div>
 </div>
 
-<!-- Sessions -->
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h2 class="h5 mb-0">Sessions</h2>
-  <a href="/workspaces/{{ ws.id }}/sessions/new" class="btn btn-primary btn-sm">+ New Session</a>
+{# ── Sessions section ── #}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);">
+  <h2 class="pf-v6-c-title pf-m-xl" style="margin:0;">Sessions</h2>
+  <a href="/workspaces/{{ ws.id }}/sessions/new" class="pf-v6-c-button pf-m-primary pf-m-small">+ New Session</a>
 </div>
 
 {% if sessions %}
-<div class="table-responsive">
-  <table class="table table-hover align-middle">
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Tool</th>
-        <th>Mode</th>
-
-        <th>Status</th>
-        <th>GitHub PAT</th>
-        <th>Persist</th>
-        <th class="text-end">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for s in sessions %}
-      <tr>
-        <td>
-          <a href="/workspaces/{{ ws.id }}/sessions/{{ s.id }}"
-             class="fw-semibold text-decoration-none">{{ s.name }}</a>
-        </td>
-        <td>
-          <span class="badge bg-dark">{{ s.agent_tool | capitalize }}</span>
-        </td>
-        <td>
-          <span class="badge bg-{{ 'info' if s.mode == 'server' else ('primary' if s.mode == 'tui' else 'secondary') }}">
-            {{ s.mode | capitalize }}
-          </span>
-        </td>
-        <td>
-          {% if s.phase == 'running' %}
-            <span class="badge bg-success">● Active</span>
-          {% elif s.phase == 'pending' %}
-            <span class="badge bg-warning text-dark">⏳ Pending</span>
-          {% elif s.phase == 'succeeded' %}
-            <span class="badge bg-primary">✓ Succeeded</span>
-          {% elif s.phase == 'failed' %}
-            <span class="badge bg-danger">✗ Failed</span>
-          {% elif s.phase == 'stopped' %}
-            <span class="badge bg-secondary">■ Stopped</span>
-          {% else %}
-            <span class="badge bg-secondary">○ Idle</span>
-          {% endif %}
-        </td>
-        <td class="small text-muted">{{ s.github_pat.name if s.github_pat else '—' }}</td>
-        <td>
-          {% if s.persist %}<span class="badge bg-info text-dark">Yes</span>
-          {% else %}<span class="text-muted">—</span>{% endif %}
-        </td>
-        <td class="text-end">
-          <a href="/workspaces/{{ ws.id }}/sessions/{{ s.id }}"
-             class="btn btn-sm btn-outline-secondary">Open</a>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
+<table class="pf-v6-c-table pf-m-grid-md" role="grid">
+  <thead class="pf-v6-c-table__thead">
+    <tr class="pf-v6-c-table__tr" role="row">
+      <th class="pf-v6-c-table__th" role="columnheader">Name</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Tool</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Mode</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Status</th>
+      <th class="pf-v6-c-table__th" role="columnheader">GitHub PAT</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Persist</th>
+      <th class="pf-v6-c-table__th pf-m-fit-content" role="columnheader" style="text-align:right;">Actions</th>
+    </tr>
+  </thead>
+  <tbody class="pf-v6-c-table__tbody" role="rowgroup">
+  {% for s in sessions %}
+    <tr class="pf-v6-c-table__tr" role="row">
+      <td class="pf-v6-c-table__td" role="cell" data-label="Name">
+        <a href="/workspaces/{{ ws.id }}/sessions/{{ s.id }}"
+           style="font-weight:var(--pf-t--global--font--weight--heading--bold); text-decoration:none;">{{ s.name }}</a>
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Tool">
+        <span class="pf-v6-c-label pf-m-outline">
+          <span class="pf-v6-c-label__content">{{ s.agent_tool | capitalize }}</span>
+        </span>
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Mode">
+        <span class="pf-v6-c-label pf-m-{{ 'cyan' if s.mode == 'server' else ('blue' if s.mode == 'tui' else 'grey') }}">
+          <span class="pf-v6-c-label__content">{{ s.mode | capitalize }}</span>
+        </span>
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Status">
+        {% if s.phase == 'running' %}
+          <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">● Active</span></span>
+        {% elif s.phase == 'pending' %}
+          <span class="pf-v6-c-label pf-m-gold"><span class="pf-v6-c-label__content">⏳ Pending</span></span>
+        {% elif s.phase == 'succeeded' %}
+          <span class="pf-v6-c-label pf-m-blue"><span class="pf-v6-c-label__content">✓ Succeeded</span></span>
+        {% elif s.phase == 'failed' %}
+          <span class="pf-v6-c-label pf-m-red"><span class="pf-v6-c-label__content">✗ Failed</span></span>
+        {% elif s.phase == 'stopped' %}
+          <span class="pf-v6-c-label pf-m-grey"><span class="pf-v6-c-label__content">■ Stopped</span></span>
+        {% else %}
+          <span class="pf-v6-c-label pf-m-grey"><span class="pf-v6-c-label__content">○ Idle</span></span>
+        {% endif %}
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="GitHub PAT" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+        {{ s.github_pat.name if s.github_pat else '—' }}
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Persist">
+        {% if s.persist %}
+          <span class="pf-v6-c-label pf-m-cyan"><span class="pf-v6-c-label__content">Yes</span></span>
+        {% else %}
+          <span style="color:var(--pf-t--global--text--color--subtle);">—</span>
+        {% endif %}
+      </td>
+      <td class="pf-v6-c-table__td pf-m-fit-content" role="cell" data-label="Actions" style="text-align:right;">
+        <a href="/workspaces/{{ ws.id }}/sessions/{{ s.id }}"
+           class="pf-v6-c-button pf-m-secondary pf-m-small">Open</a>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 {% else %}
-<div class="card text-center py-4">
-  <div class="card-body text-muted">
-    <p class="mb-2">No sessions yet.</p>
-    <a href="/workspaces/{{ ws.id }}/sessions/new" class="btn btn-primary btn-sm">Create first session</a>
+<div class="pf-v6-c-empty-state">
+  <div class="pf-v6-c-empty-state__content">
+    <h2 class="pf-v6-c-empty-state__title-text" style="color:var(--pf-t--global--text--color--subtle);">No sessions yet.</h2>
+    <div class="pf-v6-c-empty-state__actions">
+      <a href="/workspaces/{{ ws.id }}/sessions/new" class="pf-v6-c-button pf-m-primary pf-m-small">Create first session</a>
+    </div>
   </div>
 </div>
 {% endif %}

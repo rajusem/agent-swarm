@@ -1,23 +1,27 @@
 {# HTMX partial — model selector options for the chosen agent tool #}
 <div id="model-select-wrapper">
 {% if model_options %}
-<div class="mb-3">
-  <label class="form-label fw-semibold">Model</label>
-  <select class="form-select" name="model">
-    {% set ns = namespace(prev_group="") %}
-    {% for opt in model_options %}
-      {% if opt.group != ns.prev_group %}
-        {% if ns.prev_group %}</optgroup>{% endif %}
-        <optgroup label="{{ opt.group }}">
-        {% set ns.prev_group = opt.group %}
-      {% endif %}
-      <option value="{{ opt.value }}"
-              {% if (selected_model and selected_model == opt.value) or (not selected_model and loop.first) %}selected{% endif %}>
-        {{ opt.label }}
-      </option>
-    {% endfor %}
-    {% if ns.prev_group %}</optgroup>{% endif %}
-  </select>
+<div class="pf-v6-c-form__group">
+  <label class="pf-v6-c-form__label">
+    <span class="pf-v6-c-form__label-text" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Model</span>
+  </label>
+  <div class="pf-v6-c-form__group-control">
+    <select class="pf-v6-c-form-control" name="model">
+      {% set ns = namespace(prev_group="") %}
+      {% for opt in model_options %}
+        {% if opt.group != ns.prev_group %}
+          {% if ns.prev_group %}</optgroup>{% endif %}
+          <optgroup label="{{ opt.group }}">
+          {% set ns.prev_group = opt.group %}
+        {% endif %}
+        <option value="{{ opt.value }}"
+                {% if (selected_model and selected_model == opt.value) or (not selected_model and loop.first) %}selected{% endif %}>
+          {{ opt.label }}
+        </option>
+      {% endfor %}
+      {% if ns.prev_group %}</optgroup>{% endif %}
+    </select>
+  </div>
 </div>
 {% else %}
 <input type="hidden" name="model" value="">
