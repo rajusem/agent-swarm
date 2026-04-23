@@ -84,6 +84,8 @@ async def _auto_cleanup_pod(session_id: int, pod_name: str, namespace: str) -> N
 
 
 async def _save_to_db(session_id: int, phase: str, detail: str, logs: str) -> None:
+    from datetime import datetime
+
     from swarmer.database import get_db
     from swarmer.models.session import Session
 
@@ -92,6 +94,8 @@ async def _save_to_db(session_id: int, phase: str, detail: str, logs: str) -> No
             session = await db.get(Session, session_id)
             if session is None:
                 break
+            if phase in _TERMINAL_PHASES and session.phase not in _TERMINAL_PHASES:
+                session.run_completed_at = datetime.utcnow()
             session.phase = phase
             session.status_detail = detail
             if logs:

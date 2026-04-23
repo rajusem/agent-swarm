@@ -1,6 +1,6 @@
 {# HTMX partial — polled every 5s while session is active #}
 <div id="session-status"
-  {% if session.phase in ('pending', 'running') %}
+  {% if session.phase in ('pending', 'running') or session.pod_name %}
   hx-get="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/status"
   hx-trigger="every 5s"
   hx-swap="outerHTML"

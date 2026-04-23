@@ -32,6 +32,7 @@
       <th class="pf-v6-c-table__th" role="columnheader">Tool</th>
       <th class="pf-v6-c-table__th" role="columnheader">Mode</th>
       <th class="pf-v6-c-table__th" role="columnheader">Status</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Last Run</th>
       <th class="pf-v6-c-table__th" role="columnheader">GitHub PAT</th>
       <th class="pf-v6-c-table__th" role="columnheader">Repos</th>
       <th class="pf-v6-c-table__th" role="columnheader">Persist</th>
@@ -72,6 +73,14 @@
           <span class="pf-v6-c-label pf-m-grey"><span class="pf-v6-c-label__content">■ Stopped</span></span>
         {% else %}
           <span class="pf-v6-c-label pf-m-grey"><span class="pf-v6-c-label__content">○ Idle</span></span>
+        {% endif %}
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Last Run" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); white-space:nowrap;">
+        {% if s.run_started_at %}
+          {{ s.run_started_at.strftime('%b %d %H:%M') }}
+          {% if s.run_duration %}<br><span style="font-size:0.85em;">{{ s.run_duration }}</span>{% endif %}
+        {% else %}
+          —
         {% endif %}
       </td>
       <td class="pf-v6-c-table__td" role="cell" data-label="GitHub PAT" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">

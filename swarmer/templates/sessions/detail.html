@@ -80,6 +80,13 @@
   </div>
 </div>
 
+{% if session.run_started_at %}
+<div style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
+  Last run: {{ session.run_started_at.strftime('%b %d %Y %H:%M') }} UTC
+  {% if session.run_duration %} · {{ session.run_duration }}{% endif %}
+</div>
+{% endif %}
+
 {# ── Two-column row: config (left) + repos or last output (right) ── #}
 <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
 
@@ -531,6 +538,7 @@ document.addEventListener('htmx:afterSwap', function () {
 
   const _launchBtn = document.getElementById('launch-btn');
   const _launchSelect = document.getElementById('launch-tool-select');
+  if (_launchSelect) _launchSelect.disabled = isActive;
   if (_launchBtn) {
     const availMap = _launchSelect ? JSON.parse(_launchSelect.dataset.availability || '{}') : {};
     const selectedTool = _launchSelect ? _launchSelect.value : '';

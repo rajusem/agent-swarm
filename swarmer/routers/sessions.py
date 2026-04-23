@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import uuid
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends, Form, Request
@@ -510,6 +511,8 @@ async def session_launch(
         pod = v1.create_namespaced_pod(ws.k8s_namespace, pod_spec)
         session.pod_name = pod.metadata.name
         session.phase = "pending"
+        session.run_started_at = datetime.utcnow()
+        session.run_completed_at = None
 
         # Create a Service (and OpenShift Route) for server-mode sessions
         if session.mode == "server":
@@ -562,6 +565,7 @@ async def session_stop(
         except Exception as exc:
             flash(request, f"PVC deletion failed: {exc}", "warning")
 
+    session.run_completed_at = datetime.utcnow()
     session.phase = "stopped"
     session.pod_name = None
     await db.commit()

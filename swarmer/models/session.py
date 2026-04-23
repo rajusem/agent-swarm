@@ -54,6 +54,8 @@ class Session(Base):
     last_output: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status_detail: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
     phase: Mapped[str] = mapped_column(String(32), nullable=False, default="idle")
+    run_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    run_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -70,6 +72,19 @@ class Session(Base):
     repos: Mapped[list["SessionRepo"]] = relationship(  # noqa: F821
         back_populates="session", cascade="all, delete-orphan"
     )
+
+    @property
+    def run_duration(self) -> str | None:
+        if not self.run_started_at or not self.run_completed_at:
+            return None
+        total_secs = int((self.run_completed_at - self.run_started_at).total_seconds())
+        mins, secs = divmod(max(total_secs, 0), 60)
+        hours, mins = divmod(mins, 60)
+        if hours:
+            return f"{hours}h {mins}m {secs}s"
+        if mins:
+            return f"{mins}m {secs}s"
+        return f"{secs}s"
 
     @property
     def interactive_mode(self) -> bool:
