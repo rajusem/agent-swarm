@@ -83,8 +83,9 @@
                   hx-trigger="change">
             {% for tool in agent_tools %}
             <option value="{{ tool.name }}"
-                    {% if tool.name == default_agent_tool %}selected{% endif %}>
-              {{ tool.display_name }}
+                    {% if tool.name == default_agent_tool %}selected{% endif %}
+                    {% if not tool_image_available[tool.name] %}disabled{% endif %}>
+              {{ '✓' if tool_image_available[tool.name] else '✗' }} {{ tool.display_name }}
             </option>
             {% endfor %}
           </select>
@@ -158,18 +159,6 @@
               </label>
               <span class="pf-v6-c-check__description">Passes <code>--continue</code> to the agent.</span>
             </div>
-          </div>
-          <hr style="margin:var(--pf-t--global--spacer--md) 0;">
-          <div class="pf-v6-c-check">
-            <input class="pf-v6-c-check__input" type="checkbox" name="privileged"
-                   id="privileged" value="true">
-            <label class="pf-v6-c-check__label" for="privileged">
-              <strong>Privileged (run as root)</strong>
-            </label>
-            <span class="pf-v6-c-check__description">
-              Runs the container as root with a privileged security context.
-              Fixes git ownership issues and allows <code>apt-get</code> in the session.
-            </span>
           </div>
         </div>
       </div>

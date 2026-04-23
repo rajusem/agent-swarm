@@ -17,10 +17,10 @@ from swarmer.database import Base
 # Valid phase values
 PHASES = ("idle", "pending", "running", "succeeded", "failed", "stopped")
 
-AGENT_TOOLS = ("opencode-golang", "opencode-python", "crush")
+AGENT_TOOLS = ("opencode", "crush")
 
 # Valid mode values
-#   tui    — pod keeps alive (sleep infinity); browser connects via xterm.js kubectl exec
+#   tui    — pod keeps alive (sleep infinity); browser connects via xterm.js and the K8s exec API
 #   server — pod runs opencode serve --hostname 0.0.0.0
 #   prompt — pod runs opencode run "<prompt>" once and exits
 MODES = ("tui", "server", "prompt")
@@ -46,7 +46,7 @@ class Session(Base):
     persist: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     resume: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     privileged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
-    agent_tool: Mapped[str] = mapped_column(String(32), nullable=False, default="opencode-golang", server_default="opencode-golang")
+    agent_tool: Mapped[str] = mapped_column(String(32), nullable=False, default="opencode", server_default="opencode")
     instruction_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

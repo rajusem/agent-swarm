@@ -48,7 +48,7 @@ spec:
             - name: AGENT_IMAGE_CRUSH
               value: "AGENT_IMAGE_CRUSH_VALUE"
             - name: DEFAULT_AGENT_TOOL
-              value: "opencode-golang"
+              value: "opencode"
 
           volumeMounts:
             - name: swarmer-data

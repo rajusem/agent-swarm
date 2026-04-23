@@ -8,7 +8,8 @@ def register(strategy: AgentToolStrategy) -> None:
 
 
 _ALIASES: dict[str, str] = {
-    "opencode": "opencode-golang",
+    "opencode-golang": "opencode",
+    "opencode-python": "opencode",
 }
 
 
@@ -27,10 +28,8 @@ def all_tools() -> list[AgentToolStrategy]:
 
 def _init() -> None:
     from swarmer.agent_tools.opencode import OpenCodeStrategy  # noqa: F811
-    from swarmer.agent_tools.opencode_python import PythonStrategy  # noqa: F811
     from swarmer.agent_tools.crush import CrushStrategy  # noqa: F811
     register(OpenCodeStrategy())
-    register(PythonStrategy())
     register(CrushStrategy())
 
 

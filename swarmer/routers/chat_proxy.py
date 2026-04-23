@@ -3,7 +3,7 @@ Reverse-proxy router for server-mode sessions.
 
 A persistent `kubectl port-forward` subprocess is started on demand and
 reused for the lifetime of the session (recreated if the process dies or the
-pod is replaced) — the same mechanism the TUI terminal uses for kubectl exec.
+pod is replaced) — dev-mode only; in-cluster mode uses ClusterIP Service DNS.
 
 Dev mode (K8S_IN_CLUSTER=false):
     The port-forward binds to localhost on the same machine as the user's

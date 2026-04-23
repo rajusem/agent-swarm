@@ -143,7 +143,7 @@ def get_namespace_status(namespace: str) -> str:
 # ---------- ConfigMap helpers ----------
 
 def apply_agent_config(
-    namespace: str, secret=None, agent_tool: str = "opencode-golang"
+    namespace: str, secret=None, agent_tool: str = "opencode"
 ) -> None:
     """Create or update the agent tool's ConfigMap in the given namespace."""
     from kubernetes import client
@@ -169,7 +169,7 @@ def apply_agent_config(
 
 def apply_opencode_config(namespace: str, secret=None) -> None:
     """Backward-compat wrapper — delegates to apply_agent_config."""
-    apply_agent_config(namespace, secret=secret, agent_tool="opencode-golang")
+    apply_agent_config(namespace, secret=secret, agent_tool="opencode")
 
 
 # ---------- Secret helpers ----------
@@ -205,7 +205,7 @@ def _delete_secret(namespace: str, name: str) -> None:
 
 
 def apply_agent_secret(
-    namespace: str, secret, agent_tool: str = "opencode-golang"
+    namespace: str, secret, agent_tool: str = "opencode"
 ) -> None:
     """Sync the agent tool's K8s Secret from the DB model."""
     from swarmer.agent_tools.registry import get as get_tool
@@ -228,7 +228,7 @@ def sync_all_agent_secrets(namespace: str, secret) -> None:
 
 def apply_opencode_secret(namespace: str, secret) -> None:
     """Backward-compat wrapper — delegates to apply_agent_secret."""
-    apply_agent_secret(namespace, secret, agent_tool="opencode-golang")
+    apply_agent_secret(namespace, secret, agent_tool="opencode")
 
 
 def apply_github_pat_secret(namespace: str, pat) -> None:
@@ -503,7 +503,7 @@ async def check_image_reachable(image: str, namespace: str) -> bool:
 
 
 def exec_model_update(
-    pod_name: str, namespace: str, model: str, agent_tool: str = "opencode-golang"
+    pod_name: str, namespace: str, model: str, agent_tool: str = "opencode"
 ) -> None:
     """Update model selection on a running pod via the tool's strategy."""
     from swarmer.agent_tools.registry import get as get_tool
@@ -514,7 +514,7 @@ def exec_model_update(
 
 def exec_model_json(pod_name: str, namespace: str, model: str) -> None:
     """Backward-compat wrapper — delegates to exec_model_update."""
-    exec_model_update(pod_name, namespace, model, agent_tool="opencode-golang")
+    exec_model_update(pod_name, namespace, model, agent_tool="opencode")
 
 
 def delete_service(service_name: str, namespace: str) -> None:
