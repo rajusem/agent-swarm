@@ -84,7 +84,7 @@
 <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
 
   {# Left column: Configuration #}
-  <div class="pf-v6-l-grid__item pf-m-5-col-on-md" id="left-col">
+  <div class="pf-v6-l-grid__item pf-m-4-col-on-md" id="left-col">
 
     <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
       <div class="pf-v6-c-card__header">
@@ -141,8 +141,8 @@
           <div class="pf-v6-c-form__group">
             <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
               <label style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Mode</label>
-              <div style="flex:1;">
-                <select name="mode" class="pf-v6-c-form-control"
+              <div style="flex:0 0 auto;">
+                <select name="mode" class="pf-v6-c-form-control" style="width:auto;"
                         {% if session.is_active %}disabled title="Stop session to change mode"{% endif %}>
                   <option value="prompt" {{ 'selected' if session.mode == 'prompt' }}>Prompt</option>
                   <option value="server" {{ 'selected' if session.mode == 'server' }}>Server</option>
@@ -181,27 +181,13 @@
             </div>
           </div>
 
-          <div id="cfg-instruction-section"
-               {% if session.mode != 'prompt' %}style="display:none"{% endif %}>
-            <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
-              <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
-                <span class="pf-v6-c-form__label-text">Instruction Prompt</span>
-              </label>
-              <div class="pf-v6-c-form__group-control">
-                <textarea class="pf-v6-c-form-control" name="instruction_prompt"
-                          rows="3" placeholder="Describe the task for the agent to run…"
-                          {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
-              </div>
-            </div>
-          </div>
-
           {% if model_options %}
           <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
             <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
               <span class="pf-v6-c-form__label-text">Model</span>
             </label>
             <div class="pf-v6-c-form__group-control">
-              <select class="pf-v6-c-form-control" name="model"
+              <select class="pf-v6-c-form-control" name="model" style="width:auto;"
                       {% if session.is_active %}disabled{% endif %}>
                 {% set ns = namespace(prev_group="") %}
                 {% for opt in model_options %}
@@ -252,9 +238,21 @@
   </div>
 
   {# Right column #}
-  <div class="pf-v6-l-grid__item pf-m-7-col-on-md" style="display:flex; flex-direction:column;">
+  <div class="pf-v6-l-grid__item pf-m-8-col-on-md" style="display:flex; flex-direction:column;">
 
     {% if session.mode == 'prompt' %}
+    <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md); flex-shrink:0;">
+      <div class="pf-v6-c-card__header">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</h3>
+      </div>
+      <div class="pf-v6-c-card__body">
+        <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
+                  form="cfg-edit-form" name="instruction_prompt"
+                  rows="4" placeholder="Describe the task for the agent to run…"
+                  {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
+      </div>
+    </div>
+
     <div class="pf-v6-c-card" id="last-output-card" style="display:flex; flex-direction:column; flex:1; min-height:0;">
       <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
         <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
@@ -395,11 +393,7 @@
 
   const modeSelect = form.querySelector('select[name=mode]');
   if (modeSelect) {
-    modeSelect.addEventListener('change', () => {
-      const section = document.getElementById('cfg-instruction-section');
-      if (section) section.style.display = modeSelect.value === 'prompt' ? '' : 'none';
-      form.submit();
-    });
+    modeSelect.addEventListener('change', () => { form.submit(); });
   }
 
   form.querySelectorAll('select:not([name=mode]), input[type=checkbox]').forEach(el => {
@@ -454,6 +448,19 @@
   }
 })();
 
+// Wire auto-save for the instruction prompt textarea (associated with cfg-edit-form via form= attribute)
+(function () {
+  const instrTA = document.getElementById('instruction-prompt-input');
+  if (!instrTA) return;
+  let pending = false;
+  instrTA.addEventListener('input', () => { pending = true; });
+  instrTA.addEventListener('blur', async () => {
+    if (!pending) return;
+    pending = false;
+    if (window._cfgSave) await window._cfgSave();
+  });
+})();
+
 function updateLaunchAvailPill(avail) {
   const pill = document.getElementById('launch-avail-pill');
   if (!pill) return;
@@ -495,6 +502,8 @@ document.addEventListener('htmx:afterSwap', function () {
       el.disabled = isActive;
     });
   }
+  const instrTA = document.getElementById('instruction-prompt-input');
+  if (instrTA) instrTA.disabled = isActive;
   const patSelect = document.getElementById('cfg-pat-select');
   if (patSelect) patSelect.disabled = isActive;
   const stopMsg = document.getElementById('cfg-stop-msg');
@@ -513,12 +522,11 @@ document.addEventListener('htmx:afterSwap', function () {
     }
   }
 
-  const isSucceeded = badge && badge.classList.contains('pf-m-blue');
   const launchStop = document.getElementById('launch-stop');
-  if (launchStop) launchStop.style.display = (isActive || isSucceeded) ? '' : 'none';
+  if (launchStop) launchStop.style.display = isActive ? '' : 'none';
 
   const launchForm = document.getElementById('launch-form');
-  if (launchForm) launchForm.style.display = (isActive || isSucceeded) ? 'none' : '';
+  if (launchForm) launchForm.style.display = isActive ? 'none' : '';
 
   const _launchBtn = document.getElementById('launch-btn');
   const _launchSelect = document.getElementById('launch-tool-select');
@@ -544,20 +552,6 @@ document.addEventListener('htmx:afterSwap', function () {
   if (chatBtn) chatBtn.style.display = isRunning ? '' : 'none';
   {% endif %}
 
-  {% if session.mode == 'prompt' %}
-  const launchStopBtn = document.getElementById('launch-stop-btn');
-  if (launchStopBtn) {
-    if (isSucceeded) {
-      launchStopBtn.textContent = '↺ Clean up';
-      launchStopBtn.classList.remove('pf-m-warning');
-      launchStopBtn.classList.add('pf-m-secondary');
-    } else {
-      launchStopBtn.textContent = '■ Stop';
-      launchStopBtn.classList.add('pf-m-warning');
-      launchStopBtn.classList.remove('pf-m-secondary');
-    }
-  }
-  {% endif %}
 });
 </script>
 

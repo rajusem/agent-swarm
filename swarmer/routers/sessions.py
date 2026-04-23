@@ -232,6 +232,10 @@ async def session_create(
     except ValueError:
         agent_tool = "opencode"
 
+    if not model.strip():
+        opts = await _get_model_options(ws_id, db, agent_tool)
+        model = opts[0]["value"] if opts else ""
+
     session = Session(
         workspace_id=ws_id,
         github_pat_id=pat_id,
@@ -446,7 +450,8 @@ async def session_launch(
         session.resume = resume
         if mode in ("tui", "server", "prompt"):
             session.mode = mode
-        session.model = model.strip()
+        if model.strip():
+            session.model = model.strip()
 
     if agent_tool:
         try:
@@ -504,14 +509,6 @@ async def session_launch(
         session.pod_name = pod.metadata.name
         session.phase = "pending"
 
-        if session.mode == "prompt":
-            prompt_display = f"Prompt:\n{session.instruction_prompt or '(no prompt)'}"
-            if session.repos:
-                prompt_display += "\n\nContext Repositories:"
-                for repo in session.repos:
-                    prompt_display += f"\n- {repo.repo_url} ({repo.branch}) /workspace/{repo.local_path}"
-            session.last_output = prompt_display
-
         # Create a Service (and OpenShift Route) for server-mode sessions
         if session.mode == "server":
             tool = get_tool(session.agent_tool)
@@ -522,7 +519,7 @@ async def session_launch(
         await db.commit()
         if session.mode in ("prompt", "server"):
             from swarmer import log_poller
-            log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace)
+            log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace, session.mode)
     except Exception as exc:
         log.error("session_launch failed for session %d: %s", sid, exc, exc_info=True)
         flash(request, f"Launch failed: {exc}", "danger")
