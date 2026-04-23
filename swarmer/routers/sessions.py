@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 
 async def _get_model_options(
-    ws_id: int, db: AsyncSession, agent_tool: str = "opencode-golang"
+    ws_id: int, db: AsyncSession, agent_tool: str = "opencode"
 ) -> list[dict]:
     """Return the available model choices for this workspace's sessions."""
     tool = get_tool(agent_tool)
@@ -99,7 +99,7 @@ async def _get_workspace(ws_id: int, db: AsyncSession) -> Workspace | None:
 async def model_options_partial(
     ws_id: int,
     request: Request,
-    agent_tool: str = "opencode-golang",
+    agent_tool: str = "opencode",
     selected_model: str = "",
     db: AsyncSession = Depends(get_db),
 ):
@@ -181,12 +181,27 @@ async def session_new(
         select(GitHubPAT).where(GitHubPAT.workspace_id == ws_id).order_by(GitHubPAT.name)
     )
     pats = pats_result.scalars().all()
-    model_options = await _get_model_options(ws_id, db)
+    _tools = all_tools()
+    try:
+        default_agent_tool = get_tool(settings.default_agent_tool).name
+    except ValueError:
+        default_agent_tool = "opencode"
+    model_options = await _get_model_options(ws_id, db, default_agent_tool)
+    _avail = await asyncio.gather(
+        *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
+    )
     return templates.TemplateResponse(
         request,
         "sessions/new.html",
-        {"ws": ws, "pats": pats, "model_options": model_options,
-         "selected_model": "", "agent_tools": all_tools(), "default_agent_tool": settings.default_agent_tool},
+        {
+            "ws": ws,
+            "pats": pats,
+            "model_options": model_options,
+            "selected_model": "",
+            "agent_tools": _tools,
+            "default_agent_tool": default_agent_tool,
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
+        },
     )
 
 
@@ -199,10 +214,9 @@ async def session_create(
     instruction_prompt: str = Form(""),
     persist: bool = Form(False),
     resume: bool = Form(False),
-    privileged: bool = Form(False),
     mode: str = Form("prompt"),
     model: str = Form(""),
-    agent_tool: str = Form("opencode-golang"),
+    agent_tool: str = Form("opencode"),
     db: AsyncSession = Depends(get_db),
 ):
     ws = await _get_workspace(ws_id, db)
@@ -214,9 +228,9 @@ async def session_create(
         mode = "prompt"
 
     try:
-        get_tool(agent_tool)
+        agent_tool = get_tool(agent_tool).name
     except ValueError:
-        agent_tool = "opencode-golang"
+        agent_tool = "opencode"
 
     session = Session(
         workspace_id=ws_id,
@@ -226,7 +240,6 @@ async def session_create(
         model=model.strip(),
         persist=persist,
         resume=resume,
-        privileged=privileged,
         instruction_prompt=instruction_prompt.strip(),
         agent_tool=agent_tool,
     )
@@ -240,6 +253,15 @@ async def session_create(
             select(GitHubPAT).where(GitHubPAT.workspace_id == ws_id)
         )
         pats = pats_result.scalars().all()
+        _tools = all_tools()
+        try:
+            default_agent_tool = get_tool(settings.default_agent_tool).name
+        except ValueError:
+            default_agent_tool = "opencode"
+        model_options = await _get_model_options(ws_id, db, default_agent_tool)
+        _avail = await asyncio.gather(
+            *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
+        )
         return templates.TemplateResponse(
             request,
             "sessions/new.html",
@@ -248,6 +270,11 @@ async def session_create(
                 "pats": pats,
                 "error": f"A session named '{name}' already exists in this workspace.",
                 "form": {"name": name, "instruction_prompt": instruction_prompt},
+                "model_options": model_options,
+                "selected_model": model,
+                "agent_tools": _tools,
+                "default_agent_tool": default_agent_tool,
+                "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
             },
             status_code=422,
         )
@@ -303,6 +330,10 @@ async def session_detail(
     _avail = await asyncio.gather(
         *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
     )
+    try:
+        canonical_agent_tool = get_tool(session.agent_tool).name
+    except ValueError:
+        canonical_agent_tool = session.agent_tool
     return templates.TemplateResponse(
         request,
         "sessions/detail.html",
@@ -310,6 +341,7 @@ async def session_detail(
             "ws": ws,
             "ws_id": ws_id,
             "session": session,
+            "canonical_agent_tool": canonical_agent_tool,
             "pats": pats,
             "tui_token": tui_token,
             "mode_label": _session_mode_label(session),
@@ -318,7 +350,7 @@ async def session_detail(
             "model_options": model_options,
             "repo_info": repo_info,
             "agent_tools": _tools,
-            "tool_image_available": dict(zip([t.name for t in _tools], _avail)),
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
         },
     )
 
@@ -340,10 +372,9 @@ async def session_edit(
     instruction_prompt: str = Form(""),
     persist: bool = Form(False),
     resume: bool = Form(False),
-    privileged: bool = Form(False),
     mode: str = Form("prompt"),
     model: str = Form(""),
-    agent_tool: str = Form("opencode-golang"),
+    agent_tool: str = Form("opencode"),
     db: AsyncSession = Depends(get_db),
 ):
     session = await db.get(Session, sid)
@@ -359,13 +390,11 @@ async def session_edit(
     session.instruction_prompt = instruction_prompt.strip()
     session.persist = persist
     session.resume = resume
-    session.privileged = privileged
     if mode in ("tui", "server", "prompt"):
         session.mode = mode
     session.model = model.strip()
     try:
-        get_tool(agent_tool)
-        session.agent_tool = agent_tool
+        session.agent_tool = get_tool(agent_tool).name
     except ValueError:
         pass
     await db.commit()
@@ -392,7 +421,6 @@ async def session_launch(
     instruction_prompt: str = Form(""),
     persist: bool = Form(False),
     resume: bool = Form(False),
-    privileged: bool = Form(False),
     mode: str = Form(""),
     model: str = Form(""),
     db: AsyncSession = Depends(get_db),
@@ -416,16 +444,15 @@ async def session_launch(
         session.instruction_prompt = instruction_prompt.strip()
         session.persist = persist
         session.resume = resume
-        session.privileged = privileged
         if mode in ("tui", "server", "prompt"):
             session.mode = mode
         session.model = model.strip()
 
     if agent_tool:
         try:
-            get_tool(agent_tool)
-            if agent_tool != session.agent_tool:
-                session.agent_tool = agent_tool
+            canonical = get_tool(agent_tool).name
+            if canonical != session.agent_tool:
+                session.agent_tool = canonical
                 session.model = ""  # stale model from previous tool may be incompatible
         except ValueError:
             pass

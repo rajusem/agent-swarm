@@ -53,4 +53,4 @@ patches:
         path: /spec/template/spec/containers/0/env/-
         value:
           name: DEFAULT_AGENT_TOOL
-          value: "opencode-golang"
+          value: "opencode"

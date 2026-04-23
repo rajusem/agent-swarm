@@ -14,11 +14,11 @@ class OpenCodeStrategy(AgentToolStrategy):
 
     @property
     def name(self) -> str:
-        return "opencode-golang"
+        return "opencode"
 
     @property
     def display_name(self) -> str:
-        return "OpenCode (Golang)"
+        return "OpenCode"
 
     def get_image(self) -> str:
         return settings.agent_image_opencode

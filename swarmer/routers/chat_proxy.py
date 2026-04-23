@@ -1,25 +1,13 @@
 """
 Reverse-proxy router for server-mode sessions.
 
-A persistent `kubectl port-forward` subprocess is started on demand and
-reused for the lifetime of the session (recreated if the process dies or the
-pod is replaced) — the same mechanism the TUI terminal uses for kubectl exec.
-
-Dev mode (K8S_IN_CLUSTER=false):
-    The port-forward binds to localhost on the same machine as the user's
-    browser.  Accessing /chat redirects the browser directly to
-    http://localhost:{port}/ so the SPA runs at the root — no sub-path
-    mangling of asset URLs, API calls, or WebSocket connections.
-
-In-cluster mode (K8S_IN_CLUSTER=true):
-    Swarmer proxies all HTTP/WebSocket traffic through /chat/{path} using
-    httpx + websockets, and rewrites absolute HTML asset paths so they
-    resolve through the proxy prefix.
+Swarmer proxies HTTP/WebSocket traffic through /chat/{path} using
+httpx + websockets, connecting to the session's ClusterIP Service via DNS.
+HTML asset paths are rewritten so they resolve through the proxy prefix.
 """
 import asyncio
 import contextlib
 import logging
-import socket
 
 import httpx
 import websockets
@@ -28,7 +16,6 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from swarmer.config import settings
 from swarmer.database import get_db
 from swarmer.deps import require_auth
 from swarmer.models.session import Session
@@ -43,80 +30,12 @@ _HOP_BY_HOP = frozenset({
     "te", "trailers", "transfer-encoding", "upgrade", "host",
 })
 
-# Active port-forwards: {session_id: (process, local_port, pod_name)}
-_portforwards: dict[int, tuple[asyncio.subprocess.Process, int, str]] = {}
-_pf_lock = asyncio.Lock()
-
-
 # ── Upstream URL resolution ───────────────────────────────────────────────────
-#
-# In-cluster: proxy directly to the session's ClusterIP Service via DNS.
-#   session-{id}-svc.{namespace}.svc.cluster.local:{port}
-# Dev mode: use kubectl port-forward to expose the pod port locally.
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
-
-
-async def _wait_for_port(port: int, timeout: float = 8.0) -> bool:
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        try:
-            _, writer = await asyncio.open_connection("127.0.0.1", port)
-            writer.close()
-            await writer.wait_closed()
-            return True
-        except (ConnectionRefusedError, OSError):
-            await asyncio.sleep(0.15)
-    return False
-
-
-async def _acquire_portforward(session_id: int, pod_name: str, namespace: str, remote_port: int = 4096) -> int:
-    """Return a local port connected via kubectl port-forward (dev mode only)."""
-    async with _pf_lock:
-        existing = _portforwards.get(session_id)
-        if existing:
-            proc, port, stored_pod = existing
-            if proc.returncode is None and stored_pod == pod_name:
-                return port
-            with contextlib.suppress(Exception):
-                proc.terminate()
-            del _portforwards[session_id]
-
-        local_port = _free_port()
-        proc = await asyncio.create_subprocess_exec(
-            "kubectl", "port-forward",
-            f"pod/{pod_name}",
-            f"{local_port}:{remote_port}",
-            "-n", namespace,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        _portforwards[session_id] = (proc, local_port, pod_name)
-
-        if not await _wait_for_port(local_port):
-            with contextlib.suppress(Exception):
-                proc.terminate()
-            del _portforwards[session_id]
-            raise RuntimeError(f"kubectl port-forward to {pod_name}:{remote_port} did not become ready")
-
-        log.info("Port-forward started: session %d → 127.0.0.1:%d", session_id, local_port)
-        return local_port
-
-
-async def _get_upstream_base(session_id: int, pod_name: str, namespace: str, remote_port: int = 4096) -> str:
-    """Return the http base URL for the session's agent process.
-
-    In-cluster: uses the ClusterIP Service DNS — no subprocess needed.
-    Dev mode:   falls back to kubectl port-forward on localhost.
-    """
-    if settings.k8s_in_cluster:
-        svc = f"session-{session_id}-svc"
-        return f"http://{svc}.{namespace}.svc.cluster.local:{remote_port}"
-    local_port = await _acquire_portforward(session_id, pod_name, namespace, remote_port)
-    return f"http://127.0.0.1:{local_port}"
+def _get_upstream_base(session_id: int, namespace: str, remote_port: int = 4096) -> str:
+    """Return the ClusterIP Service base URL for the session's agent process."""
+    svc = f"session-{session_id}-svc"
+    return f"http://{svc}.{namespace}.svc.cluster.local:{remote_port}"
 
 
 # ── HTML rewriting (in-cluster only) ─────────────────────────────────────────
@@ -182,10 +101,6 @@ async def _proxy_root(
     # Crush sessions: serve the built-in chat UI (swarmer renders the page,
     # the JS inside makes API calls through the /chat/{path} proxy).
     if session.agent_tool == "crush":
-        from swarmer.agent_tools.registry import get as get_tool
-        tool = get_tool("crush")
-        port = tool.get_server_port() or 4096
-        await _get_upstream_base(session.id, session.pod_name, namespace, port)
         return templates.TemplateResponse(
             request,
             "sessions/crush_chat.html",
@@ -197,14 +112,8 @@ async def _proxy_root(
             },
         )
 
-    if not settings.k8s_in_cluster:
-        # Dev mode: port-forward binds locally; redirect the browser straight
-        # to localhost so the SPA loads at root with no sub-path mangling.
-        local_port = await _acquire_portforward(session.id, session.pod_name, namespace)
-        return RedirectResponse(url=f"http://localhost:{local_port}/", status_code=302)
-
-    # In-cluster: use the OpenShift Route if one exists — the browser then
-    # connects directly to opencode with no sub-path mangling.
+    # Use the OpenShift Route if one exists — the browser connects directly to
+    # opencode with no sub-path mangling.
     from swarmer.k8s import get_session_route_host
     host = get_session_route_host(session.id, namespace)
     if host:
@@ -236,7 +145,7 @@ async def _chat_http_proxy(
     from swarmer.k8s import effective_namespace
     namespace = effective_namespace(ws_obj.k8s_namespace)
     try:
-        upstream_base = await _get_upstream_base(session.id, session.pod_name, namespace)
+        upstream_base = _get_upstream_base(session.id, namespace)
     except Exception as exc:
         log.warning("Could not connect to session %d: %s", sid, exc)
         return Response(f"Could not connect to session: {exc}", status_code=503, media_type="text/plain")
@@ -369,7 +278,7 @@ async def chat_ws_proxy(
     from swarmer.k8s import effective_namespace
     namespace = effective_namespace(ws_obj.k8s_namespace)
     try:
-        upstream_base = await _get_upstream_base(session.id, session.pod_name, namespace)
+        upstream_base = _get_upstream_base(session.id, namespace)
     except Exception as exc:
         log.warning("Could not connect to session %d for WS: %s", sid, exc)
         await websocket.close(code=4004, reason="Could not connect to session")

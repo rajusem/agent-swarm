@@ -5,6 +5,8 @@ PVC management, pod spec generation, and Service management.
 import logging
 import shlex
 
+from swarmer.config import settings
+
 log = logging.getLogger(__name__)
 
 def ensure_session_pvc(
@@ -68,7 +70,7 @@ def build_session_pod(
     has_adc: bool = False,
     has_gemini: bool = False,
     privileged: bool = False,
-    agent_tool: str = "opencode-golang",
+    agent_tool: str = "opencode",
 ):  # -> client.V1Pod
     """Build a V1Pod spec for the given session.
 
@@ -84,7 +86,10 @@ def build_session_pod(
     pat = session.github_pat  # may be None
 
     # ---------- env ----------
-    env = [client.V1EnvVar(name="HOME", value="/workspace")]
+    env = [
+        client.V1EnvVar(name="HOME", value="/workspace"),
+        client.V1EnvVar(name="NODE_OPTIONS", value="--max-old-space-size=1536"),
+    ]
     env.extend(tool.get_extra_env(has_adc))
     if pat:
         env.append(
@@ -215,7 +220,7 @@ def build_session_pod(
                 ],
                 resources=client.V1ResourceRequirements(
                     requests={"memory": "128Mi", "cpu": "100m"},
-                    limits={"memory": "256Mi", "cpu": "200m"},
+                    limits={"memory": "512Mi", "cpu": "500m"},
                 ),
             )
         )
@@ -264,17 +269,14 @@ def build_session_pod(
     # namespace's default SA so this is permitted without host-level privileges.
     # The `privileged` flag additionally enables Linux privileged mode (raw
     # sockets, device access, etc.) which is only needed in rare cases.
-    security_context = None
+    security_context = client.V1SecurityContext(run_as_user=0)
     if privileged:
-        security_context = client.V1SecurityContext(
-            run_as_user=0,
-            privileged=True,
-        )
+        security_context.privileged = True
 
     container = client.V1Container(
         name=tool.get_container_name(),
         image=tool.get_image(),
-        image_pull_policy="IfNotPresent",
+        image_pull_policy=settings.agent_image_pull_policy,
         working_dir="/workspace",
         command=command,
         env=env,
@@ -285,8 +287,8 @@ def build_session_pod(
         tty=session.mode == "tui",
         security_context=security_context,
         resources=client.V1ResourceRequirements(
-            requests={"memory": "256Mi", "cpu": "100m"},
-            limits={"memory": "512Mi", "cpu": "200m"},
+            requests={"memory": "512Mi", "cpu": "500m"},
+            limits={"memory": "2Gi", "cpu": "2000m"},
         ),
     )
 

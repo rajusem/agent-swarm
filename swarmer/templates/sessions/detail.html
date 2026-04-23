@@ -92,7 +92,7 @@
       </div>
       <div class="pf-v6-c-card__body">
 
-        {# Launch / Stop buttons #}
+        {# Launch / Stop #}
         <div style="margin-bottom:var(--pf-t--global--spacer--md);">
           <div style="display:flex; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; align-items:center;">
             <div id="launch-stop"
@@ -103,18 +103,31 @@
                         class="pf-v6-c-button pf-m-warning pf-m-small">&#9632; Stop</button>
               </form>
             </div>
-            {% for tool in agent_tools %}
-            <form method="post"
+            <form method="post" id="launch-form"
+                  {% if session.is_active %}style="display:none"{% endif %}
                   action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
-              <input type="hidden" name="agent_tool" value="{{ tool.name }}">
-              <button type="submit"
-                      class="pf-v6-c-button pf-m-small launch-tool-btn {% if session.is_active %}pf-m-secondary{% elif tool_image_available[tool.name] %}pf-m-primary{% else %}pf-m-secondary{% endif %}"
-                      data-available="{{ 'true' if tool_image_available[tool.name] else 'false' }}"
-                      {% if session.is_active or not tool_image_available[tool.name] %}disabled{% endif %}>
-                ▶ {{ tool.display_name }}
-              </button>
+              {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
+              <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
+                <button type="submit" id="launch-btn"
+                        class="pf-v6-c-button pf-m-small {% if session.is_active or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
+                        {% if session.is_active or not _avail %}disabled{% endif %}>
+                  ▶ Launch
+                </button>
+                <select id="launch-tool-select" class="pf-v6-c-form-control"
+                        style="width:auto; min-width:130px;"
+                        data-availability="{{ tool_image_available | tojson }}"
+                        {% if session.is_active %}disabled{% endif %}>
+                  {% for tool in agent_tools %}
+                  <option value="{{ tool.name }}"
+                          {{ 'selected' if canonical_agent_tool == tool.name }}>
+                    {{ tool.display_name }}
+                  </option>
+                  {% endfor %}
+                </select>
+                <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Image Found:</span>
+                <span id="launch-avail-pill" style="font-size:1.1em; line-height:1;">{{ '✅' if _avail else '❌' }}</span>
+              </div>
             </form>
-            {% endfor %}
           </div>
         </div>
 
@@ -122,7 +135,7 @@
         <form method="post" id="cfg-edit-form" class="pf-v6-c-form"
               action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/edit">
           <input type="hidden" name="name" value="{{ session.name }}">
-          <input type="hidden" name="agent_tool" value="{{ session.agent_tool }}" id="cfg_agent_tool">
+          <input type="hidden" name="agent_tool" value="{{ canonical_agent_tool }}" id="cfg_agent_tool">
           <input type="hidden" name="save_config" value="1">
 
           <div class="pf-v6-c-form__group">
@@ -139,23 +152,8 @@
             </div>
           </div>
 
-          <div class="pf-v6-c-form__group">
-            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
-              <label style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);" for="cfg_pat">GitHub PAT</label>
-              <div style="flex:1;">
-                <select class="pf-v6-c-form-control" name="github_pat_id" id="cfg_pat"
-                        {% if session.is_active %}disabled{% endif %}>
-                  <option value="">— None —</option>
-                  {% for pat in pats %}
-                  <option value="{{ pat.id }}"
-                          {{ 'selected' if session.github_pat and session.github_pat.id == pat.id }}>
-                    {{ pat.name }}
-                  </option>
-                  {% endfor %}
-                </select>
-              </div>
-            </div>
-          </div>
+          <input type="hidden" name="github_pat_id" id="cfg_pat"
+                 value="{{ session.github_pat.id if session.github_pat else '' }}">
 
           <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
             <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Persist workspace</div>
@@ -178,18 +176,6 @@
                 <input type="checkbox" class="pf-v6-c-check__input" name="resume"
                        id="cfg_resume" value="true"
                        {{ 'checked' if session.resume }}
-                       {% if session.is_active %}disabled{% endif %}>
-              </div>
-            </div>
-          </div>
-
-          <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);">
-            <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Privileged (root)</div>
-            <div style="flex:1;">
-              <div class="pf-v6-c-check">
-                <input type="checkbox" class="pf-v6-c-check__input" name="privileged"
-                       id="cfg_privileged" value="true"
-                       {{ 'checked' if session.privileged }}
                        {% if session.is_active %}disabled{% endif %}>
               </div>
             </div>
@@ -253,8 +239,9 @@
     {# Git Repos: prompt only #}
     {% if session.mode == 'prompt' %}
     <div class="pf-v6-c-card">
-      <div class="pf-v6-c-card__header">
+      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
         <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
+        {% include "sessions/_pat_select.html" with context %}
       </div>
       <div class="pf-v6-c-card__body">
         {% include "sessions/_repo_list.html" with context %}
@@ -274,7 +261,8 @@
         {% if session.last_output %}
         <form method="post"
               action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
-          <button type="submit" class="pf-v6-c-button pf-m-link pf-m-small"
+          <button type="submit" class="pf-v6-c-button pf-m-plain pf-m-small"
+                  style="border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
                   title="Clear output">Clear</button>
         </form>
         {% endif %}
@@ -286,8 +274,9 @@
 
     {% else %}
     <div class="pf-v6-c-card">
-      <div class="pf-v6-c-card__header">
+      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
         <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
+        {% include "sessions/_pat_select.html" with context %}
       </div>
       <div class="pf-v6-c-card__body">
         {% include "sessions/_repo_list.html" with context %}
@@ -402,6 +391,8 @@
     return savePromise;
   }
 
+  window._cfgSave = doSave;
+
   const modeSelect = form.querySelector('select[name=mode]');
   if (modeSelect) {
     modeSelect.addEventListener('change', () => {
@@ -424,11 +415,14 @@
     });
   });
 
-  document.querySelectorAll('.launch-tool-btn').forEach(btn => {
-    btn.closest('form').addEventListener('submit', function (e) {
+  const launchForm = document.getElementById('launch-form');
+  const launchSelect = document.getElementById('launch-tool-select');
+  const launchBtn = document.getElementById('launch-btn');
+
+  if (launchForm) {
+    launchForm.addEventListener('submit', function (e) {
       e.preventDefault();
-      const launchForm = this;
-      const agentTool = launchForm.querySelector('input[name=agent_tool]').value;
+      const agentTool = launchSelect ? launchSelect.value : '';
       const data = new FormData(form);
       data.set('agent_tool', agentTool);
       const tempForm = document.createElement('form');
@@ -445,8 +439,26 @@
       document.body.appendChild(tempForm);
       tempForm.submit();
     });
-  });
+  }
+
+  if (launchSelect) {
+    launchSelect.addEventListener('change', function () {
+      const availMap = JSON.parse(this.dataset.availability || '{}');
+      const avail = availMap[this.value] === true;
+      updateLaunchAvailPill(avail);
+      if (!launchBtn) return;
+      launchBtn.disabled = !avail;
+      launchBtn.classList.toggle('pf-m-primary', avail);
+      launchBtn.classList.toggle('pf-m-secondary', !avail);
+    });
+  }
 })();
+
+function updateLaunchAvailPill(avail) {
+  const pill = document.getElementById('launch-avail-pill');
+  if (!pill) return;
+  pill.textContent = avail ? '✅' : '❌';
+}
 
 function syncResume() {
   const persist = document.getElementById('cfg_persist');
@@ -483,6 +495,8 @@ document.addEventListener('htmx:afterSwap', function () {
       el.disabled = isActive;
     });
   }
+  const patSelect = document.getElementById('cfg-pat-select');
+  if (patSelect) patSelect.disabled = isActive;
   const stopMsg = document.getElementById('cfg-stop-msg');
   if (stopMsg) stopMsg.style.display = isActive ? '' : 'none';
   const saveInd = document.getElementById('cfg-save-indicator');
@@ -503,17 +517,21 @@ document.addEventListener('htmx:afterSwap', function () {
   const launchStop = document.getElementById('launch-stop');
   if (launchStop) launchStop.style.display = (isActive || isSucceeded) ? '' : 'none';
 
-  document.querySelectorAll('.launch-tool-btn').forEach(btn => {
-    const avail = btn.dataset.available === 'true';
-    btn.disabled = isActive || isSucceeded || !avail;
-    if (isActive || isSucceeded) {
-      btn.classList.remove('pf-m-primary');
-      btn.classList.add('pf-m-secondary');
-    } else {
-      btn.classList.remove('pf-m-secondary');
-      btn.classList.add(avail ? 'pf-m-primary' : 'pf-m-secondary');
-    }
-  });
+  const launchForm = document.getElementById('launch-form');
+  if (launchForm) launchForm.style.display = (isActive || isSucceeded) ? 'none' : '';
+
+  const _launchBtn = document.getElementById('launch-btn');
+  const _launchSelect = document.getElementById('launch-tool-select');
+  if (_launchBtn) {
+    const availMap = _launchSelect ? JSON.parse(_launchSelect.dataset.availability || '{}') : {};
+    const selectedTool = _launchSelect ? _launchSelect.value : '';
+    const avail = availMap[selectedTool] === true;
+    const blocked = !avail;
+    _launchBtn.disabled = blocked;
+    _launchBtn.classList.toggle('pf-m-primary', !blocked);
+    _launchBtn.classList.toggle('pf-m-secondary', blocked);
+    updateLaunchAvailPill(avail);
+  }
 
   {% if session.mode == 'tui' %}
   if (isRunning && !document.getElementById('terminal')) {

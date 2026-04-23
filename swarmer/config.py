@@ -15,9 +15,10 @@ class Settings(BaseSettings):
     agent_image_python: str = ""
     agent_image_crush: str = ""
     crush_version: str = "0.57.0"
-    default_agent_tool: str = "opencode-golang"
+    default_agent_tool: str = "opencode"
     crush_server_port: int = 4096
     agent_image_pull_secret: str = ""
+    agent_image_pull_policy: str = "IfNotPresent"
     k8s_namespace: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
