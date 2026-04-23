@@ -243,10 +243,11 @@
     {% if session.mode == 'prompt' %}
     <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md); flex-shrink:0;">
       <div class="pf-v6-c-card__header">
-        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</h3>
+        <h3 id="instruction-prompt-label" class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</h3>
       </div>
       <div class="pf-v6-c-card__body">
         <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
+                  aria-labelledby="instruction-prompt-label"
                   form="cfg-edit-form" name="instruction_prompt"
                   rows="4" placeholder="Describe the task for the agent to run…"
                   {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>

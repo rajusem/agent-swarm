@@ -61,16 +61,21 @@ async def _auto_cleanup_pod(session_id: int, pod_name: str, namespace: str) -> N
     from swarmer.database import get_db
     from swarmer.models.session import Session
 
+    deleted = False
     try:
         await asyncio.to_thread(k8s.delete_pod, pod_name, namespace)
         log.info("log_poller: auto-deleted pod %s for session %d", pod_name, session_id)
+        deleted = True
     except Exception:
         log.exception("log_poller: pod auto-deletion failed for session %d", session_id)
+
+    if not deleted:
+        return
 
     try:
         async for db in get_db():
             session = await db.get(Session, session_id)
-            if session:
+            if session and session.pod_name == pod_name:
                 session.pod_name = None
                 await db.commit()
             break
