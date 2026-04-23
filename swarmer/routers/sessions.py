@@ -182,7 +182,11 @@ async def session_new(
     )
     pats = pats_result.scalars().all()
     _tools = all_tools()
-    model_options = await _get_model_options(ws_id, db)
+    try:
+        default_agent_tool = get_tool(settings.default_agent_tool).name
+    except ValueError:
+        default_agent_tool = "opencode"
+    model_options = await _get_model_options(ws_id, db, default_agent_tool)
     _avail = await asyncio.gather(
         *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
     )
@@ -195,8 +199,8 @@ async def session_new(
             "model_options": model_options,
             "selected_model": "",
             "agent_tools": _tools,
-            "default_agent_tool": settings.default_agent_tool,
-            "tool_image_available": dict(zip([t.name for t in _tools], _avail)),
+            "default_agent_tool": default_agent_tool,
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
         },
     )
 
@@ -249,6 +253,15 @@ async def session_create(
             select(GitHubPAT).where(GitHubPAT.workspace_id == ws_id)
         )
         pats = pats_result.scalars().all()
+        _tools = all_tools()
+        try:
+            default_agent_tool = get_tool(settings.default_agent_tool).name
+        except ValueError:
+            default_agent_tool = "opencode"
+        model_options = await _get_model_options(ws_id, db, default_agent_tool)
+        _avail = await asyncio.gather(
+            *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
+        )
         return templates.TemplateResponse(
             request,
             "sessions/new.html",
@@ -257,6 +270,11 @@ async def session_create(
                 "pats": pats,
                 "error": f"A session named '{name}' already exists in this workspace.",
                 "form": {"name": name, "instruction_prompt": instruction_prompt},
+                "model_options": model_options,
+                "selected_model": model,
+                "agent_tools": _tools,
+                "default_agent_tool": default_agent_tool,
+                "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
             },
             status_code=422,
         )
@@ -332,7 +350,7 @@ async def session_detail(
             "model_options": model_options,
             "repo_info": repo_info,
             "agent_tools": _tools,
-            "tool_image_available": dict(zip([t.name for t in _tools], _avail)),
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
         },
     )
 

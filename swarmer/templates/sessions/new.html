@@ -83,9 +83,9 @@
                   hx-trigger="change">
             {% for tool in agent_tools %}
             <option value="{{ tool.name }}"
-                    {% if tool.name == default_agent_tool %}selected{% endif %}
-                    {% if not tool_image_available[tool.name] %}disabled{% endif %}>
-              {{ '✓' if tool_image_available[tool.name] else '✗' }} {{ tool.display_name }}
+                    {% if tool.name == default_agent_tool and tool_image_available.get(tool.name, False) %}selected{% endif %}
+                    {% if not tool_image_available.get(tool.name, False) %}disabled{% endif %}>
+              {{ '✓' if tool_image_available.get(tool.name, False) else '✗' }} {{ tool.display_name }}
             </option>
             {% endfor %}
           </select>

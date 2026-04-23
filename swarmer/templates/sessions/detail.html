@@ -106,10 +106,11 @@
             <form method="post" id="launch-form"
                   {% if session.is_active %}style="display:none"{% endif %}
                   action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
+              {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
               <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
                 <button type="submit" id="launch-btn"
-                        class="pf-v6-c-button pf-m-small {% if session.is_active or not tool_image_available.get(canonical_agent_tool, False) %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
-                        {% if session.is_active %}disabled{% endif %}>
+                        class="pf-v6-c-button pf-m-small {% if session.is_active or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
+                        {% if session.is_active or not _avail %}disabled{% endif %}>
                   ▶ Launch
                 </button>
                 <select id="launch-tool-select" class="pf-v6-c-form-control"
@@ -123,7 +124,6 @@
                   </option>
                   {% endfor %}
                 </select>
-                {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
                 <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Image Found:</span>
                 <span id="launch-avail-pill" style="font-size:1.1em; line-height:1;">{{ '✅' if _avail else '❌' }}</span>
               </div>
@@ -441,12 +441,6 @@
     });
   }
 
-  function updateLaunchAvailPill(avail) {
-    const pill = document.getElementById('launch-avail-pill');
-    if (!pill) return;
-    pill.textContent = avail ? '✅' : '❌';
-  }
-
   if (launchSelect) {
     launchSelect.addEventListener('change', function () {
       const availMap = JSON.parse(this.dataset.availability || '{}');
@@ -459,6 +453,12 @@
     });
   }
 })();
+
+function updateLaunchAvailPill(avail) {
+  const pill = document.getElementById('launch-avail-pill');
+  if (!pill) return;
+  pill.textContent = avail ? '✅' : '❌';
+}
 
 function syncResume() {
   const persist = document.getElementById('cfg_persist');
@@ -495,6 +495,8 @@ document.addEventListener('htmx:afterSwap', function () {
       el.disabled = isActive;
     });
   }
+  const patSelect = document.getElementById('cfg-pat-select');
+  if (patSelect) patSelect.disabled = isActive;
   const stopMsg = document.getElementById('cfg-stop-msg');
   if (stopMsg) stopMsg.style.display = isActive ? '' : 'none';
   const saveInd = document.getElementById('cfg-save-indicator');

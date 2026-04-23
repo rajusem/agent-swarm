@@ -32,6 +32,8 @@
       </div>
     </div>
     <button class="pf-v6-c-button pf-m-plain pf-m-small"
+            aria-label="Remove repository"
+            title="Remove repository"
             style="color:var(--pf-t--global--color--status--danger--default); flex-shrink:0; margin-left:var(--pf-t--global--spacer--sm); border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
             hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/{{ repo.id }}/delete"
             hx-target="#repo-list"
@@ -44,6 +46,8 @@
   <div style="margin-top:var(--pf-t--global--spacer--sm);">
     <button type="button" id="repo-add-btn"
             class="pf-v6-c-button pf-m-plain pf-m-small"
+            aria-label="Add repository"
+            title="Add repository"
             style="color:var(--pf-t--global--text--color--link--default); border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
             onclick="document.getElementById('repo-add-form').style.display=''; this.style.display='none';">+</button>
 
