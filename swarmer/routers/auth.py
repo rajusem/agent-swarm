@@ -69,7 +69,7 @@ async def _validate_and_login(request: Request, token: str):
 
 @router.post("/login")
 async def login(request: Request, token: str = Form(...)):
-    identity = await _validate_and_login(request, token.strip())
+    identity = await _validate_and_login(request, "".join(token.split()))
     if identity is None:
         return RedirectResponse("/login", status_code=HTTP_303_SEE_OTHER)
     return RedirectResponse("/workspaces", status_code=HTTP_303_SEE_OTHER)
@@ -86,7 +86,7 @@ async def oauth_callback(request: Request, token: str = Form(...), state: str = 
     if not expected or state != expected:
         flash(request, "Invalid OAuth state. Please sign in again.", "error")
         return RedirectResponse("/login", status_code=HTTP_303_SEE_OTHER)
-    identity = await _validate_and_login(request, token.strip())
+    identity = await _validate_and_login(request, "".join(token.split()))
     if identity is None:
         return RedirectResponse("/login", status_code=HTTP_303_SEE_OTHER)
     return RedirectResponse("/workspaces", status_code=HTTP_303_SEE_OTHER)
