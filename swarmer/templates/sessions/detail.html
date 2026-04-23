@@ -7,8 +7,8 @@
       href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 {% endif %}
 <style>
-  #terminal .xterm { padding: 8px; }
-  #terminal .xterm-viewport { border-radius: 0 0 var(--pf-t--global--border--radius--medium) var(--pf-t--global--border--radius--medium); }
+  #terminal { padding: 12px; box-sizing: border-box; }
+  #terminal .xterm-screen { border-radius: var(--pf-t--global--border--radius--medium); }
 </style>
 {% endblock %}
 
@@ -340,7 +340,7 @@
     </div>
     <div class="pf-v6-c-card__body" style="padding:0; overflow:hidden;">
       <div id="terminal"
-           style="height:600px; background:#1e1e1e;"></div>
+           style="height:600px; background:#1e1e1e; border-radius:0 0 var(--pf-t--global--border--radius--medium) var(--pf-t--global--border--radius--medium);"></div>
     </div>
   </div>
   {% else %}
@@ -624,7 +624,7 @@ function initTerminal() {
   if (!el || el.offsetWidth === 0) return;
 
   const cell = measureCell();
-  const termPadding = 16;
+  const termPadding = 24;
   const cols = Math.max(80, Math.floor((el.clientWidth - termPadding) / cell.w));
   const rows = Math.max(24, Math.floor((el.clientHeight - termPadding) / cell.h));
 
@@ -639,7 +639,7 @@ function initTerminal() {
 
   function fitTerm() {
     const c = measureCell();
-    const newCols = Math.max(80, Math.floor((el.clientWidth - termPadding)  / c.w));
+    const newCols = Math.max(80, Math.floor((el.clientWidth - termPadding) / c.w));
     const newRows = Math.max(24, Math.floor((el.clientHeight - termPadding) / c.h));
     if (newCols !== term.cols || newRows !== term.rows) {
       term.resize(newCols, newRows);
