@@ -17,6 +17,7 @@ from swarmer.agent_tools.registry import get as get_tool, all_tools
 from swarmer.config import settings
 from swarmer.database import get_db
 from swarmer.deps import require_auth
+from swarmer.ansi import ansi_to_html
 from swarmer.flash import flash
 from swarmer.models.github_pat import GitHubPAT
 from swarmer.models.opencode_secret import OpencodeSecret
@@ -81,6 +82,7 @@ async def _fetch_repo_info(repos: list, pat: str | None) -> dict:
 
 router = APIRouter()
 templates = Jinja2Templates(directory="swarmer/templates")
+templates.env.filters['ansi_to_html'] = ansi_to_html
 
 
 async def _get_workspace(ws_id: int, db: AsyncSession) -> Workspace | None:
