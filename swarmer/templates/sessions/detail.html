@@ -6,6 +6,10 @@
 <link rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
 {% endif %}
+<style>
+  #terminal .xterm { padding: 8px; }
+  #terminal .xterm-viewport { border-radius: 0 0 var(--pf-t--global--border--radius--medium) var(--pf-t--global--border--radius--medium); }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -31,7 +35,7 @@
 </nav>
 
 {# ── Title with inline rename ── #}
-<div style="margin-bottom:var(--pf-t--global--spacer--md);">
+<div style="margin-bottom:var(--pf-t--global--spacer--sm);">
   <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);" id="name-display">
     <h1 class="pf-v6-c-title pf-m-2xl" style="margin:0;">{{ session.name }}</h1>
     {% if not session.is_active %}
@@ -56,8 +60,8 @@
   </form>
 </div>
 
-{# ── Status + actions ── #}
-<div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--lg); gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap;">
+{# ── Status + actions bar ── #}
+<div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md); gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap;">
   {% include "sessions/_status_badge.html" %}
 
   <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-left:var(--pf-t--global--spacer--sm);" id="session-actions">
@@ -87,216 +91,276 @@
 </div>
 {% endif %}
 
-{# ── Two-column row: config (left) + repos or last output (right) ── #}
-<div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
-
-  {# Left column: Configuration #}
-  <div class="pf-v6-l-grid__item pf-m-4-col-on-md" id="left-col">
-
-    <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
-      <div class="pf-v6-c-card__header">
-        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Configuration</h3>
-      </div>
-      <div class="pf-v6-c-card__body">
-
-        {# Launch / Stop #}
-        <div style="margin-bottom:var(--pf-t--global--spacer--md);">
-          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; align-items:center;">
-            <div id="launch-stop"
-                 {% if not session.is_active %}style="display:none"{% endif %}>
-              <form method="post"
-                    action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
-                <button type="submit" id="launch-stop-btn"
-                        class="pf-v6-c-button pf-m-warning pf-m-small">&#9632; Stop</button>
-              </form>
-            </div>
-            <form method="post" id="launch-form"
-                  {% if session.is_active %}style="display:none"{% endif %}
-                  action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
-              {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
-              <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
-                <button type="submit" id="launch-btn"
-                        class="pf-v6-c-button pf-m-small {% if session.is_active or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
-                        {% if session.is_active or not _avail %}disabled{% endif %}>
-                  ▶ Launch
-                </button>
-                <select id="launch-tool-select" class="pf-v6-c-form-control"
-                        style="width:auto; min-width:130px;"
-                        data-availability="{{ tool_image_available | tojson }}"
-                        {% if session.is_active %}disabled{% endif %}>
-                  {% for tool in agent_tools %}
-                  <option value="{{ tool.name }}"
-                          {{ 'selected' if canonical_agent_tool == tool.name }}>
-                    {{ tool.display_name }}
-                  </option>
-                  {% endfor %}
-                </select>
-                <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Image Found:</span>
-                <span id="launch-avail-pill" style="font-size:1.1em; line-height:1;">{{ '✅' if _avail else '❌' }}</span>
-              </div>
-            </form>
-          </div>
-        </div>
-
-        {# Configuration form #}
-        <form method="post" id="cfg-edit-form" class="pf-v6-c-form"
-              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/edit">
-          <input type="hidden" name="name" value="{{ session.name }}">
-          <input type="hidden" name="agent_tool" value="{{ canonical_agent_tool }}" id="cfg_agent_tool">
-          <input type="hidden" name="save_config" value="1">
-
-          <div class="pf-v6-c-form__group">
-            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
-              <label style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Mode</label>
-              <div style="flex:0 0 auto;">
-                <select name="mode" class="pf-v6-c-form-control" style="width:auto;"
-                        {% if session.is_active %}disabled title="Stop session to change mode"{% endif %}>
-                  <option value="prompt" {{ 'selected' if session.mode == 'prompt' }}>Prompt</option>
-                  <option value="server" {{ 'selected' if session.mode == 'server' }}>Server</option>
-                  <option value="tui"    {{ 'selected' if session.mode == 'tui' }}>TUI</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <input type="hidden" name="github_pat_id" id="cfg_pat"
-                 value="{{ session.github_pat.id if session.github_pat else '' }}">
-
-          <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
-            <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Persist workspace</div>
-            <div style="flex:1;">
-              <div class="pf-v6-c-check">
-                <input type="checkbox" class="pf-v6-c-check__input" name="persist"
-                       id="cfg_persist" value="true"
-                       {{ 'checked' if session.persist }}
-                       {% if session.is_active %}disabled{% endif %}
-                       onchange="syncResume()">
-              </div>
-            </div>
-          </div>
-
-          <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);" id="cfg_resume_row"
-               {% if not session.persist %}style="display:none"{% endif %}>
-            <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Resume on relaunch</div>
-            <div style="flex:1;">
-              <div class="pf-v6-c-check">
-                <input type="checkbox" class="pf-v6-c-check__input" name="resume"
-                       id="cfg_resume" value="true"
-                       {{ 'checked' if session.resume }}
-                       {% if session.is_active %}disabled{% endif %}>
-              </div>
-            </div>
-          </div>
-
-          {% if model_options %}
-          <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
-            <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
-              <span class="pf-v6-c-form__label-text">Model</span>
-            </label>
-            <div class="pf-v6-c-form__group-control">
-              <select class="pf-v6-c-form-control" name="model" style="width:auto;"
-                      {% if session.is_active %}disabled{% endif %}>
-                {% set ns = namespace(prev_group="") %}
-                {% for opt in model_options %}
-                  {% if opt.group != ns.prev_group %}
-                    {% if ns.prev_group %}</optgroup>{% endif %}
-                    <optgroup label="{{ opt.group }}">
-                    {% set ns.prev_group = opt.group %}
-                  {% endif %}
-                  <option value="{{ opt.value }}"
-                          {{ 'selected' if session.model == opt.value or (loop.first and not session.model) }}>
-                    {{ opt.label }}
-                  </option>
-                {% endfor %}
-                {% if ns.prev_group %}</optgroup>{% endif %}
-              </select>
-            </div>
-          </div>
-          {% else %}
-          <input type="hidden" name="model" value="{{ session.model }}">
-          {% endif %}
-
-          <div style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--md);">
-            PVC: <code style="font-family:var(--pf-t--global--font--family--mono);">{{ session.pvc_name or '—' }}</code>
-          </div>
-
-          <p style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin:0;{% if not session.is_active %} display:none;{% endif %}"
-             id="cfg-stop-msg">Stop the session to edit settings.</p>
-          <div id="cfg-save-indicator"
-               style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); min-height:1.25em;{% if session.is_active %} display:none;{% endif %}"></div>
-        </form>
-
-      </div>
-    </div>
-
-    {# Git Repos: prompt only #}
-    {% if session.mode == 'prompt' %}
-    <div class="pf-v6-c-card">
-      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
-        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
-        {% include "sessions/_pat_select.html" with context %}
-      </div>
-      <div class="pf-v6-c-card__body">
-        {% include "sessions/_repo_list.html" with context %}
-      </div>
-    </div>
+{# ── OpenShift-style horizontal tabs ── #}
+<div class="pf-v6-c-tabs" id="session-tabs">
+  <ul class="pf-v6-c-tabs__list">
+    <li class="pf-v6-c-tabs__item pf-m-current" id="tab-details">
+      <button class="pf-v6-c-tabs__link" onclick="switchTab('details')">
+        <span class="pf-v6-c-tabs__item-text">Details</span>
+      </button>
+    </li>
+    {% if session.mode == 'tui' %}
+    <li class="pf-v6-c-tabs__item" id="tab-terminal">
+      <button class="pf-v6-c-tabs__link" onclick="switchTab('terminal')">
+        <span class="pf-v6-c-tabs__item-text">Terminal</span>
+      </button>
+    </li>
     {% endif %}
-
-  </div>
-
-  {# Right column #}
-  <div class="pf-v6-l-grid__item pf-m-8-col-on-md" style="display:flex; flex-direction:column;">
-
-    {% if session.mode == 'prompt' %}
-    <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md); flex-shrink:0;">
-      <div class="pf-v6-c-card__header">
-        <h3 id="instruction-prompt-label" class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</h3>
-      </div>
-      <div class="pf-v6-c-card__body">
-        <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
-                  aria-labelledby="instruction-prompt-label"
-                  form="cfg-edit-form" name="instruction_prompt"
-                  rows="4" placeholder="Describe the task for the agent to run…"
-                  {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
-      </div>
-    </div>
-
-    <div class="pf-v6-c-card" id="last-output-card" style="display:flex; flex-direction:column; flex:1; min-height:0;">
-      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
-        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
-        {% if session.last_output %}
-        <form method="post"
-              action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
-          <button type="submit" class="pf-v6-c-button pf-m-plain pf-m-small"
-                  style="border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
-                  title="Clear output">Clear</button>
-        </form>
-        {% endif %}
-      </div>
-      <div class="pf-v6-c-card__body" style="padding:0; flex:1; overflow:auto; min-height:0;">
-        {% include "sessions/_last_output.html" with context %}
-      </div>
-    </div>
-
-    {% else %}
-    <div class="pf-v6-c-card">
-      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
-        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
-        {% include "sessions/_pat_select.html" with context %}
-      </div>
-      <div class="pf-v6-c-card__body">
-        {% include "sessions/_repo_list.html" with context %}
-      </div>
-    </div>
+    {% if session.mode in ('prompt', 'server') %}
+    <li class="pf-v6-c-tabs__item" id="tab-output">
+      <button class="pf-v6-c-tabs__link" onclick="switchTab('output')">
+        <span class="pf-v6-c-tabs__item-text">Output</span>
+      </button>
+    </li>
     {% endif %}
-
-  </div>
-
+  </ul>
 </div>
 
-{# ── Server mode: full-width last output ── #}
-{% if session.mode == 'server' %}
-<div style="margin-top:var(--pf-t--global--spacer--md);">
+{# ════════════════════════════════════════════════════════════
+   Tab panel: Details
+   ════════════════════════════════════════════════════════════ #}
+<div id="panel-details" class="pf-v6-c-tab-content" style="margin-top:var(--pf-t--global--spacer--lg);">
+  <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
+
+    {# Left column: Configuration #}
+    <div class="pf-v6-l-grid__item pf-m-4-col-on-md" id="left-col">
+
+      <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
+        <div class="pf-v6-c-card__header">
+          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Configuration</h3>
+        </div>
+        <div class="pf-v6-c-card__body">
+
+          {# Launch / Stop #}
+          <div style="margin-bottom:var(--pf-t--global--spacer--md);">
+            <div style="display:flex; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; align-items:center;">
+              <div id="launch-stop"
+                   {% if not session.is_active and session.phase != 'succeeded' %}style="display:none"{% endif %}>
+                <form method="post"
+                      action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
+                  <button type="submit" id="launch-stop-btn"
+                          class="pf-v6-c-button pf-m-small {% if session.phase == 'succeeded' %}pf-m-secondary{% else %}pf-m-warning{% endif %}">{% if session.phase == 'succeeded' %}↺ Clean up{% else %}&#9632; Stop{% endif %}</button>
+                </form>
+              </div>
+              <form method="post" id="launch-form"
+                    {% if session.is_active %}style="display:none"{% endif %}
+                    action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
+                {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
+                <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
+                  <button type="submit" id="launch-btn"
+                          class="pf-v6-c-button pf-m-small {% if session.is_active or session.phase == 'succeeded' or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
+                          {% if session.is_active or session.phase == 'succeeded' or not _avail %}disabled{% endif %}>
+                    ▶ Launch
+                  </button>
+                  <select id="launch-tool-select" class="pf-v6-c-form-control"
+                          style="width:auto; min-width:130px;"
+                          data-availability="{{ tool_image_available | tojson }}"
+                          {% if session.is_active or session.phase == 'succeeded' %}disabled{% endif %}>
+                    {% for tool in agent_tools %}
+                    <option value="{{ tool.name }}"
+                            {{ 'selected' if canonical_agent_tool == tool.name }}>
+                      {{ tool.display_name }}
+                    </option>
+                    {% endfor %}
+                  </select>
+                  <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Image Found:</span>
+                  <span id="launch-avail-pill" style="font-size:1.1em; line-height:1;">{{ '✅' if _avail else '❌' }}</span>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          {# Configuration form #}
+          <form method="post" id="cfg-edit-form" class="pf-v6-c-form"
+                action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/edit">
+            <input type="hidden" name="name" value="{{ session.name }}">
+            <input type="hidden" name="agent_tool" value="{{ canonical_agent_tool }}" id="cfg_agent_tool">
+            <input type="hidden" name="save_config" value="1">
+
+            <div class="pf-v6-c-form__group">
+              <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
+                <label style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Mode</label>
+                <div style="flex:0 0 auto;">
+                  <select name="mode" class="pf-v6-c-form-control" style="width:auto;"
+                          {% if session.is_active %}disabled title="Stop session to change mode"{% endif %}>
+                    <option value="prompt" {{ 'selected' if session.mode == 'prompt' }}>Prompt</option>
+                    <option value="server" {{ 'selected' if session.mode == 'server' }}>Server</option>
+                    <option value="tui"    {{ 'selected' if session.mode == 'tui' }}>TUI</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <input type="hidden" name="github_pat_id" id="cfg_pat"
+                   value="{{ session.github_pat.id if session.github_pat else '' }}">
+
+            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--sm);">
+              <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Persist workspace</div>
+              <div style="flex:1;">
+                <div class="pf-v6-c-check">
+                  <input type="checkbox" class="pf-v6-c-check__input" name="persist"
+                         id="cfg_persist" value="true"
+                         {{ 'checked' if session.persist }}
+                         {% if session.is_active %}disabled{% endif %}
+                         onchange="syncResume()">
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);" id="cfg_resume_row"
+                 {% if not session.persist %}style="display:none"{% endif %}>
+              <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Resume on relaunch</div>
+              <div style="flex:1;">
+                <div class="pf-v6-c-check">
+                  <input type="checkbox" class="pf-v6-c-check__input" name="resume"
+                         id="cfg_resume" value="true"
+                         {{ 'checked' if session.resume }}
+                         {% if session.is_active %}disabled{% endif %}>
+                </div>
+              </div>
+            </div>
+
+            {% if model_options %}
+            <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
+              <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+                <span class="pf-v6-c-form__label-text">Model</span>
+              </label>
+              <div class="pf-v6-c-form__group-control">
+                <select class="pf-v6-c-form-control" name="model" style="width:auto;"
+                        {% if session.is_active %}disabled{% endif %}>
+                  {% set ns = namespace(prev_group="") %}
+                  {% for opt in model_options %}
+                    {% if opt.group != ns.prev_group %}
+                      {% if ns.prev_group %}</optgroup>{% endif %}
+                      <optgroup label="{{ opt.group }}">
+                      {% set ns.prev_group = opt.group %}
+                    {% endif %}
+                    <option value="{{ opt.value }}"
+                            {{ 'selected' if session.model == opt.value or (loop.first and not session.model) }}>
+                      {{ opt.label }}
+                    </option>
+                  {% endfor %}
+                  {% if ns.prev_group %}</optgroup>{% endif %}
+                </select>
+              </div>
+            </div>
+            {% else %}
+            <input type="hidden" name="model" value="{{ session.model }}">
+            {% endif %}
+
+            <div style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--md);">
+              PVC: <code style="font-family:var(--pf-t--global--font--family--mono);">{{ session.pvc_name or '—' }}</code>
+            </div>
+
+            <p style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin:0;{% if not session.is_active %} display:none;{% endif %}"
+               id="cfg-stop-msg">Stop the session to edit settings.</p>
+            <div id="cfg-save-indicator"
+                 style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); min-height:1.25em;{% if session.is_active %} display:none;{% endif %}"></div>
+          </form>
+
+        </div>
+      </div>
+
+      {# Git Repos: prompt only #}
+      {% if session.mode == 'prompt' %}
+      <div class="pf-v6-c-card">
+        <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
+          {% include "sessions/_pat_select.html" with context %}
+        </div>
+        <div class="pf-v6-c-card__body">
+          {% include "sessions/_repo_list.html" with context %}
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+
+    {# Right column #}
+    <div class="pf-v6-l-grid__item pf-m-8-col-on-md" style="display:flex; flex-direction:column;">
+
+      {% if session.mode == 'prompt' %}
+      <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md); flex-shrink:0;">
+        <div class="pf-v6-c-card__header">
+          <h3 id="instruction-prompt-label" class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</h3>
+        </div>
+        <div class="pf-v6-c-card__body">
+          <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
+                    aria-labelledby="instruction-prompt-label"
+                    form="cfg-edit-form" name="instruction_prompt"
+                    rows="4" placeholder="Describe the task for the agent to run…"
+                    {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
+        </div>
+      </div>
+
+      <div class="pf-v6-c-card" id="last-output-card" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+        <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
+          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
+          {% if session.last_output %}
+          <form method="post"
+                action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
+            <button type="submit" class="pf-v6-c-button pf-m-plain pf-m-small"
+                    style="border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
+                    title="Clear output">Clear</button>
+          </form>
+          {% endif %}
+        </div>
+        <div class="pf-v6-c-card__body" style="padding:0; flex:1; overflow:auto; min-height:0;">
+          {% include "sessions/_last_output.html" with context %}
+        </div>
+      </div>
+
+      {% else %}
+      <div class="pf-v6-c-card">
+        <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
+          {% include "sessions/_pat_select.html" with context %}
+        </div>
+        <div class="pf-v6-c-card__body">
+          {% include "sessions/_repo_list.html" with context %}
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+
+  </div>
+</div>{# /panel-details #}
+
+{# ════════════════════════════════════════════════════════════
+   Tab panel: Terminal (TUI mode only)
+   ════════════════════════════════════════════════════════════ #}
+{% if session.mode == 'tui' %}
+<div id="panel-terminal" class="pf-v6-c-tab-content" style="display:none; margin-top:var(--pf-t--global--spacer--lg);">
+  {% if session.phase == 'running' and tui_token %}
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__header" style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">🖥 Terminal</h3>
+      <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">● Active</span></span>
+    </div>
+    <div class="pf-v6-c-card__body" style="padding:0; overflow:hidden;">
+      <div id="terminal"
+           style="height:600px; background:#1e1e1e;"></div>
+    </div>
+  </div>
+  {% else %}
+  <div class="pf-v6-c-empty-state">
+    <div class="pf-v6-c-empty-state__content">
+      <h2 class="pf-v6-c-empty-state__title-text">🖥 Terminal</h2>
+      <div class="pf-v6-c-empty-state__body">
+        Session is not running. Launch the session to open the TUI terminal.
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ════════════════════════════════════════════════════════════
+   Tab panel: Output (prompt and server modes)
+   ════════════════════════════════════════════════════════════ #}
+{% if session.mode in ('prompt', 'server') %}
+<div id="panel-output" class="pf-v6-c-tab-content" style="display:none; margin-top:var(--pf-t--global--spacer--lg);">
   <div class="pf-v6-c-card">
     <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
       <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
@@ -315,52 +379,25 @@
 </div>
 {% endif %}
 
-{# ── TUI mode: full-width terminal ── #}
-{% if session.mode == 'tui' %}
-<div style="margin-top:var(--pf-t--global--spacer--md);">
-  {% if session.phase == 'running' and tui_token %}
-  <div class="pf-v6-c-card">
-    <div class="pf-v6-c-card__header" style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
-      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">🖥 Terminal</h3>
-      <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">● Active</span></span>
-    </div>
-    <div class="pf-v6-c-card__body" style="padding:0;">
-      <div id="terminal"
-           style="height:500px; background:#1e1e1e; border-radius:0 0 .375rem .375rem;"></div>
-    </div>
-  </div>
-  {% else %}
-  <div class="pf-v6-c-card">
-    <div class="pf-v6-c-card__header">
-      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">🖥 Terminal</h3>
-    </div>
-    <div class="pf-v6-c-card__body" style="text-align:center; padding:var(--pf-t--global--spacer--xl); color:var(--pf-t--global--text--color--subtle);">
-      <p style="margin-bottom:var(--pf-t--global--spacer--sm);">Session is not running.</p>
-      <p style="font-size:var(--pf-t--global--font--size--sm); margin:0;">Launch the session to open the TUI terminal.</p>
-    </div>
-  </div>
-  {% endif %}
-</div>
-{% endif %}
-
 {% endblock %}
 
 {% block scripts %}
 <script>
-// ── Match Last Output card height to left column ──
-(function () {
-  const leftCol = document.getElementById('left-col');
-  const card = document.getElementById('last-output-card');
-  if (!leftCol || !card) return;
-  function syncHeight() {
-    leftCol.style.alignSelf = 'flex-start';
-    const h = leftCol.offsetHeight;
-    leftCol.style.alignSelf = '';
-    card.style.maxHeight = h + 'px';
+// ── Tab switching (OpenShift Console style) ──
+function switchTab(name) {
+  document.querySelectorAll('.pf-v6-c-tab-content').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.pf-v6-c-tabs__item').forEach(t => t.classList.remove('pf-m-current'));
+  const panel = document.getElementById('panel-' + name);
+  const tab = document.getElementById('tab-' + name);
+  if (panel) panel.style.display = '';
+  if (tab) tab.classList.add('pf-m-current');
+
+  // Lazy-init the terminal when the Terminal tab is first shown
+  if (name === 'terminal' && !window._terminalInitialized && typeof initTerminal === 'function') {
+    window._terminalInitialized = true;
+    initTerminal();
   }
-  syncHeight();
-  window.addEventListener('resize', syncHeight);
-})();
+}
 
 // ── Auto-save configuration fields ──
 (function () {
@@ -570,7 +607,7 @@ document.addEventListener('htmx:afterSwap', function () {
 {% if session.mode == 'tui' and session.phase == 'running' and tui_token %}
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <script>
-(function() {
+function initTerminal() {
   function measureCell() {
     const s = document.createElement('span');
     s.style.cssText =
@@ -584,9 +621,12 @@ document.addEventListener('htmx:afterSwap', function () {
   }
 
   const el   = document.getElementById('terminal');
+  if (!el || el.offsetWidth === 0) return;
+
   const cell = measureCell();
-  const cols = Math.max(80, Math.floor(el.clientWidth  / cell.w));
-  const rows = Math.max(24, Math.floor(el.clientHeight / cell.h));
+  const termPadding = 16;
+  const cols = Math.max(80, Math.floor((el.clientWidth - termPadding) / cell.w));
+  const rows = Math.max(24, Math.floor((el.clientHeight - termPadding) / cell.h));
 
   const term = new Terminal({
     cols,
@@ -599,8 +639,8 @@ document.addEventListener('htmx:afterSwap', function () {
 
   function fitTerm() {
     const c = measureCell();
-    const newCols = Math.max(80, Math.floor(el.clientWidth  / c.w));
-    const newRows = Math.max(24, Math.floor(el.clientHeight / c.h));
+    const newCols = Math.max(80, Math.floor((el.clientWidth - termPadding)  / c.w));
+    const newRows = Math.max(24, Math.floor((el.clientHeight - termPadding) / c.h));
     if (newCols !== term.cols || newRows !== term.rows) {
       term.resize(newCols, newRows);
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -641,7 +681,7 @@ document.addEventListener('htmx:afterSwap', function () {
   });
 
   window.addEventListener('resize', fitTerm);
-})();
+}
 </script>
 {% endif %}
 {% endblock %}
