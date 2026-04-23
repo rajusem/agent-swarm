@@ -85,4 +85,17 @@ Use `display_output` everywhere `session.last_output` was rendered. This is temp
 
 ---
 ## Implementation Summary
-> To be filled in by /finish-work after work is complete.
+**Completed:** 2026-04-23
+
+### What Changed
+- `swarmer/templates/sessions/detail.html` — column split narrowed 5/7 → 4/8; `cfg-instruction-section` removed from the config form; new "Prompt" card added above Last Output in the right column (textarea uses `form="cfg-edit-form"` for HTML5 association); auto-save blur/input listeners wired for the moved textarea; `htmx:afterSwap` updated to disable/enable the prompt textarea and drop all `isSucceeded` / "Clean up" logic; Mode and Model dropdowns set to `width:auto` to shrink to content
+- `swarmer/templates/sessions/_last_output.html` — simplified to a single `{% set _raw = session.last_output %}` (prompt-stripping template logic removed as unnecessary once the backend seeding was eliminated)
+- `swarmer/routers/sessions.py` — removed the `session_launch` block that seeded `last_output` with the prompt text as a placeholder; `session_create` now calls `_get_model_options` and persists the first available model when none is supplied, so `session.model` is never empty after creation; `session_launch` save_config path now guards `session.model` with `if model.strip()` to prevent an empty form value from wiping a previously stored model; `start_log_poller` call passes `session.mode`
+- `swarmer/log_poller.py` — `start_log_poller` and `_poll_loop` accept a `mode` parameter; new `_auto_cleanup_pod` helper deletes the Kubernetes pod and clears `session.pod_name` in DB when a prompt-mode session reaches phase `succeeded`
+
+### Tests
+- No automated tests exist for the frontend or k8s layer — manual verification per the Verification section above is required
+
+### Known Gaps / Follow-up
+- The `syncHeight` JS function still sets `last-output-card` maxHeight to the full left-column height; with the Prompt card now above it the cap is slightly generous, but layout still works correctly
+- Prompt-prefix stripping from pod logs was initially implemented as a Jinja2 template filter but removed when the root cause (backend seeding `last_output` with the prompt) was found and fixed instead — cleaner outcome
