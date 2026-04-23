@@ -10,10 +10,10 @@ _TERMINAL_PHASES = frozenset(("succeeded", "failed", "stopped"))
 _poller_tasks: dict[int, asyncio.Task] = {}
 
 
-def start_log_poller(session_id: int, pod_name: str, namespace: str) -> None:
+def start_log_poller(session_id: int, pod_name: str, namespace: str, mode: str = "prompt") -> None:
     stop_log_poller(session_id)
     task = asyncio.create_task(
-        _poll_loop(session_id, pod_name, namespace),
+        _poll_loop(session_id, pod_name, namespace, mode),
         name=f"log-poller-{session_id}",
     )
     _poller_tasks[session_id] = task
@@ -36,7 +36,7 @@ async def shutdown() -> None:
     _poller_tasks.clear()
 
 
-async def _poll_loop(session_id: int, pod_name: str, namespace: str) -> None:
+async def _poll_loop(session_id: int, pod_name: str, namespace: str, mode: str) -> None:
     from swarmer import k8s
 
     try:
@@ -46,12 +46,41 @@ async def _poll_loop(session_id: int, pod_name: str, namespace: str) -> None:
             await _save_to_db(session_id, phase, detail, logs)
             if phase in _TERMINAL_PHASES:
                 log.info("log_poller: session %d reached terminal phase %s", session_id, phase)
+                if phase == "succeeded" and mode == "prompt":
+                    await _auto_cleanup_pod(session_id, pod_name, namespace)
                 return
             await asyncio.sleep(_POLL_INTERVAL)
     except asyncio.CancelledError:
         raise
     except Exception:
         log.exception("log_poller: unexpected error for session %d", session_id)
+
+
+async def _auto_cleanup_pod(session_id: int, pod_name: str, namespace: str) -> None:
+    from swarmer import k8s
+    from swarmer.database import get_db
+    from swarmer.models.session import Session
+
+    deleted = False
+    try:
+        await asyncio.to_thread(k8s.delete_pod, pod_name, namespace)
+        log.info("log_poller: auto-deleted pod %s for session %d", pod_name, session_id)
+        deleted = True
+    except Exception:
+        log.exception("log_poller: pod auto-deletion failed for session %d", session_id)
+
+    if not deleted:
+        return
+
+    try:
+        async for db in get_db():
+            session = await db.get(Session, session_id)
+            if session and session.pod_name == pod_name:
+                session.pod_name = None
+                await db.commit()
+            break
+    except Exception:
+        log.exception("log_poller: pod_name clear failed for session %d", session_id)
 
 
 async def _save_to_db(session_id: int, phase: str, detail: str, logs: str) -> None:
