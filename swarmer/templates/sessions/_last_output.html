@@ -24,5 +24,5 @@
      hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/last-output"
      hx-trigger="every 5s"
      hx-swap="outerHTML"
-     {% endif %}>{% if _raw %}{{ _raw }}{% else %}<span style="color:var(--pf-t--global--text--color--subtle);">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
+     {% endif %}>{% if _raw %}{{ _raw | ansi_to_html }}{% else %}<span style="color:var(--pf-t--global--text--color--subtle);">No output yet. Launch the session to see logs here.</span>{% endif %}</pre>
 {% endif %}
