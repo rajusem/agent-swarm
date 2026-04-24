@@ -83,15 +83,15 @@ def ensure_namespace(namespace: str) -> None:
 def _grant_anyuid_scc(namespace: str) -> None:
     """Grant the OpenShift anyuid SCC to the default SA in *namespace*.
 
-    Creates a ClusterRoleBinding named ``swarmer-anyuid:<namespace>``.
-    Silently skips if the anyuid ClusterRole does not exist (non-OpenShift).
+    Creates a namespace-scoped RoleBinding (matching what `oc adm policy
+    add-scc-to-user anyuid` does on OpenShift 4.x).  Silently skips on
+    kind/k3s where the anyuid ClusterRole does not exist (404).
     """
     from kubernetes import client
 
     rbac = client.RbacAuthorizationV1Api()
-    crb_name = f"swarmer-anyuid:{namespace}"
-    crb = client.V1ClusterRoleBinding(
-        metadata=client.V1ObjectMeta(name=crb_name),
+    rb = client.V1RoleBinding(
+        metadata=client.V1ObjectMeta(name="system:openshift:scc:anyuid", namespace=namespace),
         role_ref=client.V1RoleRef(
             api_group="rbac.authorization.k8s.io",
             kind="ClusterRole",
@@ -104,14 +104,15 @@ def _grant_anyuid_scc(namespace: str) -> None:
         )],
     )
     try:
-        rbac.create_cluster_role_binding(crb)
+        rbac.create_namespaced_role_binding(namespace, rb)
     except client.exceptions.ApiException as exc:
         if exc.status == 409:  # already exists
             pass
-        elif exc.status in (403, 404):
-            # 404: anyuid ClusterRole absent (kind/k3s) — skip silently
-            # 403: swarmer SA lacks CRB create permission — log and skip
-            log.debug("anyuid SCC grant skipped for %s: %s", namespace, exc.status)
+        elif exc.status == 404:
+            # anyuid ClusterRole absent — not OpenShift, skip silently
+            log.debug("anyuid SCC grant skipped for %s (not OpenShift)", namespace)
+        elif exc.status == 403:
+            log.warning("anyuid SCC grant forbidden for %s: %s", namespace, exc.body)
         else:
             raise
 

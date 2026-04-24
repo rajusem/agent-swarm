@@ -127,28 +127,12 @@ async def workspace_create(
 
 @router.get("/workspaces/{ws_id}", dependencies=[Depends(require_auth)])
 async def workspace_detail(
-    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
+    ws_id: int, db: AsyncSession = Depends(get_db)
 ):
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from swarmer.models.session import Session
-
     ws = await db.get(Workspace, ws_id)
     if ws is None:
         return RedirectResponse(url="/workspaces", status_code=302)
-    ns_status = k8s.get_namespace_status(ws.k8s_namespace)
-    result = await db.execute(
-        select(Session)
-        .where(Session.workspace_id == ws_id)
-        .options(selectinload(Session.github_pat))
-        .order_by(Session.name)
-    )
-    sessions = result.scalars().all()
-    return templates.TemplateResponse(
-        request,
-        "workspaces/detail.html",
-        {"ws": ws, "ns_status": ns_status, "sessions": sessions},
-    )
+    return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
 
 
 # ---------- Edit ----------
