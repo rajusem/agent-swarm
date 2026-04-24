@@ -130,23 +130,17 @@ def _session_mode_badge_class(session: Session) -> str:
 # Session list
 # ============================================================
 
-@router.get("/workspaces/{ws_id}/sessions", dependencies=[Depends(require_auth)])
-async def session_list(
-    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
-):
-    ws = await _get_workspace(ws_id, db)
-    if ws is None:
-        return RedirectResponse(url="/workspaces", status_code=302)
-
+async def _list_sessions_data(ws_id: int, db: AsyncSession):
     result = await db.execute(
         select(Session)
         .where(Session.workspace_id == ws_id)
         .options(selectinload(Session.github_pat), selectinload(Session.repos))
         .order_by(Session.name)
     )
-    sessions = result.scalars().all()
+    return result.scalars().all()
 
-    # Sync K8s phase for any sessions the DB still thinks are active
+
+async def _sync_session_phases(sessions, ws, db: AsyncSession):
     dirty = False
     for s in sessions:
         if s.phase in ("pending", "running") and s.pod_name:
@@ -157,9 +151,48 @@ async def session_list(
     if dirty:
         await db.commit()
 
+
+@router.get("/workspaces/{ws_id}/sessions", dependencies=[Depends(require_auth)])
+async def session_list(
+    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
+):
+    ws = await _get_workspace(ws_id, db)
+    if ws is None:
+        return RedirectResponse(url="/workspaces", status_code=302)
+
+    sessions = await _list_sessions_data(ws_id, db)
+    await _sync_session_phases(sessions, ws, db)
+
     return templates.TemplateResponse(
         request,
         "sessions/list.html",
+        {
+            "ws": ws,
+            "sessions": sessions,
+            "mode_label": _session_mode_label,
+            "mode_badge": _session_mode_badge_class,
+        },
+    )
+
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/rows",
+    dependencies=[Depends(require_auth)],
+    response_class=HTMLResponse,
+)
+async def session_list_rows(
+    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
+):
+    ws = await _get_workspace(ws_id, db)
+    if ws is None:
+        return HTMLResponse("")
+
+    sessions = await _list_sessions_data(ws_id, db)
+    await _sync_session_phases(sessions, ws, db)
+
+    return templates.TemplateResponse(
+        request,
+        "sessions/_list_rows.html",
         {
             "ws": ws,
             "sessions": sessions,
