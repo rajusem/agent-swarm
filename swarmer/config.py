@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     port: int = 8080
     agent_image: str = ""
     agent_image_opencode: str = ""
-    agent_image_python: str = ""
     agent_image_crush: str = ""
     crush_version: str = "0.57.0"
     default_agent_tool: str = "opencode"

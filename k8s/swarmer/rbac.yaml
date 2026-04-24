@@ -45,11 +45,12 @@ rules:
     resources: ["configmaps"]
     verbs: ["get", "create", "update", "patch", "delete"]
 
-  # ClusterRoleBinding management — used to grant the OpenShift anyuid SCC
-  # to workspace namespace default SAs so session pods can run as root.
-  # No-op on kind/k3s (the anyuid ClusterRole simply does not exist there).
+  # RoleBinding management — used to grant the OpenShift anyuid SCC to the
+  # default SA in workspace namespaces (matches what `oc adm policy add-scc-to-user`
+  # does on OpenShift 4.x).  No-op on kind/k3s where the anyuid ClusterRole
+  # does not exist.
   - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["clusterrolebindings"]
+    resources: ["rolebindings"]
     verbs: ["get", "create", "update", "patch", "delete"]
 
   # Token validation (validating user bearer tokens at login)

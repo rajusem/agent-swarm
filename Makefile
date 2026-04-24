@@ -16,11 +16,10 @@ IMAGE_REF     = $(if $(REGISTRY),$(REGISTRY)/$(IMAGE):$(IMAGE_TAG),$(IMAGE):$(IM
 CONTAINER_CMD ?= podman
 
 # opencode agent image loaded into kind for session pods
-OPENCODE_IMAGE ?= opencode-golang:latest
+OPENCODE_IMAGE ?= quay.io/jpacker/opencode:0.1.1
 
 # Agent tool images (overridable via .env or command line)
-AGENT_IMAGE_OPENCODE ?= quay.io/jpacker/opencode-golang:0.2
-AGENT_IMAGE_PYTHON   ?= quay.io/jpacker/opencode-python:0.2
+AGENT_IMAGE_OPENCODE ?= quay.io/jpacker/opencode:0.1.1
 AGENT_IMAGE_CRUSH    ?= ghcr.io/gurnben/crush-container:latest
 
 # Crush agent image
@@ -55,10 +54,9 @@ sync-images:  ## Sync AGENT_IMAGE / AGENT_IMAGE_OPENCODE / AGENT_IMAGE_PYTHON in
 	@test -f $(AC_DEFAULTS) || (echo "$(AC_DEFAULTS) not found — run 'make publish' in ../agent-containers first" && exit 1)
 	$(eval AC_REGISTRY := $(shell grep '^REGISTRY=' $(AC_DEFAULTS) | cut -d= -f2-))
 	$(eval AC_TAG      := $(shell grep '^IMAGE_TAG=' $(AC_DEFAULTS) | cut -d= -f2-))
-	@echo "Syncing agent images → $(AC_REGISTRY)/opencode-{golang,python}:$(AC_TAG)"
-	@sed -i "s|^AGENT_IMAGE=.*|AGENT_IMAGE=$(AC_REGISTRY)/opencode-golang:$(AC_TAG)|" .env
-	@sed -i "s|^AGENT_IMAGE_OPENCODE=.*|AGENT_IMAGE_OPENCODE=$(AC_REGISTRY)/opencode-golang:$(AC_TAG)|" .env
-	@sed -i "s|^AGENT_IMAGE_PYTHON=.*|AGENT_IMAGE_PYTHON=$(AC_REGISTRY)/opencode-python:$(AC_TAG)|" .env
+	@echo "Syncing agent images → $(AC_REGISTRY)/opencode:$(AC_TAG)"
+	@sed -i "s|^AGENT_IMAGE=.*|AGENT_IMAGE=$(AC_REGISTRY)/opencode:$(AC_TAG)|" .env
+	@sed -i "s|^AGENT_IMAGE_OPENCODE=.*|AGENT_IMAGE_OPENCODE=$(AC_REGISTRY)/opencode:$(AC_TAG)|" .env
 	@echo "Updated .env"
 
 setup-secret:  ## Generate a new SWARMER_SECRET_KEY and save to auth/secret.key
@@ -242,7 +240,6 @@ openshift-deploy:  ## Deploy to OpenShift: Route + OAuthClient + app  (SWARMER_H
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
-	     s|AGENT_IMAGE_PYTHON_VALUE|$(AGENT_IMAGE_PYTHON)|g; \
 	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g" \
 	  k8s/openshift/deployment.yaml | kubectl apply -f -
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
@@ -283,16 +280,16 @@ kind-load:  ## Load the swarmer image into the kind cluster (no registry needed)
 	fi
 	@echo "✓ Image loaded."
 
-kind-load-opencode:  ## Load the opencode-golang image into the kind cluster as 'latest'  (OPENCODE_IMAGE)
-	@echo "Tagging $(OPENCODE_IMAGE) → opencode-golang:latest"
-	$(CONTAINER_CMD) tag $(OPENCODE_IMAGE) opencode-golang:latest
-	@echo "Loading opencode-golang:latest into kind cluster '$(KIND_CLUSTER)'..."
+kind-load-opencode:  ## Load the opencode image into the kind cluster  (OPENCODE_IMAGE)
+	@echo "Tagging $(OPENCODE_IMAGE) → opencode:latest"
+	$(CONTAINER_CMD) tag $(OPENCODE_IMAGE) opencode:latest
+	@echo "Loading opencode:latest into kind cluster '$(KIND_CLUSTER)'..."
 	@if [ "$(CONTAINER_CMD)" = "podman" ]; then \
-	  podman save opencode-golang:latest | kind load image-archive /dev/stdin --name $(KIND_CLUSTER); \
+	  podman save opencode:latest | kind load image-archive /dev/stdin --name $(KIND_CLUSTER); \
 	else \
-	  kind load docker-image opencode-golang:latest --name $(KIND_CLUSTER); \
+	  kind load docker-image opencode:latest --name $(KIND_CLUSTER); \
 	fi
-	@echo "✓ opencode image loaded as opencode-golang:latest"
+	@echo "✓ opencode image loaded as opencode:latest"
 
 image-build-crush:  ## Build the Crush agent container image
 	$(CONTAINER_CMD) build -f Containerfile.crush \

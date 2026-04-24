@@ -38,12 +38,7 @@ patches:
         path: /spec/template/spec/containers/0/env/-
         value:
           name: AGENT_IMAGE_OPENCODE
-          value: "ghcr.io/anomalyco/opencode:latest"
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value:
-          name: AGENT_IMAGE_PYTHON
-          value: "ghcr.io/anomalyco/opencode:latest"
+          value: "quay.io/jpacker/opencode:0.1.1"
       - op: add
         path: /spec/template/spec/containers/0/env/-
         value:

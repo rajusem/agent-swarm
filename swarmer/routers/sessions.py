@@ -479,6 +479,12 @@ async def session_launch(
         flash(request, f"PVC error: {exc}", "danger")
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
 
+    # Re-run the anyuid SCC grant in case it failed at workspace creation time
+    # (e.g. swarmer lacked the bind permission when the workspace was first set up).
+    if not settings.k8s_namespace:
+        from swarmer import k8s as _k8s
+        _k8s._grant_anyuid_scc(ws.k8s_namespace)
+
     # Check whether the workspace has an ADC JSON stored (affects pod spec)
     from swarmer.models.opencode_secret import OpencodeSecret
     oc_result = await db.execute(
