@@ -130,23 +130,17 @@ def _session_mode_badge_class(session: Session) -> str:
 # Session list
 # ============================================================
 
-@router.get("/workspaces/{ws_id}/sessions", dependencies=[Depends(require_auth)])
-async def session_list(
-    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
-):
-    ws = await _get_workspace(ws_id, db)
-    if ws is None:
-        return RedirectResponse(url="/workspaces", status_code=302)
-
+async def _list_sessions_data(ws_id: int, db: AsyncSession):
     result = await db.execute(
         select(Session)
         .where(Session.workspace_id == ws_id)
         .options(selectinload(Session.github_pat), selectinload(Session.repos))
         .order_by(Session.name)
     )
-    sessions = result.scalars().all()
+    return result.scalars().all()
 
-    # Sync K8s phase for any sessions the DB still thinks are active
+
+async def _sync_session_phases(sessions, ws, db: AsyncSession):
     dirty = False
     for s in sessions:
         if s.phase in ("pending", "running") and s.pod_name:
@@ -157,9 +151,48 @@ async def session_list(
     if dirty:
         await db.commit()
 
+
+@router.get("/workspaces/{ws_id}/sessions", dependencies=[Depends(require_auth)])
+async def session_list(
+    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
+):
+    ws = await _get_workspace(ws_id, db)
+    if ws is None:
+        return RedirectResponse(url="/workspaces", status_code=302)
+
+    sessions = await _list_sessions_data(ws_id, db)
+    await _sync_session_phases(sessions, ws, db)
+
     return templates.TemplateResponse(
         request,
         "sessions/list.html",
+        {
+            "ws": ws,
+            "sessions": sessions,
+            "mode_label": _session_mode_label,
+            "mode_badge": _session_mode_badge_class,
+        },
+    )
+
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/rows",
+    dependencies=[Depends(require_auth)],
+    response_class=HTMLResponse,
+)
+async def session_list_rows(
+    ws_id: int, request: Request, db: AsyncSession = Depends(get_db)
+):
+    ws = await _get_workspace(ws_id, db)
+    if ws is None:
+        return HTMLResponse("")
+
+    sessions = await _list_sessions_data(ws_id, db)
+    await _sync_session_phases(sessions, ws, db)
+
+    return templates.TemplateResponse(
+        request,
+        "sessions/_list_rows.html",
         {
             "ws": ws,
             "sessions": sessions,
@@ -308,14 +341,6 @@ async def session_detail(
     if ws is None or session is None or session.workspace_id != ws_id:
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
 
-    # Generate one-time TUI token for TUI-mode sessions
-    tui_token = None
-    if session.mode == "tui" and session.phase == "running":
-        tui_token = str(uuid.uuid4())
-        tokens = list(request.session.get("tui_tokens", []))
-        tokens.append(tui_token)
-        request.session["tui_tokens"] = tokens
-
     pats_result = await db.execute(
         select(GitHubPAT).where(GitHubPAT.workspace_id == ws_id).order_by(GitHubPAT.name)
     )
@@ -328,6 +353,14 @@ async def session_detail(
         if live_phase != session.phase:
             session.phase = live_phase
             await db.commit()
+
+    # Generate one-time TUI token after K8s sync so phase is current
+    tui_token = None
+    if session.mode == "tui" and session.phase == "running":
+        tui_token = str(uuid.uuid4())
+        tokens = list(request.session.get("tui_tokens", []))
+        tokens.append(tui_token)
+        request.session["tui_tokens"] = tokens
 
     model_options = await _get_model_options(ws_id, db, session.agent_tool)
     pat_token = session.github_pat.pat if session.github_pat else None
@@ -481,9 +514,8 @@ async def session_launch(
 
     # Re-run the anyuid SCC grant in case it failed at workspace creation time
     # (e.g. swarmer lacked the bind permission when the workspace was first set up).
-    if not settings.k8s_namespace:
-        from swarmer import k8s as _k8s
-        _k8s._grant_anyuid_scc(ws.k8s_namespace)
+    from swarmer import k8s as _k8s
+    _k8s._grant_anyuid_scc(ws.k8s_namespace)
 
     # Check whether the workspace has an ADC JSON stored (affects pod spec)
     from swarmer.models.opencode_secret import OpencodeSecret

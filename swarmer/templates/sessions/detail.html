@@ -550,18 +550,21 @@ document.addEventListener('htmx:afterSwap', function () {
     updateLaunchAvailPill(avail);
   }
 
-  {% if session.mode == 'tui' %}
-  if (isRunning && !document.getElementById('terminal')) {
-    window.location.reload();
-  }
-  {% endif %}
-
-  {% if session.mode == 'server' %}
-  const chatBtn = document.getElementById('server-chat-btn');
-  if (chatBtn) chatBtn.style.display = isRunning ? '' : 'none';
-  {% endif %}
-
 });
+
+{% if session.mode in ('tui', 'server') and session.phase != 'running' %}
+(function() {
+  var attempts = 0;
+  var reloadPoll = setInterval(function() {
+    if (++attempts > 120) { clearInterval(reloadPoll); return; }
+    var badge = document.querySelector('#session-status .pf-v6-c-label');
+    if (badge && badge.classList.contains('pf-m-green')) {
+      clearInterval(reloadPoll);
+      window.location.reload();
+    }
+  }, 2000);
+})();
+{% endif %}
 </script>
 
 {% if session.mode == 'tui' and session.phase == 'running' and tui_token %}
