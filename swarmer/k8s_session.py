@@ -219,7 +219,7 @@ def build_session_pod(
                     )
                 ],
                 resources=client.V1ResourceRequirements(
-                    requests={"memory": "128Mi", "cpu": "100m"},
+                    requests={"memory": "256Mi", "cpu": "100m"},
                     limits={"memory": "512Mi", "cpu": "500m"},
                 ),
             )
@@ -264,13 +264,14 @@ def build_session_pod(
     env_from = tool.get_env_from_sources()
 
     # ---------- container ----------
-    # Always run as root (UID 0) — agent tool images expect a writable home and
-    # workspace.  On OpenShift, ensure_namespace grants the anyuid SCC to the
-    # namespace's default SA so this is permitted without host-level privileges.
-    # The `privileged` flag additionally enables Linux privileged mode (raw
-    # sockets, device access, etc.) which is only needed in rare cases.
-    security_context = client.V1SecurityContext(run_as_user=0)
+    # Non-privileged sessions omit runAsUser so OpenShift can assign a UID from
+    # the namespace's allowed range (restricted SCC).  The pod-level fsGroup
+    # ensures the shared PVC (/workspace) is group-writable regardless of UID.
+    # The `privileged` flag forces UID 0 and enables Linux privileged mode
+    # (raw sockets, device access, etc.) — requires anyuid or privileged SCC.
+    security_context = client.V1SecurityContext()
     if privileged:
+        security_context.run_as_user = 0
         security_context.privileged = True
 
     container = client.V1Container(
@@ -287,7 +288,7 @@ def build_session_pod(
         tty=session.mode == "tui",
         security_context=security_context,
         resources=client.V1ResourceRequirements(
-            requests={"memory": "512Mi", "cpu": "500m"},
+            requests={"memory": "1Gi", "cpu": "500m"},
             limits={"memory": "2Gi", "cpu": "2000m"},
         ),
     )
@@ -311,6 +312,9 @@ def build_session_pod(
         ),
         spec=client.V1PodSpec(
             restart_policy=restart_policy,
+            security_context=client.V1PodSecurityContext(
+                fs_group=0 if privileged else 1000,
+            ),
             init_containers=init_containers or None,
             containers=[container],
             volumes=volumes,
