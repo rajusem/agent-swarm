@@ -172,7 +172,9 @@ k8s-deploy:  ## Deploy swarmer to the current kubectl context  (IMAGE_REF, NAMES
 	fi; \
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
-	     s|REDIRECT_BASE_URL_VALUE||g" \
+	     s|REDIRECT_BASE_URL_VALUE||g; \
+	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
+	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g" \
 	  k8s/swarmer/deployment.yaml | kubectl apply -f -
 	# 4. Wait for rollout
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
