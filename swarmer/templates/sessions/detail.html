@@ -83,7 +83,7 @@
 {% if session.run_started_at %}
 <div style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
   Last run: {{ session.run_started_at.strftime('%b %d %Y %H:%M') }} UTC
-  {% if session.run_duration %} · {{ session.run_duration }}{% endif %}
+  {% if session.run_duration %} · {% if session.is_active %}⏱️ {% endif %}{{ session.run_duration }}{% endif %}
 </div>
 {% endif %}
 

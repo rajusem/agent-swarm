@@ -51,7 +51,7 @@
       <td class="pf-v6-c-table__td" role="cell" data-label="Last Run" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); white-space:nowrap;">
         {% if s.run_started_at %}
           {{ s.run_started_at.strftime('%b %d %H:%M') }}
-          {% if s.run_duration %}<br><span style="font-size:0.85em;">{{ s.run_duration }}</span>{% endif %}
+          {% if s.run_duration %}<br><span style="font-size:0.85em;">{% if s.is_active %}⏱️ {% endif %}{{ s.run_duration }}</span>{% endif %}
         {% else %}
           —
         {% endif %}
@@ -70,8 +70,21 @@
         {% endif %}
       </td>
       <td class="pf-v6-c-table__td pf-m-fit-content" role="cell" data-label="Actions" style="text-align:right;">
-        <a href="/workspaces/{{ ws.id }}/sessions/{{ s.id }}"
-           class="pf-v6-c-button pf-m-secondary pf-m-small">Open</a>
+        {% set _avail = tool_image_available.get(s.agent_tool, False) %}
+        {% if s.is_active %}
+          <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ s.id }}/stop" style="display:inline;">
+            <button type="submit" class="pf-v6-c-button pf-m-warning pf-m-small">&#9632; Stop</button>
+          </form>
+        {% else %}
+          <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ s.id }}/launch" style="display:inline;">
+            <input type="hidden" name="redirect_to" value="list">
+            <button type="submit"
+                    class="pf-v6-c-button pf-m-small {% if _avail %}pf-m-primary{% else %}pf-m-secondary{% endif %}"
+                    {% if not _avail %}disabled{% endif %}>
+              &#9654; Launch
+            </button>
+          </form>
+        {% endif %}
       </td>
     </tr>
   {% endfor %}

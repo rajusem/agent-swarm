@@ -92,7 +92,7 @@
         {{ s.run_started_at.strftime('%b %d %H:%M') if s.run_started_at else '—' }}
       </td>
       <td class="pf-v6-c-table__td" role="cell" data-label="Duration" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); white-space:nowrap;">
-        {{ s.run_duration if s.run_duration else '—' }}
+        {% if s.run_duration %}{% if s.is_active %}⏱️ {% endif %}{{ s.run_duration }}{% else %}—{% endif %}
       </td>
       <td class="pf-v6-c-table__td" role="cell" data-label="GitHub PAT" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
         {{ s.github_pat.name if s.github_pat else '—' }}

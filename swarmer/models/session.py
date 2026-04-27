@@ -75,9 +75,15 @@ class Session(Base):
 
     @property
     def run_duration(self) -> str | None:
-        if not self.run_started_at or not self.run_completed_at:
+        if not self.run_started_at:
             return None
-        total_secs = int((self.run_completed_at - self.run_started_at).total_seconds())
+        if self.run_completed_at:
+            end = self.run_completed_at
+        elif self.is_active:
+            end = datetime.utcnow()
+        else:
+            return None
+        total_secs = int((end - self.run_started_at).total_seconds())
         mins, secs = divmod(max(total_secs, 0), 60)
         hours, mins = divmod(mins, 60)
         if hours:

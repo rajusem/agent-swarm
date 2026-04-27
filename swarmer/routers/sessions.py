@@ -163,6 +163,10 @@ async def session_list(
     sessions = await _list_sessions_data(ws_id, db)
     await _sync_session_phases(sessions, ws, db)
 
+    _tools = all_tools()
+    _avail = await asyncio.gather(
+        *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
+    )
     return templates.TemplateResponse(
         request,
         "sessions/list.html",
@@ -171,6 +175,7 @@ async def session_list(
             "sessions": sessions,
             "mode_label": _session_mode_label,
             "mode_badge": _session_mode_badge_class,
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
         },
     )
 
@@ -190,6 +195,10 @@ async def session_list_rows(
     sessions = await _list_sessions_data(ws_id, db)
     await _sync_session_phases(sessions, ws, db)
 
+    _tools = all_tools()
+    _avail = await asyncio.gather(
+        *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
+    )
     return templates.TemplateResponse(
         request,
         "sessions/_list_rows.html",
@@ -198,6 +207,7 @@ async def session_list_rows(
             "sessions": sessions,
             "mode_label": _session_mode_label,
             "mode_badge": _session_mode_badge_class,
+            "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
         },
     )
 
@@ -463,6 +473,7 @@ async def session_launch(
     resume: bool = Form(False),
     mode: str = Form(""),
     model: str = Form(""),
+    redirect_to: str = Form(""),
     db: AsyncSession = Depends(get_db),
 ):
     ws = await _get_workspace(ws_id, db)
@@ -567,7 +578,12 @@ async def session_launch(
         log.error("session_launch failed for session %d: %s", sid, exc, exc_info=True)
         flash(request, f"Launch failed: {exc}", "danger")
 
-    return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
+    dest = (
+        f"/workspaces/{ws_id}/sessions"
+        if redirect_to == "list"
+        else f"/workspaces/{ws_id}/sessions/{sid}"
+    )
+    return RedirectResponse(url=dest, status_code=302)
 
 
 @router.post(
