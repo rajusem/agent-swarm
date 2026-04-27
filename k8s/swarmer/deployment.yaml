@@ -45,6 +45,10 @@ spec:
               value: "OPENSHIFT_OAUTH_URL_VALUE"
             - name: REDIRECT_BASE_URL
               value: "REDIRECT_BASE_URL_VALUE"
+            - name: AGENT_IMAGE_OPENCODE
+              value: "AGENT_IMAGE_OPENCODE_VALUE"
+            - name: AGENT_IMAGE_CRUSH
+              value: "AGENT_IMAGE_CRUSH_VALUE"
 
           volumeMounts:
             - name: swarmer-data
