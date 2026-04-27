@@ -6,5 +6,5 @@ sessions:
     jira: "ACM-33311"
     jira_url: "https://redhat.atlassian.net/browse/ACM-33311"
     status: "Done"
-    pr: ~
+    pr: "https://github.com/stolostron/agent-swarm/pull/29"
     summary: "Renamed Open→Launch with image guard and Stop button in Actions column, 3s HTMX refresh, and live ⏱️ elapsed time for active sessions"
