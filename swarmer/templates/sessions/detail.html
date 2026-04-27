@@ -92,23 +92,23 @@
 {% endif %}
 
 {# ── OpenShift-style horizontal tabs ── #}
-<div class="pf-v6-c-tabs" id="session-tabs">
+<div class="pf-v6-c-tabs" id="session-tabs" role="tablist">
   <ul class="pf-v6-c-tabs__list">
     <li class="pf-v6-c-tabs__item pf-m-current" id="tab-details">
-      <button class="pf-v6-c-tabs__link" onclick="switchTab('details')">
+      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="true" aria-controls="panel-details" tabindex="0" onclick="switchTab('details')">
         <span class="pf-v6-c-tabs__item-text">Details</span>
       </button>
     </li>
     {% if session.mode == 'tui' %}
     <li class="pf-v6-c-tabs__item" id="tab-terminal">
-      <button class="pf-v6-c-tabs__link" onclick="switchTab('terminal')">
+      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-terminal" tabindex="-1" onclick="switchTab('terminal')">
         <span class="pf-v6-c-tabs__item-text">Terminal</span>
       </button>
     </li>
     {% endif %}
     {% if session.mode in ('prompt', 'server') %}
     <li class="pf-v6-c-tabs__item" id="tab-output">
-      <button class="pf-v6-c-tabs__link" onclick="switchTab('output')">
+      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-output" tabindex="-1" onclick="switchTab('output')">
         <span class="pf-v6-c-tabs__item-text">Output</span>
       </button>
     </li>
@@ -119,7 +119,7 @@
 {# ════════════════════════════════════════════════════════════
    Tab panel: Details
    ════════════════════════════════════════════════════════════ #}
-<div id="panel-details" class="pf-v6-c-tab-content" style="margin-top:var(--pf-t--global--spacer--lg);">
+<div id="panel-details" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-details" style="margin-top:var(--pf-t--global--spacer--lg);">
   <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--lg);">
 
     {# Left column: Configuration #}
@@ -207,8 +207,8 @@
               </div>
             </div>
 
-            <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);" id="cfg_resume_row"
-                 {% if not session.persist %}style="display:none"{% endif %}>
+            <div id="cfg_resume_row"
+                 style="display:{% if session.persist %}flex{% else %}none{% endif %}; align-items:center; margin-bottom:var(--pf-t--global--spacer--md);">
               <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Resume on relaunch</div>
               <div style="flex:1;">
                 <div class="pf-v6-c-check">
@@ -331,7 +331,7 @@
    Tab panel: Terminal (TUI mode only)
    ════════════════════════════════════════════════════════════ #}
 {% if session.mode == 'tui' %}
-<div id="panel-terminal" class="pf-v6-c-tab-content" style="display:none; margin-top:var(--pf-t--global--spacer--lg);">
+<div id="panel-terminal" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-terminal" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
   {% if session.phase == 'running' and tui_token %}
   <div class="pf-v6-c-card">
     <div class="pf-v6-c-card__header" style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
@@ -360,7 +360,7 @@
    Tab panel: Output (prompt and server modes)
    ════════════════════════════════════════════════════════════ #}
 {% if session.mode in ('prompt', 'server') %}
-<div id="panel-output" class="pf-v6-c-tab-content" style="display:none; margin-top:var(--pf-t--global--spacer--lg);">
+<div id="panel-output" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-output" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
   <div class="pf-v6-c-card">
     <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
       <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
@@ -385,17 +385,26 @@
 <script>
 // ── Tab switching (OpenShift Console style) ──
 function switchTab(name) {
-  document.querySelectorAll('.pf-v6-c-tab-content').forEach(p => p.style.display = 'none');
-  document.querySelectorAll('.pf-v6-c-tabs__item').forEach(t => t.classList.remove('pf-m-current'));
+  // Hide all panels and deselect all tabs
+  document.querySelectorAll('.pf-v6-c-tab-content').forEach(p => { p.hidden = true; p.style.display = ''; });
+  document.querySelectorAll('.pf-v6-c-tabs__item').forEach(t => {
+    t.classList.remove('pf-m-current');
+    const btn = t.querySelector('[role=tab]');
+    if (btn) { btn.setAttribute('aria-selected', 'false'); btn.tabIndex = -1; }
+  });
+  // Show selected panel and mark tab active
   const panel = document.getElementById('panel-' + name);
   const tab = document.getElementById('tab-' + name);
-  if (panel) panel.style.display = '';
-  if (tab) tab.classList.add('pf-m-current');
+  if (panel) panel.hidden = false;
+  if (tab) {
+    tab.classList.add('pf-m-current');
+    const btn = tab.querySelector('[role=tab]');
+    if (btn) { btn.setAttribute('aria-selected', 'true'); btn.tabIndex = 0; }
+  }
 
   // Lazy-init the terminal when the Terminal tab is first shown
   if (name === 'terminal' && !window._terminalInitialized && typeof initTerminal === 'function') {
-    window._terminalInitialized = true;
-    initTerminal();
+    if (initTerminal()) window._terminalInitialized = true;
   }
 }
 
@@ -538,25 +547,28 @@ function hideRename() {
 // After each HTMX status poll, sync controls with live phase.
 document.addEventListener('htmx:afterSwap', function () {
   const badge = document.querySelector('#session-status .pf-v6-c-label');
+  const statusText = (badge?.textContent || '').toLowerCase();
+  const isSucceeded = statusText.includes('completed') || statusText.includes('succeeded');
   const isRunning = badge && badge.classList.contains('pf-m-green');
   const isActive  = isRunning || (badge && badge.classList.contains('pf-m-gold'));
+  const isBlocked = isActive || isSucceeded;
 
   const cfgForm = document.getElementById('cfg-edit-form');
   if (cfgForm) {
     cfgForm.querySelectorAll('select, input[type=checkbox], textarea').forEach(el => {
-      el.disabled = isActive;
+      el.disabled = isBlocked;
     });
   }
   const instrTA = document.getElementById('instruction-prompt-input');
-  if (instrTA) instrTA.disabled = isActive;
+  if (instrTA) instrTA.disabled = isBlocked;
   const patSelect = document.getElementById('cfg-pat-select');
-  if (patSelect) patSelect.disabled = isActive;
+  if (patSelect) patSelect.disabled = isBlocked;
   const stopMsg = document.getElementById('cfg-stop-msg');
-  if (stopMsg) stopMsg.style.display = isActive ? '' : 'none';
+  if (stopMsg) stopMsg.style.display = isBlocked ? '' : 'none';
   const saveInd = document.getElementById('cfg-save-indicator');
-  if (saveInd) saveInd.style.display = isActive ? 'none' : '';
+  if (saveInd) saveInd.style.display = isBlocked ? 'none' : '';
 
-  if (isActive) {
+  if (isBlocked) {
     const renameForm = document.getElementById('rename-form');
     if (renameForm) renameForm.style.display = 'none';
     const nameDisplay = document.getElementById('name-display');
@@ -568,19 +580,33 @@ document.addEventListener('htmx:afterSwap', function () {
   }
 
   const launchStop = document.getElementById('launch-stop');
-  if (launchStop) launchStop.style.display = isActive ? '' : 'none';
+  if (launchStop) {
+    launchStop.style.display = (isActive || isSucceeded) ? '' : 'none';
+    const stopBtn = document.getElementById('launch-stop-btn');
+    if (stopBtn) {
+      if (isSucceeded) {
+        stopBtn.textContent = '\u21ba Clean up';
+        stopBtn.classList.remove('pf-m-warning');
+        stopBtn.classList.add('pf-m-secondary');
+      } else {
+        stopBtn.textContent = '\u25a0 Stop';
+        stopBtn.classList.add('pf-m-warning');
+        stopBtn.classList.remove('pf-m-secondary');
+      }
+    }
+  }
 
   const launchForm = document.getElementById('launch-form');
-  if (launchForm) launchForm.style.display = isActive ? 'none' : '';
+  if (launchForm) launchForm.style.display = isBlocked ? 'none' : '';
 
   const _launchBtn = document.getElementById('launch-btn');
   const _launchSelect = document.getElementById('launch-tool-select');
-  if (_launchSelect) _launchSelect.disabled = isActive;
+  if (_launchSelect) _launchSelect.disabled = isBlocked;
   if (_launchBtn) {
     const availMap = _launchSelect ? JSON.parse(_launchSelect.dataset.availability || '{}') : {};
     const selectedTool = _launchSelect ? _launchSelect.value : '';
     const avail = availMap[selectedTool] === true;
-    const blocked = !avail;
+    const blocked = isSucceeded || !avail;
     _launchBtn.disabled = blocked;
     _launchBtn.classList.toggle('pf-m-primary', !blocked);
     _launchBtn.classList.toggle('pf-m-secondary', blocked);
@@ -621,7 +647,7 @@ function initTerminal() {
   }
 
   const el   = document.getElementById('terminal');
-  if (!el || el.offsetWidth === 0) return;
+  if (!el || el.offsetWidth === 0) return false;
 
   const cell = measureCell();
   const termPadding = 24;
@@ -681,6 +707,7 @@ function initTerminal() {
   });
 
   window.addEventListener('resize', fitTerm);
+  return true;
 }
 </script>
 {% endif %}
