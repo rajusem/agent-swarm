@@ -219,7 +219,7 @@ def build_session_pod(
                     )
                 ],
                 resources=client.V1ResourceRequirements(
-                    requests={"memory": "128Mi", "cpu": "100m"},
+                    requests={"memory": "256Mi", "cpu": "100m"},
                     limits={"memory": "512Mi", "cpu": "500m"},
                 ),
             )
@@ -269,8 +269,9 @@ def build_session_pod(
     # namespace's default SA so this is permitted without host-level privileges.
     # The `privileged` flag additionally enables Linux privileged mode (raw
     # sockets, device access, etc.) which is only needed in rare cases.
-    security_context = client.V1SecurityContext(run_as_user=0)
+    security_context = client.V1SecurityContext()
     if privileged:
+        security_context.run_as_user = 0
         security_context.privileged = True
 
     container = client.V1Container(
@@ -287,7 +288,7 @@ def build_session_pod(
         tty=session.mode == "tui",
         security_context=security_context,
         resources=client.V1ResourceRequirements(
-            requests={"memory": "512Mi", "cpu": "500m"},
+            requests={"memory": "1Gi", "cpu": "500m"},
             limits={"memory": "2Gi", "cpu": "2000m"},
         ),
     )
