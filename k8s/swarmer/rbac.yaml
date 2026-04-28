@@ -53,6 +53,14 @@ rules:
     resources: ["rolebindings"]
     verbs: ["get", "create", "update", "patch", "delete"]
 
+  # OpenShift SCC — swarmer must hold "use" on the anyuid SCC so that
+  # RBAC escalation checks allow it to create RoleBindings granting
+  # anyuid to workspace default SAs.  No-op on non-OpenShift clusters.
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: ["anyuid"]
+    verbs: ["use"]
+
   # Token validation (validating user bearer tokens at login)
   - apiGroups: ["authentication.k8s.io"]
     resources: ["tokenreviews"]

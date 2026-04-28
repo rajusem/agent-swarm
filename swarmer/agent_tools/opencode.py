@@ -42,7 +42,7 @@ class OpenCodeStrategy(AgentToolStrategy):
         }
 
     def get_config_mount_path(self) -> str:
-        return "/root/.config/opencode"
+        return "/workspace/.config/opencode"
 
     def get_secret_name(self) -> str:
         return "opencode-secret"
@@ -57,13 +57,13 @@ class OpenCodeStrategy(AgentToolStrategy):
         return 4096
 
     def get_share_dir(self) -> str:
-        return "/root/.local/share/opencode"
+        return "/workspace/.local/share/opencode"
 
     def build_share_setup_cmd(self) -> str:
         return (
-            "mkdir -p /workspace/.opencode $HOME/.local/share && "
-            "rm -rf $HOME/.local/share/opencode && "
-            "ln -sf /workspace/.opencode $HOME/.local/share/opencode && "
+            "mkdir -p /workspace/.opencode /workspace/.local/share && "
+            "rm -rf /workspace/.local/share/opencode && "
+            "ln -sf /workspace/.opencode /workspace/.local/share/opencode && "
             "find /workspace/.opencode -name '*.db-wal' -o -name '*.db-shm' | xargs rm -f 2>/dev/null; "
             "[ -n \"$GOOGLE_API_KEY\" ] && "
             "printf '{\"google\":{\"type\":\"api\",\"key\":\"%s\"}}' \"$GOOGLE_API_KEY\" "
@@ -80,9 +80,9 @@ class OpenCodeStrategy(AgentToolStrategy):
             "variant": {f"{provider_id}/{model_id}": "default"},
         })
         return (
-            "mkdir -p $HOME/.local/state/opencode && "
+            "mkdir -p /workspace/.local/state/opencode && "
             f"printf '%s' {shlex.quote(model_json)} "
-            "> $HOME/.local/state/opencode/model.json && "
+            "> /workspace/.local/state/opencode/model.json && "
         )
 
     def build_main_cmd(self, session, model: str) -> str:
@@ -153,8 +153,8 @@ class OpenCodeStrategy(AgentToolStrategy):
         model_json = json.dumps(model_data)
         cmd = [
             "sh", "-c",
-            "mkdir -p /root/.local/state/opencode && "
-            f"printf '%s' {shlex.quote(model_json)} > /root/.local/state/opencode/model.json",
+            "mkdir -p /workspace/.local/state/opencode && "
+            f"printf '%s' {shlex.quote(model_json)} > /workspace/.local/state/opencode/model.json",
         ]
         v1 = client.CoreV1Api()
         stream(
