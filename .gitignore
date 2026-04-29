@@ -10,3 +10,4 @@ venv/
 dist/
 .ruff_cache/
 .mypy_cache/
+.claude/

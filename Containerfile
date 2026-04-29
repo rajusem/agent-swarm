@@ -9,12 +9,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY swarmer/ swarmer/
 
-# Directories for mounted volumes (PVC for DB, Secret for auth hash)
-# Switch to root to create dirs, then back to 1001 for runtime
+# Create mount point directories as root (base image runs as uid 1001)
+# Note: PVC mounts overlay /data at runtime; ensure the PVC root is group-0
+# writable (chgrp -R 0 /data on the PVC) for uid 1001 + gid 0 write access.
 USER 0
-RUN mkdir -p /data /auth && \
-    chgrp -R 0 /data /auth && \
-    chmod -R g+rwX /data /auth
+RUN mkdir -p /data /auth
 USER 1001
 
 ENV PYTHONUNBUFFERED=1 \
