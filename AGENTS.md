@@ -126,6 +126,20 @@ All sensitive fields (PATs, API keys, ADC credentials) are Fernet-encrypted at r
 - Flash messages stored in Starlette session, rendered in `base.html`
 - Templates reference `request`, model objects, and helper functions directly
 
+## Sensitive Data Policy
+
+**NEVER include any of the following in generated code, templates, configs, or comments:**
+
+- API keys, tokens, passwords, or secrets (real or example-looking)
+- User IDs, email addresses, or usernames
+- GCP project IDs, Vertex locations, or service account details
+- Container registry URLs or image references tied to a specific deployment
+- Local filesystem paths (e.g. `/home/username/...`, `~/Desktop/...`)
+- OAuth client IDs/secrets, kubeconfig contents, or cluster URLs
+- Database connection strings with real hostnames or credentials
+
+Use placeholder patterns instead: `<YOUR_PROJECT>`, `example.com`, `your-registry.example.com`, generic variable references (`settings.foo`), or environment variable lookups. Encrypted values must always go through the `crypto.encrypt()`/`crypto.decrypt()` pattern — never store or log plaintext secrets.
+
 ## Code Conventions
 
 ### Python Style

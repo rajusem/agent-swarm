@@ -48,6 +48,9 @@ class Session(Base):
     privileged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     agent_tool: Mapped[str] = mapped_column(String(32), nullable=False, default="opencode", server_default="opencode")
     instruction_prompt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    working_branch: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
+    patch_output: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    commit_msg: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
