@@ -210,7 +210,7 @@ def build_session_pod(
         init_containers.append(
             client.V1Container(
                 name="git-init",
-                image="alpine/git:latest",
+                image=tool.get_image(),
                 command=["sh", "-c", full_cmd],
                 env=git_env,
                 volume_mounts=[

@@ -12,6 +12,14 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   status: "Done"
   pr: "https://github.com/stolostron/agent-swarm/pull/33"
   summary: "Switched to ubi9/python-312-minimal:latest (62.5 MB, non-root uid 1001); dropped apt-get block; added USER 0/1001 sandwich for group-0-writable PVC mount points"
+# ──────────────────────────────────────────────────────────
+- date: "2026-04-29"
+  title: "Reuse agent image for git-init init container"
+  jira: "ACM-33416"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-33416"
+  status: "Done"
+  pr: "https://github.com/stolostron/agent-swarm/pull/34"
+  summary: "Replaced alpine/git:latest (Docker Hub) with tool.get_image() so the git-init init container reuses the same agent image (OpenCode has git + gh; Crush has git); eliminates Docker Hub dependency"
 
 ## Foundation & Feature Plans
 
