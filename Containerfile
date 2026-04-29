@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/python-312-minimal:latest
+FROM registry.access.redhat.com/ubi10/python-312-minimal:latest
 
 WORKDIR /app
 
