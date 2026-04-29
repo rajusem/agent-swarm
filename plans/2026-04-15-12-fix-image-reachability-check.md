@@ -1,6 +1,7 @@
 # Fix: Image Reachability Check Always Returning False
 
 **Date:** 2026-04-15
+**PR:** [#10 fix: use registry probe for tool image availability](https://github.com/stolostron/agent-swarm/pull/10)
 
 ## Problem
 

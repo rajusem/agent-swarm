@@ -2,6 +2,17 @@
 
 Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Implement an Agentic SDLC platform, similar to Ambient and KubeOpenCode
 
+## Sessions
+
+---
+- date: "2026-04-29"
+  title: "Switch swarmer base image from python:3.12-slim to UBI9"
+  jira: "ACM-33416"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-33416"
+  status: "Done"
+  pr: "https://github.com/stolostron/agent-swarm/pull/33"
+  summary: "Switched to ubi9/python-312-minimal:latest (62.5 MB, non-root uid 1001); dropped apt-get block; added USER 0/1001 sandwich for group-0-writable PVC mount points"
+
 ## Foundation & Feature Plans
 
 | Plan | Summary | Jira | PR |
@@ -39,17 +50,6 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
 | [2026-04-17-13-fix-repo-add-lazy-load.md](2026-04-17-13-fix-repo-add-lazy-load.md) | repo_add 500: SQLAlchemy async lazy-load | [ACM-33014](https://redhat.atlassian.net/browse/ACM-33014) | [#5](https://github.com/stolostron/agent-swarm/pull/5) / [#7](https://github.com/stolostron/agent-swarm/pull/7) |
 | [2026-04-19-16-last-output-panel-fix.md](2026-04-19-16-last-output-panel-fix.md) | Last Output panel height constraint | [ACM-33033](https://redhat.atlassian.net/browse/ACM-33033) | [#9](https://github.com/stolostron/agent-swarm/pull/9) |
 | [2026-04-27-k8s-deploy-agent-image-env.md](2026-04-27-k8s-deploy-agent-image-env.md) | k8s-deploy missing AGENT_IMAGE env vars | [ACM-33310](https://redhat.atlassian.net/browse/ACM-33310) | [#27](https://github.com/stolostron/agent-swarm/pull/27) |
-
-## Sessions
-
-# ──────────────────────────────────────────────────────────
-- date: "2026-04-29"
-  title: "Switch swarmer base image from python:3.12-slim to UBI9"
-  jira: "ACM-33416"
-  jira_url: "https://redhat.atlassian.net/browse/ACM-33416"
-  status: "In Progress"
-  pr: ~
-  summary: "Replace python:3.12-slim with ubi9/python-312-minimal:latest, dropping the apt-get step and adding OpenShift group-writable mount points"
 
 ## Future / Open
 

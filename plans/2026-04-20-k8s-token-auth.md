@@ -2,6 +2,7 @@
 
 **Version shipped**: 0.1  
 **Date**: 2026-04-20
+**PR:** [#12 feat: replace password auth with K8s bearer token auth](https://github.com/stolostron/agent-swarm/pull/12)
 
 ---
 

@@ -1,6 +1,7 @@
 # Feature: Agent Launch Buttons
 
 **Date:** 2026-04-17
+**PR:** [#4 feat: add Crush CLI agent tool support](https://github.com/stolostron/agent-swarm/pull/4)
 
 ## Problem
 

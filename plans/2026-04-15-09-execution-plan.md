@@ -3,6 +3,7 @@
 **Date:** 2026-04-15
 **Depends on:** `2026-04-15-08-multi-agent-tool-architecture.md`
 **Status:** Ready for implementation
+**PR:** [#4 feat: add Crush CLI agent tool support](https://github.com/stolostron/agent-swarm/pull/4)
 
 ---
 

@@ -1,5 +1,8 @@
 # 2026-04-17-15 — Configuration Auto-save
 
+**Date:** 2026-04-17
+**PR:** [#7 Acm 33014 (includes config autosave)](https://github.com/stolostron/agent-swarm/pull/7)
+
 ## Problem
 
 The Session detail page Configuration card had a Save button with a dirty-state indicator (amber colour when changed). This UX required an extra deliberate step after every field edit. It also showed a misleading "Stop the session to edit settings" message that could be interpreted as the only available action.

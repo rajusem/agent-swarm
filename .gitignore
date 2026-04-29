@@ -11,3 +11,4 @@ dist/
 .ruff_cache/
 .mypy_cache/
 .claude/
+libpod/tmp/pause.pid

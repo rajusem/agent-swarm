@@ -1,6 +1,7 @@
 # Fix: Repo List Local Path Layout
 
 **Date:** 2026-04-15
+**PR:** [#2 Fix PAT form 405, inject repo context, fix repo list layout](https://github.com/stolostron/agent-swarm/pull/2)
 
 ## Problem
 
