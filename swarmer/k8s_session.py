@@ -250,6 +250,9 @@ def build_session_pod(
         f'mkdir -p {config_path} && '
         f'cp -n /tmp/agent-config-ro/* {config_path}/ 2>/dev/null || true && '
     )
+    safe_dir_setup = ""
+    if session.repos:
+        safe_dir_setup = "git config --global --add safe.directory '*' && "
     git_setup = (
         'if [ -n "${GITHUB_PAT}" ] && command -v git >/dev/null 2>&1; then '
         'git config --global credential.helper store && '
@@ -258,7 +261,18 @@ def build_session_pod(
         'git config --global user.email "${GITHUB_USERNAME}@users.noreply.github.com"; '
         'fi && '
     )
-    command = ["sh", "-c", config_setup + git_setup + share_setup + model_setup + main_cmd]
+    branch_setup = ""
+    if session.repos and getattr(session, "working_branch", ""):
+        branch = shlex.quote(session.working_branch)
+        for repo in session.repos:
+            lp = shlex.quote(repo.local_path)
+            branch_setup += (
+                f"cd /workspace/{lp} && "
+                f"git checkout -b {branch} 2>/dev/null || git checkout {branch} && "
+                f"cd /workspace && "
+            )
+
+    command = ["sh", "-c", config_setup + safe_dir_setup + git_setup + share_setup + model_setup + branch_setup + main_cmd]
 
     # ---------- envFrom ----------
     env_from = tool.get_env_from_sources()

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import shlex
 import uuid
 from datetime import datetime
 
@@ -27,6 +28,22 @@ from swarmer.models.session_repo import SessionRepo
 from swarmer.models.workspace import Workspace
 
 log = logging.getLogger(__name__)
+
+_INVALID_REF_RE = re.compile(
+    r"[\x00-\x1f\x7f ~^:?*\[\\]"
+    r"|\.\.+"
+    r"|@\{"
+    r"|\.$"
+    r"|\.lock$"
+    r"|//"
+)
+
+
+def _is_valid_ref_name(name: str) -> bool:
+    """Check whether *name* is a legal git ref component."""
+    if not name or name.startswith("/") or name.endswith("/") or name.endswith("."):
+        return False
+    return _INVALID_REF_RE.search(name) is None
 
 
 async def _get_model_options(
@@ -263,6 +280,7 @@ async def session_create(
     mode: str = Form("prompt"),
     model: str = Form(""),
     agent_tool: str = Form("opencode"),
+    working_branch: str = Form(""),
     db: AsyncSession = Depends(get_db),
 ):
     ws = await _get_workspace(ws_id, db)
@@ -282,6 +300,11 @@ async def session_create(
         opts = await _get_model_options(ws_id, db, agent_tool)
         model = opts[0]["value"] if opts else ""
 
+    wb = working_branch.strip()
+    if wb and not _is_valid_ref_name(wb):
+        flash(request, "Invalid working branch name.", "danger")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/new", status_code=302)
+
     session = Session(
         workspace_id=ws_id,
         github_pat_id=pat_id,
@@ -292,11 +315,16 @@ async def session_create(
         resume=resume,
         instruction_prompt=instruction_prompt.strip(),
         agent_tool=agent_tool,
+        working_branch=wb,
     )
     db.add(session)
     try:
         await db.commit()
         await db.refresh(session)
+        if not session.working_branch:
+            import secrets as _secrets
+            session.working_branch = f"swarmer/session-{session.id}-{_secrets.token_hex(4)}"
+            await db.commit()
     except IntegrityError:
         await db.rollback()
         pats_result = await db.execute(
@@ -447,7 +475,22 @@ async def session_edit(
         session.agent_tool = get_tool(agent_tool).name
     except ValueError:
         pass
-    await db.commit()
+
+    form_data = await request.form()
+    if "working_branch" in form_data:
+        branch_val = form_data["working_branch"].strip()
+        if branch_val and not _is_valid_ref_name(branch_val):
+            flash(request, "Invalid working branch name.", "danger")
+            return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
+        session.working_branch = branch_val
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        flash(request, f"A session named '{name}' already exists in this workspace.", "danger")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
+
     flash(request, "Session updated.", "success")
     return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
 
@@ -926,4 +969,306 @@ async def repo_delete(
         request,
         "sessions/_repo_list.html",
         {"ws_id": ws_id, "session": session, "repo_info": repo_info},
+    )
+
+
+# ============================================================
+# Patch generation / download
+# ============================================================
+
+def _prefix_diff_paths(diff: str, prefix: str) -> str:
+    """Rewrite diff header paths to include the repo subdirectory prefix."""
+    lines = diff.split("\n")
+    out: list[str] = []
+    for line in lines:
+        if line.startswith("diff --git "):
+            line = re.sub(r" a/", f" a/{prefix}/", line, count=1)
+            line = re.sub(r" b/", f" b/{prefix}/", line, count=1)
+        elif line.startswith("--- a/"):
+            line = f"--- a/{prefix}/{line[6:]}"
+        elif line.startswith("+++ b/"):
+            line = f"+++ b/{prefix}/{line[6:]}"
+        out.append(line)
+    return "\n".join(out)
+
+
+def _exec_in_pod(
+    pod_name: str,
+    namespace: str,
+    workdir: str,
+    command: list[str],
+    container: str = "opencode",
+) -> str:
+    """Run a command in a running pod and return its stdout.
+
+    Raises RuntimeError if the command exits with a non-zero status.
+    """
+    from kubernetes import client
+    from kubernetes.stream import stream
+
+    v1 = client.CoreV1Api()
+    full_cmd = ["sh", "-c", f"cd {shlex.quote(workdir)} && {shlex.join(command)}"]
+    resp = stream(
+        v1.connect_get_namespaced_pod_exec,
+        pod_name,
+        namespace,
+        command=full_cmd,
+        container=container,
+        stderr=True,
+        stdin=False,
+        stdout=True,
+        tty=False,
+        _preload_content=False,
+    )
+    stdout_data = ""
+    stderr_data = ""
+    while resp.is_open():
+        resp.update(timeout=5)
+        if resp.peek_stdout():
+            stdout_data += resp.read_stdout()
+        if resp.peek_stderr():
+            stderr_data += resp.read_stderr()
+    resp.close()
+
+    rc = resp.returncode
+    if rc and rc != 0:
+        raise RuntimeError(
+            f"Command failed in pod {pod_name} ({namespace}) "
+            f"workdir={workdir} rc={rc}: {stderr_data.strip()}"
+        )
+    return stdout_data
+
+
+async def _build_commit_msg(patch: str, workspace_id: int, db: AsyncSession) -> str:
+    """Use an LLM to generate a commit message from the diff."""
+    truncated = patch[:8000] if len(patch) > 8000 else patch
+
+    oc_result = await db.execute(
+        select(OpencodeSecret).where(OpencodeSecret.workspace_id == workspace_id)
+    )
+    oc = oc_result.scalar_one_or_none()
+    if not oc:
+        return _fallback_commit_msg(patch)
+
+    try:
+        if oc.has_adc and oc.google_cloud_project:
+            return await _llm_commit_msg_vertex(truncated, oc)
+        elif oc.anthropic_api_key:
+            return await _llm_commit_msg_anthropic(truncated, oc.anthropic_api_key)
+        elif oc.google_api_key:
+            return await _llm_commit_msg_gemini(truncated, oc.google_api_key)
+    except Exception as exc:
+        log.warning("LLM commit msg generation failed: %s", exc)
+
+    return _fallback_commit_msg(patch)
+
+
+_COMMIT_MSG_PROMPT = (
+    "Write a concise git commit message for the following diff. "
+    "Use imperative mood (e.g. 'Add', 'Fix', 'Update'). "
+    "First line is the subject (max 72 chars), then a blank line, "
+    "then 1-3 bullet points summarizing the key changes. "
+    "Output ONLY the commit message, nothing else.\n\n"
+)
+
+
+async def _llm_commit_msg_vertex(patch: str, oc: OpencodeSecret) -> str:
+    """Call Vertex AI Anthropic Claude to generate a commit message."""
+    import json
+    import google.auth.transport.requests
+
+    adc_info = json.loads(oc.application_default_credentials)
+    adc_type = adc_info.get("type", "")
+
+    if adc_type == "service_account":
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            adc_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    elif adc_type == "authorized_user":
+        from google.oauth2.credentials import Credentials as UserCredentials
+        creds = UserCredentials(
+            token=None,
+            refresh_token=adc_info["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=adc_info["client_id"],
+            client_secret=adc_info["client_secret"],
+        )
+    else:
+        raise ValueError(f"Unsupported ADC type: {adc_type}")
+
+    creds.refresh(google.auth.transport.requests.Request())
+    token = creds.token
+
+    project = oc.google_cloud_project
+    location = oc.vertex_location or "us-east5"
+    model = "claude-haiku-4-5@20251001"
+
+    if location == "global":
+        host = "aiplatform.googleapis.com"
+    else:
+        host = f"{location}-aiplatform.googleapis.com"
+    url = (
+        f"https://{host}/v1/"
+        f"projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict"
+    )
+
+    body = {
+        "anthropic_version": "vertex-2023-10-16",
+        "max_tokens": 300,
+        "messages": [{"role": "user", "content": _COMMIT_MSG_PROMPT + patch}],
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json=body, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        })
+        resp.raise_for_status()
+        data = resp.json()
+        return data["content"][0]["text"].strip()
+
+
+async def _llm_commit_msg_anthropic(patch: str, api_key: str) -> str:
+    """Call Anthropic API directly."""
+    body = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 300,
+        "messages": [{"role": "user", "content": _COMMIT_MSG_PROMPT + patch}],
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            json=body,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["content"][0]["text"].strip()
+
+
+async def _llm_commit_msg_gemini(patch: str, api_key: str) -> str:
+    """Call Google Gemini API."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    body = {"contents": [{"parts": [{"text": _COMMIT_MSG_PROMPT + patch}]}]}
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def _fallback_commit_msg(patch: str) -> str:
+    """Simple fallback when no LLM is available."""
+    files = []
+    for line in patch.split("\n"):
+        if line.startswith("diff --git"):
+            parts = line.split(" b/", 1)
+            if len(parts) == 2:
+                files.append(parts[1])
+    if not files:
+        return ""
+    if len(files) == 1:
+        return f"Update {files[0]}"
+    elif len(files) <= 3:
+        return f"Update {', '.join(files)}"
+    return f"Update {len(files)} files"
+
+
+@router.post(
+    "/workspaces/{ws_id}/sessions/{sid}/generate-patch",
+    dependencies=[Depends(require_auth)],
+)
+async def session_generate_patch(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    ws = await _get_workspace(ws_id, db)
+    session = await db.get(
+        Session,
+        sid,
+        options=[selectinload(Session.repos)],
+    )
+    if ws is None or session is None or session.workspace_id != ws_id:
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
+
+    if not session.repos:
+        flash(request, "No repos attached — nothing to diff.", "warning")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
+
+    if not session.pod_name or session.phase != "running":
+        flash(request, "Session must be running to generate a patch.", "warning")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
+
+    try:
+        tool = get_tool(session.agent_tool)
+        container_name = tool.get_container_name()
+    except ValueError:
+        container_name = "opencode"
+
+    diff_parts: list[str] = []
+    failures: list[str] = []
+    for repo in session.repos:
+        try:
+            if session.working_branch:
+                diff_cmd = ["git", "diff", f"origin/{repo.branch}"]
+            else:
+                diff_cmd = ["git", "diff"]
+            diff = await asyncio.to_thread(
+                _exec_in_pod,
+                session.pod_name,
+                ws.k8s_namespace,
+                f"/workspace/{repo.local_path}",
+                diff_cmd,
+                container_name,
+            )
+            if diff.strip():
+                diff_parts.append(_prefix_diff_paths(diff, repo.local_path))
+        except Exception as exc:
+            log.warning("git diff failed for repo %s: %s", repo.local_path, exc)
+            failures.append(f"{repo.local_path}: {exc}")
+
+    if failures:
+        flash(request, f"Diff failed for: {'; '.join(failures)}", "danger")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#patch", status_code=302)
+
+    session.patch_output = "\n".join(diff_parts) if diff_parts else ""
+    session.commit_msg = await _build_commit_msg(session.patch_output, ws_id, db) if session.patch_output.strip() else ""
+    await db.commit()
+
+    if not session.patch_output.strip():
+        flash(request, "No changes detected.", "info")
+    else:
+        flash(request, "Patch generated.", "success")
+
+    return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#patch", status_code=302)
+
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/{sid}/download-patch",
+    dependencies=[Depends(require_auth)],
+)
+async def session_download_patch(
+    ws_id: int,
+    sid: int,
+    db: AsyncSession = Depends(get_db),
+):
+    from starlette.responses import Response
+
+    session = await db.get(Session, sid)
+    if session is None or session.workspace_id != ws_id or not session.patch_output:
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
+
+    safe_name = re.sub(r'[^\w\-.]', '_', session.name)[:80]
+    filename = f"session-{sid}-{safe_name}.patch"
+    return Response(
+        content=session.patch_output,
+        media_type="text/x-patch",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
     )

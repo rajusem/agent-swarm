@@ -113,6 +113,13 @@
       </button>
     </li>
     {% endif %}
+    {% if session.repos %}
+    <li class="pf-v6-c-tabs__item" id="tab-patch">
+      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-patch" tabindex="-1" onclick="switchTab('patch')">
+        <span class="pf-v6-c-tabs__item-text">Patch</span>
+      </button>
+    </li>
+    {% endif %}
   </ul>
 </div>
 
@@ -248,6 +255,18 @@
             <input type="hidden" name="model" value="{{ session.model }}">
             {% endif %}
 
+            <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
+              <div style="display:flex; align-items:center;">
+                <div style="flex:0 0 40%; color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Working branch</div>
+                <div style="flex:1;">
+                  <input type="text" class="pf-v6-c-form-control" name="working_branch"
+                         value="{{ session.working_branch }}" placeholder="auto-generated on launch"
+                         form="cfg-edit-form" style="font-size:var(--pf-t--global--font--size--sm);"
+                         {% if session.is_active %}disabled{% endif %}>
+                </div>
+              </div>
+            </div>
+
             <div style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--md);">
               PVC: <code style="font-family:var(--pf-t--global--font--family--mono);">{{ session.pvc_name or '—' }}</code>
             </div>
@@ -379,6 +398,97 @@
 </div>
 {% endif %}
 
+{# ════════════════════════════════════════════════════════════
+   Tab panel: Patch (sessions with repos)
+   ════════════════════════════════════════════════════════════ #}
+{% if session.repos %}
+<div id="panel-patch" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-patch" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Patch Export</h3>
+      <div style="display:flex; gap:var(--pf-t--global--spacer--sm);">
+        <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/generate-patch">
+          <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small"
+                  {% if session.phase != 'running' %}disabled title="Session must be running"{% endif %}>
+            Generate Patch
+          </button>
+        </form>
+        {% if session.patch_output %}
+        <a href="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/download-patch"
+           class="pf-v6-c-button pf-m-secondary pf-m-small" download>
+          Download .patch
+        </a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="pf-v6-c-card__body">
+      {% if session.working_branch %}
+      <div style="margin-bottom:var(--pf-t--global--spacer--sm); font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">
+        Working branch: <code style="font-family:var(--pf-t--global--font--family--mono);">{{ session.working_branch }}</code>
+      </div>
+      {% endif %}
+      {% if session.patch_output %}
+      <div style="margin-bottom:var(--pf-t--global--spacer--md); position:relative;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--pf-t--global--spacer--xs);">
+          <span style="font-weight:var(--pf-t--global--font--weight--heading--bold); font-size:var(--pf-t--global--font--size--sm);">Apply locally</span>
+          <button class="pf-v6-c-button pf-m-plain pf-m-small" title="Copy to clipboard"
+                  onclick="copyApplyCommands(this)" style="border:1px solid var(--pf-t--global--border--color--default); border-radius:var(--pf-t--global--border--radius--small); padding:2px 6px;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+              <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+              <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+            </svg>
+            <span class="copy-label" style="margin-left:4px; font-size:var(--pf-t--global--font--size--xs);">Copy</span>
+          </button>
+        </div>
+        <pre id="apply-commands" style="background:var(--pf-t--global--background--color--secondary--default);
+                    color:var(--pf-t--global--text--color--regular);
+                    padding:var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md);
+                    border-radius:var(--pf-t--global--border--radius--small);
+                    font-family:var(--pf-t--global--font--family--mono);
+                    font-size:var(--pf-t--global--font--size--sm);
+                    white-space:pre; overflow-x:auto; margin:0;">{% for repo in session.repos %}git clone {{ repo.repo_url }} --branch {{ repo.branch }} {{ repo.local_path }}
+{% if session.working_branch %}cd {{ repo.local_path }} && git checkout -b {{ session.working_branch }} && cd ..
+{% endif %}{% endfor %}git apply /path/to/session-{{ session.id }}.patch</pre>
+      </div>
+      {% if session.commit_msg %}
+      <div style="margin-bottom:var(--pf-t--global--spacer--md); position:relative;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:var(--pf-t--global--spacer--xs);">
+          <span style="font-weight:var(--pf-t--global--font--weight--heading--bold); font-size:var(--pf-t--global--font--size--sm);">Commit message</span>
+          <button class="pf-v6-c-button pf-m-plain pf-m-small" title="Copy to clipboard"
+                  onclick="copyCommitMsg(this)" style="border:1px solid var(--pf-t--global--border--color--default); border-radius:var(--pf-t--global--border--radius--small); padding:2px 6px;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+              <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+              <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+            </svg>
+            <span class="copy-label" style="margin-left:4px; font-size:var(--pf-t--global--font--size--xs);">Copy</span>
+          </button>
+        </div>
+        <pre id="commit-msg" style="background:var(--pf-t--global--background--color--secondary--default);
+                    color:var(--pf-t--global--text--color--regular);
+                    padding:var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md);
+                    border-radius:var(--pf-t--global--border--radius--small);
+                    font-family:var(--pf-t--global--font--family--mono);
+                    font-size:var(--pf-t--global--font--size--sm);
+                    white-space:pre-wrap; overflow-x:auto; margin:0;">{{ session.commit_msg }}</pre>
+      </div>
+      {% endif %}
+      <pre style="background:var(--pf-t--global--background--color--secondary--default);
+                  color:var(--pf-t--global--text--color--regular);
+                  padding:var(--pf-t--global--spacer--md);
+                  border-radius:var(--pf-t--global--border--radius--small);
+                  overflow:auto; max-height:600px; white-space:pre;
+                  font-family:var(--pf-t--global--font--family--mono);
+                  font-size:var(--pf-t--global--font--size--sm);">{{ session.patch_output }}</pre>
+      {% else %}
+      <p style="color:var(--pf-t--global--text--color--subtle);">
+        No patch generated yet. Use the TUI to make changes, then click "Generate Patch" to create a diff.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -407,6 +517,25 @@ function switchTab(name) {
     if (initTerminal()) window._terminalInitialized = true;
   }
 }
+
+// Auto-switch to tab from URL hash (e.g. #patch)
+(function() {
+  var hash = window.location.hash.replace('#', '');
+  if (hash && document.getElementById('panel-' + hash)) {
+    switchTab(hash);
+  }
+})();
+
+function _copyBlock(id, btn) {
+  var pre = document.getElementById(id);
+  if (!pre) return;
+  navigator.clipboard.writeText(pre.textContent).then(function() {
+    var label = btn.querySelector('.copy-label');
+    if (label) { label.textContent = 'Copied!'; setTimeout(function() { label.textContent = 'Copy'; }, 2000); }
+  });
+}
+function copyApplyCommands(btn) { _copyBlock('apply-commands', btn); }
+function copyCommitMsg(btn) { _copyBlock('commit-msg', btn); }
 
 // ── Auto-save configuration fields ──
 (function () {
@@ -452,6 +581,16 @@ function switchTab(name) {
 
   form.querySelectorAll('select:not([name=mode]), input[type=checkbox]').forEach(el => {
     el.addEventListener('change', doSave);
+  });
+
+  form.querySelectorAll('input[type=text]').forEach(el => {
+    let pending = false;
+    el.addEventListener('input', () => { pending = true; });
+    el.addEventListener('blur', async () => {
+      if (!pending) return;
+      pending = false;
+      await doSave();
+    });
   });
 
   form.querySelectorAll('textarea').forEach(el => {

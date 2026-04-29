@@ -133,6 +133,23 @@
         </div>
       </div>
 
+      {# Working branch card #}
+      <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
+        <div class="pf-v6-c-card__header">
+          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Working Branch</h3>
+        </div>
+        <div class="pf-v6-c-card__body">
+          <input type="text" class="pf-v6-c-form-control" name="working_branch"
+                 value="{{ form.working_branch if form and form.working_branch else '' }}"
+                 placeholder="Leave blank to auto-generate, e.g. swarmer/session-3-a1b2c3d4">
+          <div class="pf-v6-c-form__helper-text" style="margin-top:var(--pf-t--global--spacer--xs);">
+            <div class="pf-v6-c-helper-text__item">
+              <span class="pf-v6-c-helper-text__item-text">Branch name for changes when repos are attached. Auto-generated if left blank.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {# Persistence card #}
       <div class="pf-v6-c-card">
         <div class="pf-v6-c-card__header">

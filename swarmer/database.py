@@ -40,6 +40,9 @@ async def migrate_db() -> None:
         "ALTER TABLE sessions ADD COLUMN status_detail VARCHAR(255) NOT NULL DEFAULT ''",
         "ALTER TABLE sessions ADD COLUMN run_started_at DATETIME",
         "ALTER TABLE sessions ADD COLUMN run_completed_at DATETIME",
+        "ALTER TABLE sessions ADD COLUMN working_branch VARCHAR(255) NOT NULL DEFAULT ''",
+        "ALTER TABLE sessions ADD COLUMN patch_output TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE sessions ADD COLUMN commit_msg TEXT NOT NULL DEFAULT ''",
     ]
     async with _engine.begin() as conn:
         for stmt in migrations:
