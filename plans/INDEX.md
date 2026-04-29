@@ -18,7 +18,7 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   jira: "ACM-33416"
   jira_url: "https://redhat.atlassian.net/browse/ACM-33416"
   status: "Done"
-  pr: ~
+  pr: "https://github.com/stolostron/agent-swarm/pull/34"
   summary: "Replaced alpine/git:latest (Docker Hub) with tool.get_image() so the git-init init container reuses the same agent image (OpenCode has git + gh; Crush has git); eliminates Docker Hub dependency"
 
 ## Foundation & Feature Plans
