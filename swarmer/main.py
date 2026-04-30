@@ -28,7 +28,10 @@ async def lifespan(app: FastAPI):
     await migrate_db()
     k8s.init_k8s(settings.k8s_in_cluster)
     await _restart_prompt_pollers()
+    from swarmer import scheduler
+    scheduler.start_scheduler()
     yield
+    await scheduler.shutdown()
     from swarmer import log_poller
     await log_poller.shutdown()
 

@@ -47,6 +47,7 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
 | [2026-04-23-cve-prompts-repo-design.md](2026-04-23-cve-prompts-repo-design.md) | CVE prompts repo consolidation | — | — (stolostron/cve-prompts) |
 | [2026-04-27-sessions-list-launch-refresh.md](2026-04-27-sessions-list-launch-refresh.md) | Launch/Stop buttons, 3s refresh, elapsed time | [ACM-33311](https://redhat.atlassian.net/browse/ACM-33311) | [#29](https://github.com/stolostron/agent-swarm/pull/29) |
 | [2026-04-28-tui-patch-export.md](2026-04-28-tui-patch-export.md) | TUI patch export with AI-generated commit messages | [ACM-33411](https://redhat.atlassian.net/browse/ACM-33411) | [#32](https://github.com/stolostron/agent-swarm/pull/32) |
+| [2026-04-29-session-cron-scheduling.md](2026-04-29-session-cron-scheduling.md) | Cron scheduling for prompt-mode sessions | [ACM-33440](https://redhat.atlassian.net/browse/ACM-33440) | [#37](https://github.com/stolostron/agent-swarm/pull/37) |
 
 ## Bug Fixes
 

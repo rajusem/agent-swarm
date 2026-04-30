@@ -1,9 +1,13 @@
+import logging
+
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+
+log = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -44,13 +48,19 @@ async def migrate_db() -> None:
         "ALTER TABLE sessions ADD COLUMN patch_output TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE sessions ADD COLUMN commit_msg TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE sessions ADD COLUMN patch_base_ref VARCHAR(255) NOT NULL DEFAULT ''",
+        "ALTER TABLE sessions ADD COLUMN cron_schedule VARCHAR(128) NOT NULL DEFAULT ''",
+        "ALTER TABLE sessions ADD COLUMN cron_next_run DATETIME",
     ]
     async with _engine.begin() as conn:
         for stmt in migrations:
             try:
                 await conn.execute(text(stmt))
-            except Exception:
-                pass  # column already exists
+            except Exception as e:
+                msg = str(e).lower()
+                if "duplicate column" in msg or "already exists" in msg:
+                    continue
+                log.error("Migration failed for %r: %s", stmt, e)
+                raise
 
 
 async def get_db() -> AsyncSession:
