@@ -23,7 +23,7 @@ from swarmer.ansi import ansi_to_html
 from swarmer.flash import flash
 from swarmer.models.github_pat import GitHubPAT
 from swarmer.models.opencode_secret import OpencodeSecret
-from swarmer.models.session import Session
+from swarmer.models.session import CRON_PRESETS, Session
 from swarmer.models.session_repo import SessionRepo
 from swarmer.models.workspace import Workspace
 
@@ -430,6 +430,7 @@ async def session_detail(
             "agent_tools": _tools,
             "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
             "patch_filename": _patch_filename(session),
+            "cron_presets": CRON_PRESETS,
         },
     )
 
@@ -500,6 +501,69 @@ async def session_edit(
 # Launch / Stop
 # ============================================================
 
+async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
+    """Core launch logic shared by the HTTP endpoint and the background scheduler."""
+    import secrets as _secrets
+
+    suffix = _secrets.token_hex(4)
+
+    pvc_name = await asyncio.to_thread(
+        k8s_sess.ensure_session_pvc, ws.k8s_namespace, session.id, suffix, session.pvc_name,
+    )
+    if pvc_name != session.pvc_name:
+        session.pvc_name = pvc_name
+
+    from swarmer import k8s as _k8s
+    await asyncio.to_thread(_k8s._grant_anyuid_scc, ws.k8s_namespace)
+
+    from swarmer.models.opencode_secret import OpencodeSecret
+    oc_result = await db.execute(
+        select(OpencodeSecret).where(OpencodeSecret.workspace_id == session.workspace_id)
+    )
+    oc_secret = oc_result.scalar_one_or_none()
+    has_adc = oc_secret.has_adc if oc_secret else False
+    has_gemini = bool(oc_secret and oc_secret.google_api_key_enc)
+
+    pod_spec = k8s_sess.build_session_pod(
+        session=session,
+        namespace=ws.k8s_namespace,
+        image=settings.agent_image,
+        suffix=suffix,
+        image_pull_secret=k8s.PULL_SECRET_NAME,
+        has_adc=has_adc,
+        has_gemini=has_gemini,
+        privileged=session.privileged,
+        agent_tool=session.agent_tool,
+    )
+    from kubernetes import client as k8s_client
+
+    v1 = k8s_client.CoreV1Api()
+
+    if session.pod_name:
+        await asyncio.to_thread(k8s.delete_pod, session.pod_name, ws.k8s_namespace)
+
+    pod = await asyncio.to_thread(v1.create_namespaced_pod, ws.k8s_namespace, pod_spec)
+    session.pod_name = pod.metadata.name
+    session.phase = "pending"
+    session.run_started_at = datetime.utcnow()
+    session.run_completed_at = None
+
+    if session.mode == "server":
+        tool = get_tool(session.agent_tool)
+        port = tool.get_server_port() or 4096
+        svc_name = await asyncio.to_thread(
+            k8s_sess.create_session_service, session.id, ws.k8s_namespace, port,
+        )
+        await asyncio.to_thread(
+            k8s.create_session_route, session.id, ws.k8s_namespace, svc_name, port,
+        )
+
+    await db.commit()
+    if session.mode in ("prompt", "server"):
+        from swarmer import log_poller
+        log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace, session.mode)
+
+
 @router.post(
     "/workspaces/{ws_id}/sessions/{sid}/launch",
     dependencies=[Depends(require_auth)],
@@ -553,71 +617,8 @@ async def session_launch(
         except ValueError:
             pass
 
-    # Generate a shared suffix so the pod and PVC share the same identifier
-    import secrets as _secrets
-    suffix = _secrets.token_hex(4)
-
-    # Ensure PVC exists; if it was deleted (persist=False), a new one is created
-    # with the same suffix as the pod about to be launched.
     try:
-        pvc_name = k8s_sess.ensure_session_pvc(ws.k8s_namespace, session.id, suffix, session.pvc_name)
-        if pvc_name != session.pvc_name:
-            session.pvc_name = pvc_name
-    except Exception as exc:
-        flash(request, f"PVC error: {exc}", "danger")
-        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
-
-    # Re-run the anyuid SCC grant in case it failed at workspace creation time
-    # (e.g. swarmer lacked the bind permission when the workspace was first set up).
-    from swarmer import k8s as _k8s
-    _k8s._grant_anyuid_scc(ws.k8s_namespace)
-
-    # Check whether the workspace has an ADC JSON stored (affects pod spec)
-    from swarmer.models.opencode_secret import OpencodeSecret
-    oc_result = await db.execute(
-        select(OpencodeSecret).where(OpencodeSecret.workspace_id == ws_id)
-    )
-    oc_secret = oc_result.scalar_one_or_none()
-    has_adc    = oc_secret.has_adc if oc_secret else False
-    has_gemini = bool(oc_secret and oc_secret.google_api_key_enc)
-
-    # Build and create pod
-    try:
-        pod_spec = k8s_sess.build_session_pod(
-            session=session,
-            namespace=ws.k8s_namespace,
-            image=settings.agent_image,
-            suffix=suffix,
-            image_pull_secret=k8s.PULL_SECRET_NAME,
-            has_adc=has_adc,
-            has_gemini=has_gemini,
-            privileged=session.privileged,
-            agent_tool=session.agent_tool,
-        )
-        from kubernetes import client as k8s_client
-
-        v1 = k8s_client.CoreV1Api()
-
-        if session.pod_name:
-            k8s.delete_pod(session.pod_name, ws.k8s_namespace)
-
-        pod = v1.create_namespaced_pod(ws.k8s_namespace, pod_spec)
-        session.pod_name = pod.metadata.name
-        session.phase = "pending"
-        session.run_started_at = datetime.utcnow()
-        session.run_completed_at = None
-
-        # Create a Service (and OpenShift Route) for server-mode sessions
-        if session.mode == "server":
-            tool = get_tool(session.agent_tool)
-            port = tool.get_server_port() or 4096
-            svc_name = k8s_sess.create_session_service(session.id, ws.k8s_namespace, port=port)
-            k8s.create_session_route(session.id, ws.k8s_namespace, svc_name, port)
-
-        await db.commit()
-        if session.mode in ("prompt", "server"):
-            from swarmer import log_poller
-            log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace, session.mode)
+        await _do_launch(session, ws, db)
     except Exception as exc:
         log.error("session_launch failed for session %d: %s", sid, exc, exc_info=True)
         flash(request, f"Launch failed: {exc}", "danger")
@@ -668,6 +669,76 @@ async def session_stop(
     session.pod_name = None
     await db.commit()
     return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
+
+
+# ============================================================
+# Schedule / Unschedule
+# ============================================================
+
+@router.post(
+    "/workspaces/{ws_id}/sessions/{sid}/schedule",
+    dependencies=[Depends(require_auth)],
+)
+async def session_schedule(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    cron_expr: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    from croniter import croniter
+
+    ws = await _get_workspace(ws_id, db)
+    session = await db.get(Session, sid)
+    if ws is None or session is None or session.workspace_id != ws_id:
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
+
+    cron_expr = cron_expr.strip()
+    if not cron_expr:
+        flash(request, "Cron expression is required.", "warning")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
+
+    if len(cron_expr) > 128:
+        flash(request, "Cron expression is too long (max 128 characters).", "warning")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
+
+    if session.mode != "prompt":
+        flash(request, "Scheduling is only supported for prompt-mode sessions.", "warning")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
+
+    if not croniter.is_valid(cron_expr):
+        flash(request, f"Invalid cron expression: {cron_expr}", "danger")
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
+
+    session.cron_schedule = cron_expr
+    session.cron_next_run = croniter(cron_expr, datetime.utcnow()).get_next(datetime)
+    await db.commit()
+
+    flash(request, f"Schedule set: {session.cron_label or cron_expr}. Next run: {session.cron_next_run.strftime('%b %d %H:%M UTC')}", "success")
+    return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
+
+
+@router.post(
+    "/workspaces/{ws_id}/sessions/{sid}/unschedule",
+    dependencies=[Depends(require_auth)],
+)
+async def session_unschedule(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    ws = await _get_workspace(ws_id, db)
+    session = await db.get(Session, sid)
+    if ws is None or session is None or session.workspace_id != ws_id:
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
+
+    session.cron_schedule = ""
+    session.cron_next_run = None
+    await db.commit()
+
+    flash(request, "Schedule cancelled.", "success")
+    return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
 
 
 # ============================================================

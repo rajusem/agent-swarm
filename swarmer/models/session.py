@@ -19,6 +19,15 @@ PHASES = ("idle", "pending", "running", "succeeded", "failed", "stopped")
 
 AGENT_TOOLS = ("opencode", "crush")
 
+CRON_PRESETS: dict[str, str] = {
+    "*/30 * * * *": "Every 30 min",
+    "0 * * * *": "Every hour",
+    "0 */6 * * *": "Every 6 hours",
+    "0 */12 * * *": "Every 12 hours",
+    "0 0 * * *": "Daily midnight",
+    "0 9 * * 1-5": "Weekdays 9am",
+}
+
 # Valid mode values
 #   tui    — pod keeps alive (sleep infinity); browser connects via xterm.js and the K8s exec API
 #   server — pod runs opencode serve --hostname 0.0.0.0
@@ -52,6 +61,8 @@ class Session(Base):
     patch_output: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     commit_msg: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     patch_base_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
+    cron_schedule: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")
+    cron_next_run: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -104,6 +115,11 @@ class Session(Base):
     @property
     def is_active(self) -> bool:
         return self.phase in ("pending", "running")
+
+    @property
+    def cron_label(self) -> str:
+        """Human-readable label for common cron expressions."""
+        return CRON_PRESETS.get(self.cron_schedule, self.cron_schedule) if self.cron_schedule else ""
 
     @property
     def phase_badge_class(self) -> str:

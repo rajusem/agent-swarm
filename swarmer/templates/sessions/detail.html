@@ -120,6 +120,13 @@
       </button>
     </li>
     {% endif %}
+    {% if session.mode == 'prompt' %}
+    <li class="pf-v6-c-tabs__item" id="tab-schedule">
+      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-schedule" tabindex="-1" onclick="switchTab('schedule')">
+        <span class="pf-v6-c-tabs__item-text">Schedule{% if session.cron_schedule %} ●{% endif %}</span>
+      </button>
+    </li>
+    {% endif %}
   </ul>
 </div>
 
@@ -497,6 +504,73 @@ git apply /path/to/{{ patch_filename }}
 </div>
 {% endif %}
 
+{# ════════════════════════════════════════════════════════════
+   Tab panel: Schedule (prompt mode only)
+   ════════════════════════════════════════════════════════════ #}
+{% if session.mode == 'prompt' %}
+<div id="panel-schedule" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-schedule" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__title">
+      <h2 class="pf-v6-c-card__title-text">Schedule</h2>
+    </div>
+    <div class="pf-v6-c-card__body">
+      {% if session.cron_schedule %}
+      <div style="margin-bottom:var(--pf-t--global--spacer--md); padding:var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md); background:var(--pf-t--global--background--color--secondary--default); border-radius:var(--pf-t--global--border--radius--small);">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <span style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Active schedule:</span>
+            <span class="pf-v6-c-label pf-m-purple" style="margin-left:var(--pf-t--global--spacer--xs);"><span class="pf-v6-c-label__content">{{ session.cron_label }}</span></span>
+            <span style="margin-left:var(--pf-t--global--spacer--sm); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+              ({{ session.cron_schedule }})
+            </span>
+          </div>
+          <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/unschedule" style="display:inline;">
+            <button type="submit" class="pf-v6-c-button pf-m-danger pf-m-small">Cancel Schedule</button>
+          </form>
+        </div>
+        {% if session.cron_next_run %}
+        <div style="margin-top:var(--pf-t--global--spacer--xs); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+          {% if session.is_active %}
+            Currently running. Next run will be scheduled after completion.
+          {% else %}
+            Next run: <strong>{{ session.cron_next_run.strftime('%b %d, %Y %H:%M') }} UTC</strong>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/schedule">
+        <div style="margin-bottom:var(--pf-t--global--spacer--md);">
+          <label style="font-weight:var(--pf-t--global--font--weight--heading--bold); display:block; margin-bottom:var(--pf-t--global--spacer--xs);">Quick presets</label>
+          <div style="display:flex; flex-wrap:wrap; gap:var(--pf-t--global--spacer--xs);">
+            {% for expr, label in cron_presets.items() %}
+            <button type="button" class="pf-v6-c-button pf-m-secondary pf-m-small" onclick="setCron('{{ expr }}')">{{ label }}</button>
+            {% endfor %}
+          </div>
+        </div>
+        <div style="margin-bottom:var(--pf-t--global--spacer--md);">
+          <label for="cron_expr" style="font-weight:var(--pf-t--global--font--weight--heading--bold); display:block; margin-bottom:var(--pf-t--global--spacer--xs);">
+            Cron expression
+            <a href="https://crontab.guru/" target="_blank" rel="noopener" style="font-weight:normal; font-size:var(--pf-t--global--font--size--sm); margin-left:var(--pf-t--global--spacer--xs);">(crontab.guru)</a>
+          </label>
+          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); align-items:center;">
+            <input type="text" id="cron_expr" name="cron_expr" class="pf-v6-c-form-control"
+                   placeholder="*/30 * * * *" value="{{ session.cron_schedule }}"
+                   required aria-required="true"
+                   style="max-width:280px; font-family:var(--pf-t--global--font--family--mono);">
+            <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Save Schedule</button>
+          </div>
+          <div style="margin-top:var(--pf-t--global--spacer--xs); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--xs);">
+            Format: minute hour day-of-month month day-of-week (UTC)
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -526,13 +600,17 @@ function switchTab(name) {
   }
 }
 
-// Auto-switch to tab from URL hash (e.g. #patch)
+// Auto-switch to tab from URL hash (e.g. #patch, #schedule)
 (function() {
   var hash = window.location.hash.replace('#', '');
   if (hash && document.getElementById('panel-' + hash)) {
     switchTab(hash);
   }
 })();
+
+function setCron(expr) {
+  document.getElementById('cron_expr').value = expr;
+}
 
 function _copyBlock(id, btn) {
   var pre = document.getElementById(id);
