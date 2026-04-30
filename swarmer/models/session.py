@@ -51,6 +51,7 @@ class Session(Base):
     working_branch: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
     patch_output: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     commit_msg: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    patch_base_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

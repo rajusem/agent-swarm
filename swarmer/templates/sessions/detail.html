@@ -446,9 +446,17 @@
                     border-radius:var(--pf-t--global--border--radius--small);
                     font-family:var(--pf-t--global--font--family--mono);
                     font-size:var(--pf-t--global--font--size--sm);
-                    white-space:pre; overflow-x:auto; margin:0;">{% for repo in session.repos %}git clone {{ repo.repo_url }} --branch {{ repo.branch }} {{ repo.local_path }}
-{% if session.working_branch %}cd {{ repo.local_path }} && git checkout -b {{ session.working_branch }} && cd ..
-{% endif %}{% endfor %}git apply /path/to/session-{{ session.id }}.patch</pre>
+                    white-space:pre; overflow-x:auto; margin:0;">
+{%- for repo in session.repos %}
+git clone {{ repo.repo_url }} {{ repo.local_path }}
+cd {{ repo.local_path }}
+{%- if session.patch_base_ref %}
+git checkout -b {{ session.working_branch or 'working-branch' }} {{ session.patch_base_ref }}
+{%- elif session.working_branch %}
+git checkout -b {{ session.working_branch }}
+{%- endif %}
+git apply /path/to/{{ patch_filename }}
+{%- endfor %}</pre>
       </div>
       {% if session.commit_msg %}
       <div style="margin-bottom:var(--pf-t--global--spacer--md); position:relative;">
