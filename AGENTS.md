@@ -56,6 +56,7 @@ agent-swarm/
     ├── flash.py                # Session-based flash messages
     ├── k8s.py                  # Kubernetes utility functions (namespace, secret, pod, configmap)
     ├── k8s_session.py          # Session-specific K8s ops (PVC, pod spec, service)
+    ├── scheduler.py            # Background cron scheduler for prompt-mode sessions
     ├── models/                 # SQLAlchemy ORM models
     │   ├── __init__.py         # Imports all models (required for Base.metadata)
     │   ├── workspace.py        # Workspace → 1:1 K8s namespace
@@ -88,6 +89,7 @@ agent-swarm/
   - `server` — persistent: runs `opencode serve`, creates a ClusterIP Service, dashboard proxies HTTP/WS to it
   - `tui` — persistent: runs `sleep infinity`, user connects via xterm.js WebSocket → kubectl exec PTY
 - **Session phases**: `idle` → `pending` → `running` → `succeeded`/`failed`/`stopped`
+- **Session scheduling** — prompt-mode sessions can have a cron schedule (`cron_schedule` field, e.g., `*/30 * * * *`). A background asyncio loop (`scheduler.py`) checks every 30s for due sessions and auto-launches them via the shared `_do_launch()` helper in `sessions.py`. Preset cron labels are defined in `CRON_PRESETS` (in `models/session.py`) — shared by the `cron_label` property and the detail template. The scheduler uses an atomic `UPDATE … RETURNING` to claim due rows (prevents duplicates on both SQLite and Postgres).
 - **OpencodeSecret** — per-workspace encrypted storage for GCP project, Vertex location, ADC JSON, Google API key
 - **GitHubPAT** — per-workspace encrypted GitHub personal access tokens for HTTPS git auth
 - **SessionRepo** — git repositories to clone into the session PVC via init containers
@@ -199,7 +201,9 @@ Use placeholder patterns instead: `<YOUR_PROJECT>`, `example.com`, `your-registr
 
 9. **opencode share directory**: Session history is symlinked from `/workspace/.opencode` → `/root/.local/share/opencode` so it persists across pod restarts when the PVC is retained.
 
-10. **Manual migrations**: New columns are added via `database.py:migrate_db()` with `ALTER TABLE` statements wrapped in try/except. When adding a new column to an existing table, add the migration there and include a `server_default` so existing rows work.
+10. **Manual migrations**: New columns are added via `database.py:migrate_db()` with `ALTER TABLE` statements. Only "duplicate column" / "already exists" errors are suppressed; other failures re-raise so startup fails visibly. When adding a new column to an existing table, add the migration there and include a `server_default` so existing rows work.
+
+11. **Blocking K8s calls in async handlers**: All synchronous `kubernetes` client calls inside async functions must be wrapped with `asyncio.to_thread()` to avoid blocking the event loop. This includes `ensure_session_pvc`, `create_namespaced_pod`, `delete_pod`, `create_session_service`, `create_session_route`, and `_grant_anyuid_scc`.
 
 ## Adding New Features
 

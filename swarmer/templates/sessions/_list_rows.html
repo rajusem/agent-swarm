@@ -9,6 +9,8 @@
       <th class="pf-v6-c-table__th" role="columnheader">GitHub PAT</th>
       <th class="pf-v6-c-table__th" role="columnheader">Repos</th>
       <th class="pf-v6-c-table__th" role="columnheader">Persist</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Schedule</th>
+      <th class="pf-v6-c-table__th" role="columnheader">Next Run</th>
       <th class="pf-v6-c-table__th pf-m-fit-content" role="columnheader" style="text-align:right;">Actions</th>
     </tr>
   </thead>
@@ -67,6 +69,29 @@
           <span class="pf-v6-c-label pf-m-cyan"><span class="pf-v6-c-label__content">Persist</span></span>
         {% else %}
           <span style="color:var(--pf-t--global--text--color--subtle);">—</span>
+        {% endif %}
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Schedule" style="font-size:var(--pf-t--global--font--size--sm);">
+        {% if s.cron_schedule and s.mode == 'prompt' %}
+          <a href="/workspaces/{{ ws.id }}/sessions/{{ s.id }}#schedule"
+             style="text-decoration:none;">
+            <span class="pf-v6-c-label pf-m-purple"><span class="pf-v6-c-label__content">{{ s.cron_label }}</span></span>
+          </a>
+        {% else %}
+          <span style="color:var(--pf-t--global--text--color--subtle);">—</span>
+        {% endif %}
+      </td>
+      <td class="pf-v6-c-table__td" role="cell" data-label="Next Run" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); white-space:nowrap;">
+        {% if s.cron_schedule and s.mode == 'prompt' %}
+          {% if s.is_active %}
+            <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">Running...</span></span>
+          {% elif s.cron_next_run %}
+            {{ s.cron_next_run.strftime('%b %d %H:%M') }} UTC
+          {% else %}
+            —
+          {% endif %}
+        {% else %}
+          —
         {% endif %}
       </td>
       <td class="pf-v6-c-table__td pf-m-fit-content" role="cell" data-label="Actions" style="text-align:right;">
