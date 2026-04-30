@@ -11,7 +11,7 @@ from swarmer import k8s
 from swarmer import k8s_auth
 from swarmer.config import settings
 from swarmer.database import get_db
-from swarmer.deps import get_user_token, require_auth
+from swarmer.deps import NotAuthenticated, get_user_token, require_auth
 from swarmer.flash import flash
 from swarmer.models.workspace import Workspace
 
@@ -32,13 +32,21 @@ async def workspace_list(request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Workspace))
     all_workspaces = result.scalars().all()
 
-    user_token = get_user_token(request)
+    try:
+        user_token = get_user_token(request)
+    except NotAuthenticated:
+        user_token = None
+
     if user_token:
         ns_to_ws = {ws.k8s_namespace: ws for ws in all_workspaces}
         accessible_ns = await k8s_auth.get_accessible_namespaces(
             user_token, list(ns_to_ws), settings.k8s_api_url, settings.k8s_in_cluster
         )
-        workspaces = sorted([ns_to_ws[ns] for ns in accessible_ns], key=lambda w: w.display_name)
+        if accessible_ns:
+            workspaces = sorted([ns_to_ws[ns] for ns in accessible_ns], key=lambda w: w.display_name)
+        else:
+            # Token expired or user has no namespace-level RBAC — show all
+            workspaces = sorted(all_workspaces, key=lambda w: w.display_name)
     else:
         workspaces = sorted(all_workspaces, key=lambda w: w.display_name)
 

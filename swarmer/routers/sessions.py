@@ -429,6 +429,7 @@ async def session_detail(
             "repo_info": repo_info,
             "agent_tools": _tools,
             "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
+            "patch_filename": _patch_filename(session),
         },
     )
 
@@ -976,6 +977,12 @@ async def repo_delete(
 # Patch generation / download
 # ============================================================
 
+def _patch_filename(session: Session) -> str:
+    """Build a safe filename for the downloadable patch."""
+    safe_name = re.sub(r'[^\w\-.]', '_', session.name)[:80]
+    return f"session-{session.id}-{safe_name}.patch"
+
+
 def _prefix_diff_paths(diff: str, prefix: str) -> str:
     """Rewrite diff header paths to include the repo subdirectory prefix."""
     lines = diff.split("\n")
@@ -1101,7 +1108,7 @@ async def _llm_commit_msg_vertex(patch: str, oc: OpencodeSecret) -> str:
     token = creds.token
 
     project = oc.google_cloud_project
-    location = oc.vertex_location or "us-east5"
+    location = oc.vertex_location or "global"
     model = "claude-haiku-4-5@20251001"
 
     if location == "global":
@@ -1229,7 +1236,7 @@ async def session_generate_patch(
                 container_name,
             )
             if diff.strip():
-                diff_parts.append(_prefix_diff_paths(diff, repo.local_path))
+                diff_parts.append(diff)
         except Exception as exc:
             log.warning("git diff failed for repo %s: %s", repo.local_path, exc)
             failures.append(f"{repo.local_path}: {exc}")
@@ -1238,7 +1245,26 @@ async def session_generate_patch(
         flash(request, f"Diff failed for: {'; '.join(failures)}", "danger")
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#patch", status_code=302)
 
-    session.patch_output = "\n".join(diff_parts) if diff_parts else ""
+    # Capture the base commit SHA so the "Apply locally" instructions pin the exact ref
+    base_ref = ""
+    if diff_parts and session.repos:
+        repo = session.repos[0]
+        try:
+            base_ref = await asyncio.to_thread(
+                _exec_in_pod,
+                session.pod_name,
+                ws.k8s_namespace,
+                f"/workspace/{repo.local_path}",
+                ["git", "rev-parse", f"origin/{repo.branch}"],
+                container_name,
+            )
+            base_ref = base_ref.strip()
+        except Exception:
+            base_ref = ""
+
+    raw_patch = "\n".join(diff_parts) if diff_parts else ""
+    session.patch_output = "\n".join(ln.rstrip() for ln in raw_patch.split("\n"))
+    session.patch_base_ref = base_ref
     session.commit_msg = await _build_commit_msg(session.patch_output, ws_id, db) if session.patch_output.strip() else ""
     await db.commit()
 
@@ -1265,8 +1291,7 @@ async def session_download_patch(
     if session is None or session.workspace_id != ws_id or not session.patch_output:
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
 
-    safe_name = re.sub(r'[^\w\-.]', '_', session.name)[:80]
-    filename = f"session-{sid}-{safe_name}.patch"
+    filename = _patch_filename(session)
     return Response(
         content=session.patch_output,
         media_type="text/x-patch",
