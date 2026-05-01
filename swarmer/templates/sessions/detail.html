@@ -886,6 +886,7 @@ function initTerminal() {
     cols,
     rows,
     cursorBlink: true,
+    allowProposedApi: true,
     theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     fontSize: 13,
@@ -914,6 +915,18 @@ function initTerminal() {
     ws.send('{{ tui_token }}');
     term.open(el);
     term.focus();
+    // Intercept OSC 52 sequences emitted by the TUI and write the decoded
+    // payload to the browser clipboard, bridging the pod→client gap.
+    term.parser.registerOscHandler(52, (data) => {
+      const semi = data.indexOf(';');
+      if (semi !== -1) {
+        const b64 = data.slice(semi + 1);
+        if (b64) {
+          try { navigator.clipboard.writeText(atob(b64)).catch(() => {}); } catch (_) {}
+        }
+      }
+      return true;
+    });
   };
 
   ws.onmessage = (e) => {

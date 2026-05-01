@@ -36,6 +36,14 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   status: "Closed"
   pr: "https://github.com/stolostron/agent-swarm/pull/40"
   summary: "Failed-state relaunch; removed Clean Up concept; prompt textarea visible in all modes (AGENTS.md injection for TUI/server); TUI 4s reload delay + window.load auto-connect fix; breadcrumb layout fixed across all 11 templates (correct PF v6 divider placement, flex layout, leading slash, 1.125rem font)"
+# ──────────────────────────────────────────────────────────
+- date: "2026-05-01"
+  title: "Bridge OSC 52 clipboard sequences from pod to browser xterm.js terminal"
+  jira: "ACM-33551"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-33551"
+  status: "Closed"
+  pr: "https://github.com/stolostron/agent-swarm/pull/41"
+  summary: "Add OSC 52 handler to xterm.js so TUI clipboard copies in the pod reach the user's browser clipboard"
 
 ## Foundation & Feature Plans
 
