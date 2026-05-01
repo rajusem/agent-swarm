@@ -504,6 +504,7 @@ async def session_edit(
 async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
     """Core launch logic shared by the HTTP endpoint and the background scheduler."""
     import secrets as _secrets
+    session.last_output = ""
 
     suffix = _secrets.token_hex(4)
 

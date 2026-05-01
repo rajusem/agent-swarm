@@ -64,6 +64,42 @@
 <div style="display:flex; align-items:center; margin-bottom:var(--pf-t--global--spacer--md); gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap;">
   {% include "sessions/_status_badge.html" %}
 
+  {# Launch / Stop — next to status #}
+  {% set _succeeded_blocked = session.phase == 'succeeded' and session.mode != 'prompt' %}
+  <div id="launch-stop"
+       {% if not session.is_active and (session.phase != 'succeeded' or session.mode == 'prompt') %}style="display:none"{% endif %}>
+    <form method="post"
+          action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
+      <button type="submit" id="launch-stop-btn"
+              class="pf-v6-c-button pf-m-small {% if session.phase == 'succeeded' %}pf-m-secondary{% else %}pf-m-warning{% endif %}">{% if session.phase == 'succeeded' %}↺ Clean up{% else %}&#9632; Stop{% endif %}</button>
+    </form>
+  </div>
+  <form method="post" id="launch-form"
+        {% if session.is_active %}style="display:none"{% endif %}
+        action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
+    {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
+    <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
+      <button type="submit" id="launch-btn"
+              class="pf-v6-c-button pf-m-small {% if session.is_active or _succeeded_blocked or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
+              {% if session.is_active or _succeeded_blocked or not _avail %}disabled{% endif %}>
+        ▶ Launch
+      </button>
+      <select id="launch-tool-select" class="pf-v6-c-form-control"
+              style="width:auto; min-width:130px;"
+              data-availability="{{ tool_image_available | tojson }}"
+              {% if session.is_active or _succeeded_blocked %}disabled{% endif %}>
+        {% for tool in agent_tools %}
+        <option value="{{ tool.name }}"
+                {{ 'selected' if canonical_agent_tool == tool.name }}>
+          {{ tool.display_name }}
+        </option>
+        {% endfor %}
+      </select>
+      <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Image Found:</span>
+      <span id="launch-avail-pill" style="font-size:1.1em; line-height:1;">{{ '✅' if _avail else '❌' }}</span>
+    </div>
+  </form>
+
   <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-left:var(--pf-t--global--spacer--sm);" id="session-actions">
     {% if session.mode == 'server' %}
     <a href="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/chat"
@@ -83,6 +119,31 @@
     </form>
   </div>
 </div>
+
+{% if session.mode == 'prompt' %}
+{# Compact summary row — visible when a prompt value exists #}
+<button id="prompt-compact" type="button" onclick="expandPrompt()"
+        class="pf-v6-c-button pf-m-link"
+        style="display:{% if session.instruction_prompt %}inline-flex{% else %}none{% endif %}; align-items:center; gap:var(--pf-t--global--spacer--xs); margin-bottom:var(--pf-t--global--spacer--md); padding:0; text-decoration:none;">
+  <span style="font-size:var(--pf-t--global--font--size--sm); line-height:1;">▶</span>
+  <span style="font-size:var(--pf-t--global--font--size--lg); font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</span>
+</button>
+{# Full prompt card — visible when no value exists, or after expand #}
+<div id="prompt-card" class="pf-v6-c-card" style="display:{% if session.instruction_prompt %}none{% else %}block{% endif %}; margin-bottom:var(--pf-t--global--spacer--md);">
+  <div class="pf-v6-c-card__header" style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--xs);">
+    <button type="button" onclick="collapsePrompt()" title="Collapse"
+            class="pf-v6-c-button pf-m-plain pf-m-small" style="font-size:1.25rem; line-height:1; padding:0;">▾</button>
+    <h3 id="instruction-prompt-label" class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold); font-size:var(--pf-t--global--font--size--lg);">Prompt</h3>
+  </div>
+  <div class="pf-v6-c-card__body">
+    <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
+              aria-labelledby="instruction-prompt-label"
+              form="cfg-edit-form" name="instruction_prompt"
+              rows="4" placeholder="Describe the task for the agent to run…"
+              {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
+  </div>
+</div>
+{% endif %}
 
 {% if session.run_started_at %}
 <div style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
@@ -144,45 +205,6 @@
           <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Configuration</h3>
         </div>
         <div class="pf-v6-c-card__body">
-
-          {# Launch / Stop #}
-          <div style="margin-bottom:var(--pf-t--global--spacer--md);">
-            <div style="display:flex; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; align-items:center;">
-              <div id="launch-stop"
-                   {% if not session.is_active and session.phase != 'succeeded' %}style="display:none"{% endif %}>
-                <form method="post"
-                      action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
-                  <button type="submit" id="launch-stop-btn"
-                          class="pf-v6-c-button pf-m-small {% if session.phase == 'succeeded' %}pf-m-secondary{% else %}pf-m-warning{% endif %}">{% if session.phase == 'succeeded' %}↺ Clean up{% else %}&#9632; Stop{% endif %}</button>
-                </form>
-              </div>
-              <form method="post" id="launch-form"
-                    {% if session.is_active %}style="display:none"{% endif %}
-                    action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
-                {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
-                <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
-                  <button type="submit" id="launch-btn"
-                          class="pf-v6-c-button pf-m-small {% if session.is_active or session.phase == 'succeeded' or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
-                          {% if session.is_active or session.phase == 'succeeded' or not _avail %}disabled{% endif %}>
-                    ▶ Launch
-                  </button>
-                  <select id="launch-tool-select" class="pf-v6-c-form-control"
-                          style="width:auto; min-width:130px;"
-                          data-availability="{{ tool_image_available | tojson }}"
-                          {% if session.is_active or session.phase == 'succeeded' %}disabled{% endif %}>
-                    {% for tool in agent_tools %}
-                    <option value="{{ tool.name }}"
-                            {{ 'selected' if canonical_agent_tool == tool.name }}>
-                      {{ tool.display_name }}
-                    </option>
-                    {% endfor %}
-                  </select>
-                  <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Image Found:</span>
-                  <span id="launch-avail-pill" style="font-size:1.1em; line-height:1;">{{ '✅' if _avail else '❌' }}</span>
-                </div>
-              </form>
-            </div>
-          </div>
 
           {# Configuration form #}
           <form method="post" id="cfg-edit-form" class="pf-v6-c-form"
@@ -302,41 +324,9 @@
 
     </div>
 
-    {# Right column #}
+    {# Right column — Git Repos (server/TUI mode only) #}
+    {% if session.mode != 'prompt' %}
     <div class="pf-v6-l-grid__item pf-m-8-col-on-md" style="display:flex; flex-direction:column;">
-
-      {% if session.mode == 'prompt' %}
-      <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md); flex-shrink:0;">
-        <div class="pf-v6-c-card__header">
-          <h3 id="instruction-prompt-label" class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</h3>
-        </div>
-        <div class="pf-v6-c-card__body">
-          <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
-                    aria-labelledby="instruction-prompt-label"
-                    form="cfg-edit-form" name="instruction_prompt"
-                    rows="4" placeholder="Describe the task for the agent to run…"
-                    {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
-        </div>
-      </div>
-
-      <div class="pf-v6-c-card" id="last-output-card" style="display:flex; flex-direction:column; flex:1; min-height:0;">
-        <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center; flex-shrink:0;">
-          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
-          {% if session.last_output %}
-          <form method="post"
-                action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
-            <button type="submit" class="pf-v6-c-button pf-m-plain pf-m-small"
-                    style="border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
-                    title="Clear output">Clear</button>
-          </form>
-          {% endif %}
-        </div>
-        <div class="pf-v6-c-card__body" style="padding:0; flex:1; overflow:auto; min-height:0;">
-          {% include "sessions/_last_output.html" with context %}
-        </div>
-      </div>
-
-      {% else %}
       <div class="pf-v6-c-card">
         <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
           <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
@@ -346,9 +336,8 @@
           {% include "sessions/_repo_list.html" with context %}
         </div>
       </div>
-      {% endif %}
-
     </div>
+    {% endif %}
 
   </div>
 </div>{# /panel-details #}
@@ -390,13 +379,6 @@
   <div class="pf-v6-c-card">
     <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
       <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
-      {% if session.last_output %}
-      <form method="post"
-            action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/clear-output">
-        <button type="submit" class="pf-v6-c-button pf-m-link pf-m-small"
-                title="Clear output">Clear</button>
-      </form>
-      {% endif %}
     </div>
     <div class="pf-v6-c-card__body" style="padding:0;">
       {% include "sessions/_last_output.html" with context %}
@@ -600,8 +582,16 @@ function switchTab(name) {
   }
 }
 
-// Auto-switch to tab from URL hash (e.g. #patch, #schedule)
+// Auto-switch to tab from URL hash (e.g. #patch, #schedule) or post-launch sessionStorage flag
 (function() {
+  var pending = sessionStorage.getItem('switchToTab');
+  if (pending) {
+    sessionStorage.removeItem('switchToTab');
+    if (document.getElementById('panel-' + pending)) {
+      switchTab(pending);
+      return;
+    }
+  }
   var hash = window.location.hash.replace('#', '');
   if (hash && document.getElementById('panel-' + hash)) {
     switchTab(hash);
@@ -710,6 +700,11 @@ function copyCommitMsg(btn) { _copyBlock('commit-msg', btn); }
         tempForm.appendChild(input);
       }
       document.body.appendChild(tempForm);
+      if (document.getElementById('panel-terminal')) {
+        sessionStorage.setItem('switchToTab', 'terminal');
+      } else if (document.getElementById('panel-output')) {
+        sessionStorage.setItem('switchToTab', 'output');
+      }
       tempForm.submit();
     });
   }
@@ -727,7 +722,20 @@ function copyCommitMsg(btn) { _copyBlock('commit-msg', btn); }
   }
 })();
 
-// Wire auto-save for the instruction prompt textarea (associated with cfg-edit-form via form= attribute)
+function expandPrompt() {
+  document.getElementById('prompt-compact').style.display = 'none';
+  document.getElementById('prompt-card').style.display = '';
+  const ta = document.getElementById('instruction-prompt-input');
+  if (ta) ta.focus();
+}
+function collapsePrompt() {
+  const ta = document.getElementById('instruction-prompt-input');
+  if (!ta || !ta.value.trim()) return;
+  document.getElementById('prompt-card').style.display = 'none';
+  document.getElementById('prompt-compact').style.display = 'inline-flex';
+}
+
+// Wire auto-save for the instruction prompt textarea
 (function () {
   const instrTA = document.getElementById('instruction-prompt-input');
   if (!instrTA) return;
@@ -770,13 +778,16 @@ function hideRename() {
 }
 
 // After each HTMX status poll, sync controls with live phase.
+const _sessionMode = '{{ session.mode }}';
+
 document.addEventListener('htmx:afterSwap', function () {
   const badge = document.querySelector('#session-status .pf-v6-c-label');
   const statusText = (badge?.textContent || '').toLowerCase();
   const isSucceeded = statusText.includes('completed') || statusText.includes('succeeded');
   const isRunning = badge && badge.classList.contains('pf-m-green');
   const isActive  = isRunning || (badge && badge.classList.contains('pf-m-gold'));
-  const isBlocked = isActive || isSucceeded;
+  const succeededBlocks = isSucceeded && _sessionMode !== 'prompt';
+  const isBlocked = isActive || succeededBlocks;
 
   const cfgForm = document.getElementById('cfg-edit-form');
   if (cfgForm) {
@@ -806,7 +817,7 @@ document.addEventListener('htmx:afterSwap', function () {
 
   const launchStop = document.getElementById('launch-stop');
   if (launchStop) {
-    launchStop.style.display = (isActive || isSucceeded) ? '' : 'none';
+    launchStop.style.display = (isActive || succeededBlocks) ? '' : 'none';
     const stopBtn = document.getElementById('launch-stop-btn');
     if (stopBtn) {
       if (isSucceeded) {
@@ -831,7 +842,7 @@ document.addEventListener('htmx:afterSwap', function () {
     const availMap = _launchSelect ? JSON.parse(_launchSelect.dataset.availability || '{}') : {};
     const selectedTool = _launchSelect ? _launchSelect.value : '';
     const avail = availMap[selectedTool] === true;
-    const blocked = isSucceeded || !avail;
+    const blocked = succeededBlocks || !avail;
     _launchBtn.disabled = blocked;
     _launchBtn.classList.toggle('pf-m-primary', !blocked);
     _launchBtn.classList.toggle('pf-m-secondary', blocked);
