@@ -25,9 +25,9 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   title: "Move Launch/Stop controls from Configuration card to status bar"
   jira: "ACM-33539"
   jira_url: "https://redhat.atlassian.net/browse/ACM-33539"
-  status: "In Progress"
-  pr: ~
-  summary: "Relocate Clean up, Launch button, image dropdown, and Image Found pill from the Configuration card to the top status bar on the sessions detail page"
+  status: "Done"
+  pr: "https://github.com/stolostron/agent-swarm/pull/39"
+  summary: "Relocated Launch/Stop controls to status bar; moved Prompt above tabs with collapse/expand toggle; removed Last Output from Details tab; auto-focus Output/Terminal tab after Launch; auto-clear output on launch; removed Clean Up button in prompt mode; re-enabled Launch after completion in prompt mode"
 
 ## Foundation & Feature Plans
 
