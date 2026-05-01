@@ -129,6 +129,9 @@ def build_session_pod(
             )
         )
 
+    if session.instruction_prompt and session.mode in ("tui", "server"):
+        env.append(client.V1EnvVar(name="SWARMER_AGENT_MD", value=session.instruction_prompt))
+
     # ---------- volumes ----------
     volumes = [
         client.V1Volume(
@@ -233,6 +236,9 @@ def build_session_pod(
 
     model_setup = tool.build_model_setup_cmd(model)
     share_setup = tool.build_share_setup_cmd()
+    agent_md_setup = ""
+    if session.instruction_prompt and session.mode in ("tui", "server"):
+        agent_md_setup = "printf '%s' \"${SWARMER_AGENT_MD}\" > /workspace/AGENTS.md && "
 
     # ---------- main container command ----------
     ports = []
@@ -272,7 +278,7 @@ def build_session_pod(
                 f"cd /workspace && "
             )
 
-    command = ["sh", "-c", config_setup + safe_dir_setup + git_setup + share_setup + model_setup + branch_setup + main_cmd]
+    command = ["sh", "-c", config_setup + safe_dir_setup + git_setup + share_setup + agent_md_setup + model_setup + branch_setup + main_cmd]
 
     # ---------- envFrom ----------
     env_from = tool.get_env_from_sources()

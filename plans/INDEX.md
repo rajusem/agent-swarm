@@ -28,6 +28,14 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   status: "Done"
   pr: "https://github.com/stolostron/agent-swarm/pull/39"
   summary: "Relocated Launch/Stop controls to status bar; moved Prompt above tabs with collapse/expand toggle; removed Last Output from Details tab; auto-focus Output/Terminal tab after Launch; auto-clear output on launch; removed Clean Up button in prompt mode; re-enabled Launch after completion in prompt mode"
+# ──────────────────────────────────────────────────────────
+- date: "2026-05-01"
+  title: "Sessions detail: Git Repos + Schedule to Details tab, fix Prompt toggle and Output marker"
+  jira: "ACM-33548"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-33548"
+  status: "Closed"
+  pr: "https://github.com/stolostron/agent-swarm/pull/40"
+  summary: "Failed-state relaunch; removed Clean Up concept; prompt textarea visible in all modes (AGENTS.md injection for TUI/server); TUI 4s reload delay + window.load auto-connect fix; breadcrumb layout fixed across all 11 templates (correct PF v6 divider placement, flex layout, leading slash, 1.125rem font)"
 
 ## Foundation & Feature Plans
 

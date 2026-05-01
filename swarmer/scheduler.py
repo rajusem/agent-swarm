@@ -54,7 +54,6 @@ async def _scheduler_loop() -> None:
 async def _check_and_launch() -> None:
     from swarmer.database import get_db
     from swarmer.models.session import Session
-    from swarmer.models.workspace import Workspace
 
     now = datetime.utcnow()
 
