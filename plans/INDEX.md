@@ -41,8 +41,8 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   title: "Bridge OSC 52 clipboard sequences from pod to browser xterm.js terminal"
   jira: "ACM-33551"
   jira_url: "https://redhat.atlassian.net/browse/ACM-33551"
-  status: "Done"
-  pr: ~
+  status: "Closed"
+  pr: "https://github.com/stolostron/agent-swarm/pull/41"
   summary: "Add OSC 52 handler to xterm.js so TUI clipboard copies in the pod reach the user's browser clipboard"
 
 ## Foundation & Feature Plans
