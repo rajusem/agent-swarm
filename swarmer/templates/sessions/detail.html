@@ -17,18 +17,19 @@
 <nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--md);">
   <ol class="pf-v6-c-breadcrumb__list">
     <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
       <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
-      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
     </li>
     <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
       <a href="/workspaces/{{ ws.id }}" class="pf-v6-c-breadcrumb__link">{{ ws.display_name }}</a>
-      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
     </li>
     <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
       <a href="/workspaces/{{ ws.id }}/sessions" class="pf-v6-c-breadcrumb__link">Sessions</a>
-      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
     </li>
     <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
       <span class="pf-v6-c-breadcrumb__link pf-m-current">{{ session.name }}</span>
     </li>
   </ol>
@@ -65,13 +66,12 @@
   {% include "sessions/_status_badge.html" %}
 
   {# Launch / Stop — next to status #}
-  {% set _succeeded_blocked = session.phase == 'succeeded' and session.mode != 'prompt' %}
   <div id="launch-stop"
-       {% if not session.is_active and (session.phase != 'succeeded' or session.mode == 'prompt') %}style="display:none"{% endif %}>
+       {% if not session.is_active %}style="display:none"{% endif %}>
     <form method="post"
           action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
       <button type="submit" id="launch-stop-btn"
-              class="pf-v6-c-button pf-m-small {% if session.phase == 'succeeded' %}pf-m-secondary{% else %}pf-m-warning{% endif %}">{% if session.phase == 'succeeded' %}↺ Clean up{% else %}&#9632; Stop{% endif %}</button>
+              class="pf-v6-c-button pf-m-small pf-m-warning">&#9632; Stop</button>
     </form>
   </div>
   <form method="post" id="launch-form"
@@ -79,15 +79,16 @@
         action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
     {% set _avail = tool_image_available.get(canonical_agent_tool, False) %}
     <div style="display:flex; gap:var(--pf-t--global--spacer--xs); align-items:center;">
+      {% set _launch_ok = not session.is_active and (_avail or session.phase == 'failed') %}
       <button type="submit" id="launch-btn"
-              class="pf-v6-c-button pf-m-small {% if session.is_active or _succeeded_blocked or not _avail %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
-              {% if session.is_active or _succeeded_blocked or not _avail %}disabled{% endif %}>
+              class="pf-v6-c-button pf-m-small {% if not _launch_ok %}pf-m-secondary{% else %}pf-m-primary{% endif %}"
+              {% if not _launch_ok %}disabled{% endif %}>
         ▶ Launch
       </button>
       <select id="launch-tool-select" class="pf-v6-c-form-control"
               style="width:auto; min-width:130px;"
               data-availability="{{ tool_image_available | tojson }}"
-              {% if session.is_active or _succeeded_blocked %}disabled{% endif %}>
+              {% if session.is_active %}disabled{% endif %}>
         {% for tool in agent_tools %}
         <option value="{{ tool.name }}"
                 {{ 'selected' if canonical_agent_tool == tool.name }}>
@@ -120,30 +121,26 @@
   </div>
 </div>
 
-{% if session.mode == 'prompt' %}
 {# Compact summary row — visible when a prompt value exists #}
-<button id="prompt-compact" type="button" onclick="expandPrompt()"
+<button id="prompt-compact" type="button" onclick="togglePrompt()"
         class="pf-v6-c-button pf-m-link"
-        style="display:{% if session.instruction_prompt %}inline-flex{% else %}none{% endif %}; align-items:center; gap:var(--pf-t--global--spacer--xs); margin-bottom:var(--pf-t--global--spacer--md); padding:0; text-decoration:none;">
-  <span style="font-size:var(--pf-t--global--font--size--sm); line-height:1;">▶</span>
+        style="display:inline-flex; align-items:center; gap:var(--pf-t--global--spacer--xs); margin-bottom:var(--pf-t--global--spacer--md); padding:0; text-decoration:none;">
+  <span id="prompt-arrow" style="font-size:var(--pf-t--global--font--size--sm); line-height:1;">{% if session.instruction_prompt %}▶{% else %}▼{% endif %}</span>
   <span style="font-size:var(--pf-t--global--font--size--lg); font-weight:var(--pf-t--global--font--weight--heading--bold);">Prompt</span>
+  {% if session.mode in ('tui', 'server') %}
+  <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); font-weight:normal; margin-left:var(--pf-t--global--spacer--xs);">— written as AGENTS.md at launch</span>
+  {% endif %}
 </button>
 {# Full prompt card — visible when no value exists, or after expand #}
 <div id="prompt-card" class="pf-v6-c-card" style="display:{% if session.instruction_prompt %}none{% else %}block{% endif %}; margin-bottom:var(--pf-t--global--spacer--md);">
-  <div class="pf-v6-c-card__header" style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--xs);">
-    <button type="button" onclick="collapsePrompt()" title="Collapse"
-            class="pf-v6-c-button pf-m-plain pf-m-small" style="font-size:1.25rem; line-height:1; padding:0;">▾</button>
-    <h3 id="instruction-prompt-label" class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold); font-size:var(--pf-t--global--font--size--lg);">Prompt</h3>
-  </div>
   <div class="pf-v6-c-card__body">
     <textarea id="instruction-prompt-input" class="pf-v6-c-form-control"
               aria-labelledby="instruction-prompt-label"
               form="cfg-edit-form" name="instruction_prompt"
-              rows="4" placeholder="Describe the task for the agent to run…"
+              rows="4" placeholder="{% if session.mode in ('tui', 'server') %}Agent instructions written as AGENTS.md to /workspace at launch…{% else %}Describe the task for the agent to run…{% endif %}"
               {% if session.is_active %}disabled{% endif %}>{{ session.instruction_prompt }}</textarea>
   </div>
 </div>
-{% endif %}
 
 {% if session.run_started_at %}
 <div style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
@@ -170,7 +167,7 @@
     {% if session.mode in ('prompt', 'server') %}
     <li class="pf-v6-c-tabs__item" id="tab-output">
       <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-output" tabindex="-1" onclick="switchTab('output')">
-        <span class="pf-v6-c-tabs__item-text">Output</span>
+        <span class="pf-v6-c-tabs__item-text" id="output-tab-text">Output</span>
       </button>
     </li>
     {% endif %}
@@ -178,13 +175,6 @@
     <li class="pf-v6-c-tabs__item" id="tab-patch">
       <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-patch" tabindex="-1" onclick="switchTab('patch')">
         <span class="pf-v6-c-tabs__item-text">Patch</span>
-      </button>
-    </li>
-    {% endif %}
-    {% if session.mode == 'prompt' %}
-    <li class="pf-v6-c-tabs__item" id="tab-schedule">
-      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-schedule" tabindex="-1" onclick="switchTab('schedule')">
-        <span class="pf-v6-c-tabs__item-text">Schedule{% if session.cron_schedule %} ●{% endif %}</span>
       </button>
     </li>
     {% endif %}
@@ -200,7 +190,7 @@
     {# Left column: Configuration #}
     <div class="pf-v6-l-grid__item pf-m-4-col-on-md" id="left-col">
 
-      <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
+      <div class="pf-v6-c-card">
         <div class="pf-v6-c-card__header">
           <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Configuration</h3>
         </div>
@@ -309,24 +299,71 @@
         </div>
       </div>
 
-      {# Git Repos: prompt only #}
+    </div>
+
+    {# Right column — Schedule (prompt mode) + Git Repos (all modes) #}
+    <div class="pf-v6-l-grid__item pf-m-8-col-on-md" style="display:flex; flex-direction:column; gap:var(--pf-t--global--spacer--md);">
       {% if session.mode == 'prompt' %}
       <div class="pf-v6-c-card">
-        <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
-          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
-          {% include "sessions/_pat_select.html" with context %}
+        <div class="pf-v6-c-card__header">
+          <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Schedule</h3>
         </div>
         <div class="pf-v6-c-card__body">
-          {% include "sessions/_repo_list.html" with context %}
+          {% if session.cron_schedule %}
+          <div style="margin-bottom:var(--pf-t--global--spacer--md); padding:var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md); background:var(--pf-t--global--background--color--secondary--default); border-radius:var(--pf-t--global--border--radius--small);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <span style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Active schedule:</span>
+                <span class="pf-v6-c-label pf-m-purple" style="margin-left:var(--pf-t--global--spacer--xs);"><span class="pf-v6-c-label__content">{{ session.cron_label }}</span></span>
+                <span style="margin-left:var(--pf-t--global--spacer--sm); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+                  ({{ session.cron_schedule }})
+                </span>
+              </div>
+              <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/unschedule" style="display:inline;">
+                <button type="submit" class="pf-v6-c-button pf-m-danger pf-m-small">Cancel Schedule</button>
+              </form>
+            </div>
+            {% if session.cron_next_run %}
+            <div style="margin-top:var(--pf-t--global--spacer--xs); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+              {% if session.is_active %}
+                Currently running. Next run will be scheduled after completion.
+              {% else %}
+                Next run: <strong>{{ session.cron_next_run.strftime('%b %d, %Y %H:%M') }} UTC</strong>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
+
+          <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/schedule">
+            <div style="margin-bottom:var(--pf-t--global--spacer--md);">
+              <label style="font-weight:var(--pf-t--global--font--weight--heading--bold); display:block; margin-bottom:var(--pf-t--global--spacer--xs);">Quick presets</label>
+              <div style="display:flex; flex-wrap:wrap; gap:var(--pf-t--global--spacer--xs);">
+                {% for expr, label in cron_presets.items() %}
+                <button type="button" class="pf-v6-c-button pf-m-secondary pf-m-small" onclick="setCron('{{ expr }}')">{{ label }}</button>
+                {% endfor %}
+              </div>
+            </div>
+            <div style="margin-bottom:var(--pf-t--global--spacer--md);">
+              <label for="cron_expr" style="font-weight:var(--pf-t--global--font--weight--heading--bold); display:block; margin-bottom:var(--pf-t--global--spacer--xs);">
+                Cron expression
+                <a href="https://crontab.guru/" target="_blank" rel="noopener" style="font-weight:normal; font-size:var(--pf-t--global--font--size--sm); margin-left:var(--pf-t--global--spacer--xs);">(crontab.guru)</a>
+              </label>
+              <div style="display:flex; gap:var(--pf-t--global--spacer--sm); align-items:center;">
+                <input type="text" id="cron_expr" name="cron_expr" class="pf-v6-c-form-control"
+                       placeholder="*/30 * * * *" value="{{ session.cron_schedule }}"
+                       required aria-required="true"
+                       style="max-width:280px; font-family:var(--pf-t--global--font--family--mono);">
+                <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Save Schedule</button>
+              </div>
+              <div style="margin-top:var(--pf-t--global--spacer--xs); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--xs);">
+                Format: minute hour day-of-month month day-of-week (UTC)
+              </div>
+            </div>
+          </form>
         </div>
       </div>
       {% endif %}
-
-    </div>
-
-    {# Right column — Git Repos (server/TUI mode only) #}
-    {% if session.mode != 'prompt' %}
-    <div class="pf-v6-l-grid__item pf-m-8-col-on-md" style="display:flex; flex-direction:column;">
       <div class="pf-v6-c-card">
         <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
           <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Git Repositories</h3>
@@ -337,7 +374,6 @@
         </div>
       </div>
     </div>
-    {% endif %}
 
   </div>
 </div>{# /panel-details #}
@@ -486,73 +522,6 @@ git apply /path/to/{{ patch_filename }}
 </div>
 {% endif %}
 
-{# ════════════════════════════════════════════════════════════
-   Tab panel: Schedule (prompt mode only)
-   ════════════════════════════════════════════════════════════ #}
-{% if session.mode == 'prompt' %}
-<div id="panel-schedule" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-schedule" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
-  <div class="pf-v6-c-card">
-    <div class="pf-v6-c-card__title">
-      <h2 class="pf-v6-c-card__title-text">Schedule</h2>
-    </div>
-    <div class="pf-v6-c-card__body">
-      {% if session.cron_schedule %}
-      <div style="margin-bottom:var(--pf-t--global--spacer--md); padding:var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md); background:var(--pf-t--global--background--color--secondary--default); border-radius:var(--pf-t--global--border--radius--small);">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <div>
-            <span style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Active schedule:</span>
-            <span class="pf-v6-c-label pf-m-purple" style="margin-left:var(--pf-t--global--spacer--xs);"><span class="pf-v6-c-label__content">{{ session.cron_label }}</span></span>
-            <span style="margin-left:var(--pf-t--global--spacer--sm); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
-              ({{ session.cron_schedule }})
-            </span>
-          </div>
-          <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/unschedule" style="display:inline;">
-            <button type="submit" class="pf-v6-c-button pf-m-danger pf-m-small">Cancel Schedule</button>
-          </form>
-        </div>
-        {% if session.cron_next_run %}
-        <div style="margin-top:var(--pf-t--global--spacer--xs); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
-          {% if session.is_active %}
-            Currently running. Next run will be scheduled after completion.
-          {% else %}
-            Next run: <strong>{{ session.cron_next_run.strftime('%b %d, %Y %H:%M') }} UTC</strong>
-          {% endif %}
-        </div>
-        {% endif %}
-      </div>
-      {% endif %}
-
-      <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/schedule">
-        <div style="margin-bottom:var(--pf-t--global--spacer--md);">
-          <label style="font-weight:var(--pf-t--global--font--weight--heading--bold); display:block; margin-bottom:var(--pf-t--global--spacer--xs);">Quick presets</label>
-          <div style="display:flex; flex-wrap:wrap; gap:var(--pf-t--global--spacer--xs);">
-            {% for expr, label in cron_presets.items() %}
-            <button type="button" class="pf-v6-c-button pf-m-secondary pf-m-small" onclick="setCron('{{ expr }}')">{{ label }}</button>
-            {% endfor %}
-          </div>
-        </div>
-        <div style="margin-bottom:var(--pf-t--global--spacer--md);">
-          <label for="cron_expr" style="font-weight:var(--pf-t--global--font--weight--heading--bold); display:block; margin-bottom:var(--pf-t--global--spacer--xs);">
-            Cron expression
-            <a href="https://crontab.guru/" target="_blank" rel="noopener" style="font-weight:normal; font-size:var(--pf-t--global--font--size--sm); margin-left:var(--pf-t--global--spacer--xs);">(crontab.guru)</a>
-          </label>
-          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); align-items:center;">
-            <input type="text" id="cron_expr" name="cron_expr" class="pf-v6-c-form-control"
-                   placeholder="*/30 * * * *" value="{{ session.cron_schedule }}"
-                   required aria-required="true"
-                   style="max-width:280px; font-family:var(--pf-t--global--font--family--mono);">
-            <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Save Schedule</button>
-          </div>
-          <div style="margin-top:var(--pf-t--global--spacer--xs); color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--xs);">
-            Format: minute hour day-of-month month day-of-week (UTC)
-          </div>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-{% endif %}
-
 {% endblock %}
 
 {% block scripts %}
@@ -580,7 +549,29 @@ function switchTab(name) {
   if (name === 'terminal' && !window._terminalInitialized && typeof initTerminal === 'function') {
     if (initTerminal()) window._terminalInitialized = true;
   }
+
+  // Clear Output tab new-content marker when visiting the tab
+  if (name === 'output') {
+    const textEl = document.getElementById('output-tab-text');
+    if (textEl) textEl.textContent = 'Output';
+  }
 }
+
+// Show ● on Output tab when new output arrives while not viewing it
+(function() {
+  let lastOutputText = '';
+  document.addEventListener('htmx:afterSwap', function() {
+    const newEl = document.getElementById('last-output-pre');
+    if (!newEl) return;
+    const newText = newEl.textContent;
+    if (newText === lastOutputText) return;
+    lastOutputText = newText;
+    const outputTab = document.getElementById('tab-output');
+    if (outputTab && outputTab.classList.contains('pf-m-current')) return;
+    const textEl = document.getElementById('output-tab-text');
+    if (textEl) textEl.textContent = 'Output ●';
+  });
+})();
 
 // Auto-switch to tab from URL hash (e.g. #patch, #schedule) or post-launch sessionStorage flag
 (function() {
@@ -589,6 +580,15 @@ function switchTab(name) {
     sessionStorage.removeItem('switchToTab');
     if (document.getElementById('panel-' + pending)) {
       switchTab(pending);
+      // initTerminal is defined in a later <script> block (after the xterm CDN loads).
+      // Re-attempt initialization once all page resources have finished loading.
+      if (pending === 'terminal') {
+        window.addEventListener('load', function() {
+          if (!window._terminalInitialized && typeof initTerminal === 'function') {
+            if (initTerminal()) window._terminalInitialized = true;
+          }
+        });
+      }
       return;
     }
   }
@@ -722,17 +722,20 @@ function copyCommitMsg(btn) { _copyBlock('commit-msg', btn); }
   }
 })();
 
-function expandPrompt() {
-  document.getElementById('prompt-compact').style.display = 'none';
-  document.getElementById('prompt-card').style.display = '';
+function togglePrompt() {
+  const card = document.getElementById('prompt-card');
+  const arrow = document.getElementById('prompt-arrow');
   const ta = document.getElementById('instruction-prompt-input');
-  if (ta) ta.focus();
-}
-function collapsePrompt() {
-  const ta = document.getElementById('instruction-prompt-input');
-  if (!ta || !ta.value.trim()) return;
-  document.getElementById('prompt-card').style.display = 'none';
-  document.getElementById('prompt-compact').style.display = 'inline-flex';
+  const isExpanded = card.style.display !== 'none';
+  if (isExpanded) {
+    if (ta && !ta.value.trim()) return;
+    card.style.display = 'none';
+    arrow.textContent = '▶';
+  } else {
+    card.style.display = '';
+    arrow.textContent = '▼';
+    if (ta) ta.focus();
+  }
 }
 
 // Wire auto-save for the instruction prompt textarea
@@ -783,11 +786,9 @@ const _sessionMode = '{{ session.mode }}';
 document.addEventListener('htmx:afterSwap', function () {
   const badge = document.querySelector('#session-status .pf-v6-c-label');
   const statusText = (badge?.textContent || '').toLowerCase();
-  const isSucceeded = statusText.includes('completed') || statusText.includes('succeeded');
   const isRunning = badge && badge.classList.contains('pf-m-green');
   const isActive  = isRunning || (badge && badge.classList.contains('pf-m-gold'));
-  const succeededBlocks = isSucceeded && _sessionMode !== 'prompt';
-  const isBlocked = isActive || succeededBlocks;
+  const isBlocked = isActive;
 
   const cfgForm = document.getElementById('cfg-edit-form');
   if (cfgForm) {
@@ -816,21 +817,7 @@ document.addEventListener('htmx:afterSwap', function () {
   }
 
   const launchStop = document.getElementById('launch-stop');
-  if (launchStop) {
-    launchStop.style.display = (isActive || succeededBlocks) ? '' : 'none';
-    const stopBtn = document.getElementById('launch-stop-btn');
-    if (stopBtn) {
-      if (isSucceeded) {
-        stopBtn.textContent = '\u21ba Clean up';
-        stopBtn.classList.remove('pf-m-warning');
-        stopBtn.classList.add('pf-m-secondary');
-      } else {
-        stopBtn.textContent = '\u25a0 Stop';
-        stopBtn.classList.add('pf-m-warning');
-        stopBtn.classList.remove('pf-m-secondary');
-      }
-    }
-  }
+  if (launchStop) launchStop.style.display = isActive ? '' : 'none';
 
   const launchForm = document.getElementById('launch-form');
   if (launchForm) launchForm.style.display = isBlocked ? 'none' : '';
@@ -842,7 +829,8 @@ document.addEventListener('htmx:afterSwap', function () {
     const availMap = _launchSelect ? JSON.parse(_launchSelect.dataset.availability || '{}') : {};
     const selectedTool = _launchSelect ? _launchSelect.value : '';
     const avail = availMap[selectedTool] === true;
-    const blocked = succeededBlocks || !avail;
+    const isFailed = badge && badge.classList.contains('pf-m-red');
+    const blocked = !avail && !isFailed;
     _launchBtn.disabled = blocked;
     _launchBtn.classList.toggle('pf-m-primary', !blocked);
     _launchBtn.classList.toggle('pf-m-secondary', blocked);
@@ -859,7 +847,11 @@ document.addEventListener('htmx:afterSwap', function () {
     var badge = document.querySelector('#session-status .pf-v6-c-label');
     if (badge && badge.classList.contains('pf-m-green')) {
       clearInterval(reloadPoll);
-      window.location.reload();
+      sessionStorage.setItem('switchToTab', _sessionMode === 'tui' ? 'terminal' : 'output');
+      // For TUI, delay reload so the in-container startup script finishes before
+      // the WebSocket exec tries to launch opencode.
+      var delay = _sessionMode === 'tui' ? 4000 : 0;
+      setTimeout(function() { window.location.reload(); }, delay);
     }
   }, 2000);
 })();

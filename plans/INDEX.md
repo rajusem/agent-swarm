@@ -28,6 +28,14 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   status: "Done"
   pr: "https://github.com/stolostron/agent-swarm/pull/39"
   summary: "Relocated Launch/Stop controls to status bar; moved Prompt above tabs with collapse/expand toggle; removed Last Output from Details tab; auto-focus Output/Terminal tab after Launch; auto-clear output on launch; removed Clean Up button in prompt mode; re-enabled Launch after completion in prompt mode"
+# ──────────────────────────────────────────────────────────
+- date: "2026-05-01"
+  title: "Sessions detail: Git Repos + Schedule to Details tab, fix Prompt toggle and Output marker"
+  jira: "ACM-33548"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-33548"
+  status: "In Progress"
+  pr: ~
+  summary: "Move Git Repositories card to right column (all modes); move Schedule form into Details tab right column after Git Repos; remove Schedule tab; add Output tab new-content marker (●); fix Prompt toggle to keep label always visible with arrow-only state change"
 
 ## Foundation & Feature Plans
 
