@@ -963,19 +963,7 @@ async def repo_add(
     db.add(repo)
     await db.commit()
 
-    result = await db.execute(
-        select(Session)
-        .where(Session.id == sid)
-        .options(selectinload(Session.repos), selectinload(Session.github_pat))
-    )
-    session = result.scalar_one()
-    pat_token = session.github_pat.pat if session.github_pat else None
-    repo_info = await _fetch_repo_info(session.repos, pat_token)
-    return templates.TemplateResponse(
-        request,
-        "sessions/_repo_items.html",
-        {"ws_id": ws_id, "session": session, "repo_info": repo_info},
-    )
+    return HTMLResponse("", headers={"HX-Trigger": "repoListChanged"})
 
 
 @router.post(
@@ -1004,13 +992,7 @@ async def repo_delete(
     session = await db.get(Session, sid, options=[selectinload(Session.repos), selectinload(Session.github_pat)])
     if session is None or session.workspace_id != ws_id:
         return HTMLResponse("")
-    pat_token = session.github_pat.pat if session.github_pat else None
-    repo_info = await _fetch_repo_info(session.repos, pat_token)
-    return templates.TemplateResponse(
-        request,
-        "sessions/_repo_items.html",
-        {"ws_id": ws_id, "session": session, "repo_info": repo_info},
-    )
+    return HTMLResponse("", headers={"HX-Trigger": "repoListChanged"})
 
 
 # ============================================================
@@ -1336,6 +1318,35 @@ async def session_download_patch(
         content=session.patch_output,
         media_type="text/x-patch",
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+    )
+
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/{sid}/repos/items",
+    dependencies=[Depends(require_auth)],
+    response_class=HTMLResponse,
+)
+async def repo_items(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the _repo_items.html partial for #repo-list innerHTML refresh."""
+    result = await db.execute(
+        select(Session)
+        .where(Session.id == sid)
+        .options(selectinload(Session.repos), selectinload(Session.github_pat))
+    )
+    session = result.scalar_one_or_none()
+    if session is None or session.workspace_id != ws_id:
+        return HTMLResponse("")
+    pat_token = session.github_pat.pat if session.github_pat else None
+    repo_info = await _fetch_repo_info(session.repos, pat_token)
+    return templates.TemplateResponse(
+        request,
+        "sessions/_repo_items.html",
+        {"ws_id": ws_id, "session": session, "repo_info": repo_info},
     )
 
 

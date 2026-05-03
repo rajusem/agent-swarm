@@ -1,5 +1,9 @@
-{# Stable shell — only rendered once at page load. #}
-{# HTMX add/delete endpoints swap innerHTML of #repo-list using _repo_items.html. #}
-<div id="repo-list">
+{# Stable shell — rendered once at page load. #}
+{# repo_add / repo_delete return HX-Trigger: repoListChanged, which causes #}
+{# this div to fetch fresh inner content from the /repos/items endpoint.   #}
+<div id="repo-list"
+     hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/items"
+     hx-trigger="repoListChanged from:body"
+     hx-swap="innerHTML">
   {% include "sessions/_repo_items.html" with context %}
 </div>

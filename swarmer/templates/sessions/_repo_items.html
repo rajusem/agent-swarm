@@ -35,8 +35,7 @@
             title="Remove repository"
             style="color:var(--pf-t--global--color--status--danger--default); flex-shrink:0; margin-left:var(--pf-t--global--spacer--sm); border:1px solid currentColor; border-radius:var(--pf-t--global--border--radius--small);"
             hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/{{ repo.id }}/delete"
-            hx-target="#repo-list"
-            hx-swap="innerHTML">✕</button>
+            hx-swap="none">✕</button>
   </div>
   {% endfor %}
 

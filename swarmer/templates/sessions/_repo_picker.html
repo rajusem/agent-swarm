@@ -98,8 +98,7 @@
   {# ── Confirmation mini-form (hidden until a repo row is clicked) ── #}
   <form id="repo-picker-confirm-form" style="display:none;"
         hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
-        hx-target="#repo-list"
-        hx-swap="innerHTML"
+        hx-swap="none"
         hx-on::after-request="document.getElementById('repo-picker-container').innerHTML='';
                                document.getElementById('repo-add-btn').style.display='';">
     <input type="hidden" name="repo_url" id="repo-picker-url-input">
@@ -145,8 +144,7 @@
   {# ── Manual URL fallback (hidden by default) ── #}
   <form id="repo-picker-manual-form" style="display:none;"
         hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
-        hx-target="#repo-list"
-        hx-swap="innerHTML"
+        hx-swap="none"
         hx-on::after-request="document.getElementById('repo-picker-container').innerHTML='';
                                document.getElementById('repo-add-btn').style.display='';">
     <div style="display:flex; flex-direction:column; gap:var(--pf-t--global--spacer--xs);
