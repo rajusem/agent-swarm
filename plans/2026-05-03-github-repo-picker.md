@@ -257,17 +257,26 @@ User clicks "+"
 | `swarmer/database.py` | Edit | Added `ALTER TABLE github_pats ADD COLUMN github_org TEXT NOT NULL DEFAULT ''` migration |
 | `swarmer/templates/secrets/github_pat_form.html` | Edit | Added "GitHub Org (optional)" form field between Username and Token fields |
 | `swarmer/routers/secrets.py` | Edit | `github_pat_create` and `github_pat_update` now accept and persist `github_org: str = Form("")`; PAT update `db.commit()` wrapped in `IntegrityError` handler |
-| `swarmer/routers/sessions.py` | Edit | Removed inline helper functions (moved to `swarmer/github.py`); imports via `from swarmer.github import ...`; added `GET .../repos/pick` route (`repo_pick`); `is_active` guard added to `repo_add`, `repo_delete`, `repo_pick` |
-| `swarmer/templates/sessions/_repo_picker.html` | **New** | HTMX partial: client-side filterable repo list, click-to-select with branch/path confirmation, "Enter URL manually" fallback, cancel; escapes `full_name`/`description`; populates branch from `repo.default_branch` |
-| `swarmer/templates/sessions/_repo_list.html` | Edit | "+" button replaced with three-state logic: disabled (session active), hint (no PAT), HTMX picker trigger (PAT selected); old inline form removed; `#repo-picker-container` moved out |
-| `swarmer/templates/sessions/detail.html` | Edit | `#repo-picker-container` placed as a sibling of `#repo-list` inside the card body (see bug fix below) |
+| `swarmer/routers/sessions.py` | Edit | Removed inline helper functions (moved to `swarmer/github.py`); imports via `from swarmer.github import ...`; added `GET .../repos/pick` route (`repo_pick`); `is_active` guard added to `repo_add`, `repo_delete`, `repo_pick`; `repo_add` and `repo_delete` now return `_repo_items.html` |
+| `swarmer/templates/sessions/_repo_picker.html` | **New** | HTMX partial: client-side filterable repo list, click-to-select with branch/path confirmation, "Enter URL manually" fallback, cancel; escapes `full_name`/`description`; populates branch from `repo.default_branch`; forms use `hx-swap="innerHTML"` on `#repo-list` |
+| `swarmer/templates/sessions/_repo_list.html` | Edit | Reduced to a stable 5-line shell (`<div id="repo-list">` + `{% include _repo_items.html %}`); never replaced by HTMX |
+| `swarmer/templates/sessions/_repo_items.html` | **New** | Inner partial: repo rows, delete buttons, three-state add button; returned by `repo_add` and `repo_delete` and swapped into `#repo-list` via `innerHTML` |
+| `swarmer/templates/sessions/detail.html` | Edit | `#repo-picker-container` placed as a sibling of `#repo-list` inside the card body |
 | `tests/test_list_repos_for_pat.py` | **New** | 8 unit tests for `list_repos_for_pat` using `respx` to mock httpx — no live network required |
 
 ### Deviations from plan
 
-**GitHub helpers module**: The plan called for `_list_repos_for_pat()` to live in `swarmer/routers/sessions.py` alongside `_fetch_repo_info()`. During implementation, all three GitHub helpers were moved to a new `swarmer/github.py` module so they could be imported by the test suite without pulling in FastAPI/SQLAlchemy. The sessions router imports them via aliases (`_fetch_repo_info`, `_list_repos_for_pat`, `_github_slug`) preserving all existing call sites unchanged.
+**GitHub helpers module**: The plan called for `_list_repos_for_pat()` to live in `swarmer/routers/sessions.py` alongside `_fetch_repo_info()`. During implementation, all three GitHub helpers were moved to a new `swarmer/github.py` module so they could be imported by the test suite without pulling in FastAPI/SQLAlchemy. The sessions router imports them via aliases (`_fetch_repo_info`, `_list_repos_for_pat`) preserving all existing call sites unchanged.
 
-**`#repo-picker-container` placement**: The original implementation placed `#repo-picker-container` inside `#repo-list`. This caused a bug where adding a repo via the picker did not refresh the card — the `hx-swap="outerHTML"` on `#repo-list` was silently dropped by HTMX 1.9 because the form triggering the swap was a descendant of the swap target, and was removed from the DOM mid-swap. Fixed by moving `#repo-picker-container` to `detail.html` as a sibling of `#repo-list` inside the card body, so the confirm form's target is never an ancestor of the form itself.
+**Card refresh bug (two iterations)**: The original implementation put all repo list markup — including the HTMX confirm form — inside `<div id="repo-list">` and used `hx-swap="outerHTML"` + `hx-select="#repo-list"` to replace the whole div on add/delete. This silently failed in HTMX 1.9 because the triggering element was a descendant of the swap target and got removed from the DOM mid-swap.
+
+A first attempt moved `#repo-picker-container` outside `#repo-list` (into `detail.html`) to break the ancestor relationship, but the delete button remained inside `#repo-list` and exhibited the same failure.
+
+The final fix restructures the template into two files:
+- `_repo_list.html` — a stable shell (`<div id="repo-list">`) included once at page render, never swapped
+- `_repo_items.html` — the inner content (repo rows + add button), returned by `repo_add` and `repo_delete` and swapped via `hx-swap="innerHTML"` on `#repo-list`
+
+Because `#repo-list` is never itself replaced, the triggering element is always inside the stable shell and the innerHTML swap always succeeds.
 
 ### Test results
 
