@@ -4,6 +4,11 @@
 <div id="repo-list"
      hx-get="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos/items"
      hx-trigger="repoListChanged from:body"
-     hx-swap="innerHTML">
+     hx-swap="innerHTML"
+     hx-indicator="#repo-list-spinner">
   {% include "sessions/_repo_items.html" with context %}
 </div>
+<span id="repo-list-spinner" class="htmx-indicator repo-bounce-dots"
+      aria-label="Loading" style="display:inline-flex; gap:3px; vertical-align:middle; margin-top:var(--pf-t--global--spacer--xs);">
+  <span class="rbd-dot"></span><span class="rbd-dot"></span><span class="rbd-dot"></span>
+</span>

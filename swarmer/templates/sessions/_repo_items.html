@@ -87,10 +87,10 @@
               hx-swap="innerHTML"
               hx-indicator="#repo-picker-spinner"
               onclick="this.style.display='none';">+</button>
-      <span id="repo-picker-spinner"
-            class="htmx-indicator"
-            style="font-size:var(--pf-t--global--font--size--sm);
-                   color:var(--pf-t--global--text--color--subtle);">Loading…</span>
+      <span id="repo-picker-spinner" class="htmx-indicator repo-bounce-dots"
+            aria-label="Loading" style="display:inline-flex; gap:3px; vertical-align:middle;">
+        <span class="rbd-dot"></span><span class="rbd-dot"></span><span class="rbd-dot"></span>
+      </span>
     {% endif %}
 
   </div>
