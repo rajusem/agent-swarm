@@ -58,6 +58,7 @@ async def _poll_loop(session_id: int, pod_name: str, namespace: str, mode: str) 
 
 async def _auto_cleanup_pod(session_id: int, pod_name: str, namespace: str) -> None:
     from swarmer import k8s
+    from swarmer import k8s_session as k8s_sess
     from swarmer.database import get_db
     from swarmer.models.session import Session
 
@@ -77,6 +78,13 @@ async def _auto_cleanup_pod(session_id: int, pod_name: str, namespace: str) -> N
             session = await db.get(Session, session_id)
             if session and session.pod_name == pod_name:
                 session.pod_name = None
+                if not session.persist and session.pvc_name:
+                    try:
+                        await asyncio.to_thread(k8s_sess.delete_session_pvc, namespace, session.pvc_name)
+                        log.info("log_poller: auto-deleted PVC %s for session %d", session.pvc_name, session_id)
+                        session.pvc_name = None
+                    except Exception:
+                        log.exception("log_poller: PVC auto-deletion failed for session %d", session_id)
                 await db.commit()
             break
     except Exception:
