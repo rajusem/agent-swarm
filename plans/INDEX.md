@@ -49,9 +49,9 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   title: "Investigate and fix PVC lifecycle between session runs: persistence and cleanup"
   jira: "ACM-33566"
   jira_url: "https://redhat.atlassian.net/browse/ACM-33566"
-  status: "In Progress"
-  pr: ~
-  summary: "Audit PVC contents and lifecycle across session runs; implement cleanup so per-run working directories are reset to a clean state before each agent run"
+  status: "Done"
+  pr: "https://github.com/stolostron/agent-swarm/pull/44"
+  summary: "Fixed orphaned PVCs on prompt-mode completion: _auto_cleanup_pod now deletes the PVC when persist is disabled, matching the existing Stop button behaviour"
 
 ## Foundation & Feature Plans
 
