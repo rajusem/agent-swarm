@@ -14,7 +14,7 @@ def ensure_session_pvc(
     session_id: int,
     suffix: str,
     pvc_name: str | None = None,
-    storage: str = "10Gi",
+    storage: str = "5Gi",
 ) -> str:
     """Ensure a PVC exists for the session and return its name.
 
