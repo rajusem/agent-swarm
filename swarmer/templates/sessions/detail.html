@@ -371,6 +371,7 @@
         </div>
         <div class="pf-v6-c-card__body">
           {% include "sessions/_repo_list.html" with context %}
+          <div id="repo-picker-container" style="margin-top:var(--pf-t--global--spacer--xs);"></div>
         </div>
       </div>
     </div>
@@ -642,6 +643,8 @@ function copyCommitMsg(btn) { _copyBlock('commit-msg', btn); }
       .then(() => {
         showStatus('Saved', 'text-success');
         setTimeout(() => { if (indicator && indicator.textContent === 'Saved') indicator.textContent = ''; }, 2000);
+        // Refresh the repo list so the + button reflects the new PAT choice
+        document.body.dispatchEvent(new Event('repoListChanged'));
       })
       .catch(() => showStatus('Save failed', 'text-danger'))
       .finally(() => { saving = false; });

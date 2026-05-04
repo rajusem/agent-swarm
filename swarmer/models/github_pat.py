@@ -17,6 +17,7 @@ class GitHubPAT(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     github_username: Mapped[str] = mapped_column(Text, nullable=False)
+    github_org: Mapped[str] = mapped_column(Text, nullable=False, default="")
     pat_enc: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(

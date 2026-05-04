@@ -187,6 +187,7 @@ async def github_pat_create(
     request: Request,
     name: str = Form(...),
     github_username: str = Form(...),
+    github_org: str = Form(""),
     pat_value: str = Form(...),
     description: str = Form(""),
     db: AsyncSession = Depends(get_db),
@@ -199,6 +200,7 @@ async def github_pat_create(
         workspace_id=ws_id,
         name=name.strip(),
         github_username=github_username.strip(),
+        github_org=github_org.strip(),
         description=description.strip(),
     )
     pat.pat = pat_value.strip()
@@ -215,7 +217,7 @@ async def github_pat_create(
                 "ws": ws,
                 "pat": None,
                 "error": f"A PAT named '{name}' already exists in this workspace.",
-                "form": {"name": name, "github_username": github_username, "description": description},
+                "form": {"name": name, "github_username": github_username, "github_org": github_org, "description": description},
             },
             status_code=422,
         )
@@ -256,6 +258,7 @@ async def github_pat_update(
     request: Request,
     name: str = Form(...),
     github_username: str = Form(...),
+    github_org: str = Form(""),
     pat_value: str = Form(""),
     description: str = Form(""),
     db: AsyncSession = Depends(get_db),
@@ -267,11 +270,19 @@ async def github_pat_update(
 
     pat.name = name.strip()
     pat.github_username = github_username.strip()
+    pat.github_org = github_org.strip()
     pat.description = description.strip()
     if pat_value.strip():
         pat.pat = pat_value.strip()
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        flash(request, "A PAT with that name already exists.", "danger")
+        return RedirectResponse(
+            url=f"/workspaces/{ws_id}/secrets/pats/{pat_id}/edit", status_code=302
+        )
 
     try:
         k8s.apply_github_pat_secret(ws.k8s_namespace, pat)

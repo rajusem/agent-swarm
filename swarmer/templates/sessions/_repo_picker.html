@@ -1,0 +1,237 @@
+{# HTMX partial — GitHub repository picker #}
+{# Rendered into #repo-picker-container by GET .../repos/pick #}
+
+{% if error %}
+  <div class="pf-v6-c-alert pf-m-danger pf-m-inline" role="alert"
+       style="margin-bottom:var(--pf-t--global--spacer--sm);">
+    <p class="pf-v6-c-alert__title">{{ error }}</p>
+  </div>
+  <div style="margin-top:var(--pf-t--global--spacer--xs);">
+    <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+            onclick="document.getElementById('repo-picker-container').innerHTML='';
+                     document.getElementById('repo-add-btn').style.display='';">Cancel</button>
+  </div>
+
+{% else %}
+
+  {# ── Filter input ── #}
+  <div style="margin-bottom:var(--pf-t--global--spacer--sm);">
+    <input type="text" class="pf-v6-c-form-control pf-m-sm"
+           id="repo-picker-filter"
+           placeholder="Filter repositories…"
+           oninput="(function(val){
+             val = val.toLowerCase();
+             document.querySelectorAll('.repo-picker-row').forEach(function(row){
+               row.style.display = row.dataset.name.toLowerCase().includes(val) ? '' : 'none';
+             });
+           })(this.value)"
+           autofocus
+           style="width:100%;">
+  </div>
+
+  {# ── Repo list ── #}
+  <div id="repo-picker-list"
+       style="max-height:260px; overflow-y:auto;
+              border:1px solid var(--pf-t--global--border--color--default);
+              border-radius:var(--pf-t--global--border--radius--small);
+              margin-bottom:var(--pf-t--global--spacer--sm);">
+
+    {% if repos %}
+      {% for repo in repos %}
+      <div class="repo-picker-row"
+           data-name="{{ repo.full_name | e }}"
+           data-clone-url="https://github.com/{{ repo.full_name | e }}.git"
+           data-default-branch="{{ repo.default_branch | default('main') | e }}"
+           data-description="{{ repo.description | default('') | e }}"
+           style="display:flex; justify-content:space-between; align-items:center;
+                  padding:var(--pf-t--global--spacer--xs) var(--pf-t--global--spacer--sm);
+                  border-bottom:1px solid var(--pf-t--global--border--color--default);
+                  cursor:pointer;"
+           onmouseenter="this.style.background='var(--pf-t--global--background--color--secondary--default)'"
+           onmouseleave="this.style.background=''"
+           onclick="repopickerSelect(this)">
+        <div style="min-width:0; flex:1;">
+          <div style="font-size:var(--pf-t--global--font--size--sm); font-weight:var(--pf-t--global--font--weight--body--bold);">
+            {{ repo.full_name | e }}
+          </div>
+          {% if repo.description %}
+          <div style="font-size:var(--pf-t--global--font--size--xs);
+                      color:var(--pf-t--global--text--color--subtle);
+                      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            {{ repo.description | e }}
+          </div>
+          {% endif %}
+        </div>
+        <div style="flex-shrink:0; margin-left:var(--pf-t--global--spacer--sm);
+                    font-size:var(--pf-t--global--font--size--xs);
+                    color:var(--pf-t--global--text--color--subtle); white-space:nowrap;">
+          {% if repo.private %}
+          <span class="pf-v6-c-label pf-m-grey pf-m-outline" style="vertical-align:middle;">
+            <span class="pf-v6-c-label__content">Private</span>
+          </span>
+          {% else %}
+          <span class="pf-v6-c-label pf-m-green pf-m-outline" style="vertical-align:middle;">
+            <span class="pf-v6-c-label__content">Public</span>
+          </span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div style="padding:var(--pf-t--global--spacer--md); text-align:center;
+                  color:var(--pf-t--global--text--color--subtle);
+                  font-size:var(--pf-t--global--font--size--sm);">
+        No repositories found.
+      </div>
+    {% endif %}
+  </div>
+
+  {% if truncated %}
+  <p style="font-size:var(--pf-t--global--font--size--xs);
+             color:var(--pf-t--global--text--color--subtle);
+             margin-bottom:var(--pf-t--global--spacer--xs);">
+    Showing the 500 most recently updated repositories. Use the filter to narrow results,
+    or enter a URL manually.
+  </p>
+  {% endif %}
+
+  {# ── Confirmation mini-form (hidden until a repo row is clicked) ── #}
+  <form id="repo-picker-confirm-form" style="display:none;"
+        hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
+        hx-swap="none"
+        hx-on::after-request="document.getElementById('repo-picker-container').innerHTML='';
+                               document.getElementById('repo-add-btn').style.display='';">
+    <input type="hidden" name="repo_url" id="repo-picker-url-input">
+
+    <div style="background:var(--pf-t--global--background--color--secondary--default);
+                border:1px solid var(--pf-t--global--border--color--default);
+                border-radius:var(--pf-t--global--border--radius--small);
+                padding:var(--pf-t--global--spacer--sm);
+                margin-bottom:var(--pf-t--global--spacer--sm);">
+      <div style="font-size:var(--pf-t--global--font--size--sm);
+                  font-weight:var(--pf-t--global--font--weight--body--bold);
+                  margin-bottom:var(--pf-t--global--spacer--xs);"
+           id="repo-picker-selected-name"></div>
+      <div style="display:flex; flex-direction:column; gap:var(--pf-t--global--spacer--xs);">
+        <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+          <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                         color:var(--pf-t--global--text--color--subtle); text-align:right;">Branch</label>
+          <input type="text" class="pf-v6-c-form-control pf-m-sm" name="branch"
+                 id="repo-picker-branch" placeholder="main" value="main" style="flex:1;">
+        </div>
+        <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+          <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                         color:var(--pf-t--global--text--color--subtle); text-align:right;">Local path</label>
+          <input type="text" class="pf-v6-c-form-control pf-m-sm" name="local_path"
+                 id="repo-picker-local-path" placeholder="auto-derived" style="flex:1;">
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:var(--pf-t--global--spacer--sm); justify-content:flex-end;">
+      <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+              onclick="document.getElementById('repo-picker-confirm-form').style.display='none';
+                       document.getElementById('repo-picker-list').style.display='';
+                       document.getElementById('repo-picker-filter').style.display='';
+                       document.getElementById('repo-picker-footer').style.display='';">Back</button>
+      <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+              onclick="document.getElementById('repo-picker-container').innerHTML='';
+                       document.getElementById('repo-add-btn').style.display='';">Cancel</button>
+      <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Add</button>
+    </div>
+  </form>
+
+  {# ── Manual URL fallback (hidden by default) ── #}
+  <form id="repo-picker-manual-form" style="display:none;"
+        hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
+        hx-swap="none"
+        hx-on::after-request="document.getElementById('repo-picker-container').innerHTML='';
+                               document.getElementById('repo-add-btn').style.display='';">
+    <div style="display:flex; flex-direction:column; gap:var(--pf-t--global--spacer--xs);
+                margin-bottom:var(--pf-t--global--spacer--xs);">
+      <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+        <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                       color:var(--pf-t--global--text--color--subtle); text-align:right;">URL</label>
+        <input type="text" class="pf-v6-c-form-control pf-m-sm" name="repo_url"
+               id="repo-manual-url-input"
+               placeholder="https://github.com/org/repo"
+               oninput="autoFillLocalPath(this)"
+               style="flex:1;">
+      </div>
+      <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+        <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                       color:var(--pf-t--global--text--color--subtle); text-align:right;">Branch</label>
+        <input type="text" class="pf-v6-c-form-control pf-m-sm" name="branch"
+               placeholder="main" value="main" style="flex:1;">
+      </div>
+      <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+        <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                       color:var(--pf-t--global--text--color--subtle); text-align:right;">Local path</label>
+        <input type="text" class="pf-v6-c-form-control pf-m-sm" name="local_path"
+               id="repo-manual-local-path" placeholder="auto-derived" style="flex:1;">
+      </div>
+    </div>
+    <div style="display:flex; gap:var(--pf-t--global--spacer--sm); justify-content:flex-end;">
+      <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+              onclick="document.getElementById('repo-picker-manual-form').style.display='none';
+                       document.getElementById('repo-picker-list').style.display='';
+                       document.getElementById('repo-picker-filter').style.display='';
+                       document.getElementById('repo-picker-footer').style.display='';">Back</button>
+      <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+              onclick="document.getElementById('repo-picker-container').innerHTML='';
+                       document.getElementById('repo-add-btn').style.display='';">Cancel</button>
+      <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Add</button>
+    </div>
+  </form>
+
+  {# ── Footer: Enter URL manually + Cancel ── #}
+  <div id="repo-picker-footer"
+       style="display:flex; gap:var(--pf-t--global--spacer--sm); align-items:center;">
+    <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+            style="padding-left:0;"
+            onclick="document.getElementById('repo-picker-list').style.display='none';
+                     document.getElementById('repo-picker-filter').style.display='none';
+                     document.getElementById('repo-picker-footer').style.display='none';
+                     document.getElementById('repo-picker-manual-form').style.display='';">
+      Enter URL manually &#9658;
+    </button>
+    <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+            onclick="document.getElementById('repo-picker-container').innerHTML='';
+                     document.getElementById('repo-add-btn').style.display='';">Cancel</button>
+  </div>
+
+{% endif %}
+
+<script>
+function repopickerSelect(row) {
+  var fullName = row.dataset.name;
+  var cloneUrl = row.dataset.cloneUrl;
+  var defaultBranch = row.dataset.defaultBranch || 'main';
+  var localPath = fullName.split('/').pop();
+
+  document.getElementById('repo-picker-url-input').value = cloneUrl;
+  document.getElementById('repo-picker-selected-name').textContent = fullName;
+  document.getElementById('repo-picker-branch').value = defaultBranch;
+  document.getElementById('repo-picker-local-path').value = localPath;
+
+  // Hide the list and filter, show the confirm form
+  document.getElementById('repo-picker-list').style.display = 'none';
+  document.getElementById('repo-picker-filter').style.display = 'none';
+  document.getElementById('repo-picker-footer').style.display = 'none';
+  document.getElementById('repo-picker-confirm-form').style.display = '';
+}
+
+function autoFillLocalPath(input) {
+  var url = input.value.trim();
+  var pathInput = document.getElementById('repo-manual-local-path');
+  if (pathInput && !pathInput.dataset.edited) {
+    var parts = url.split('/');
+    var last = parts[parts.length - 1].replace(/\.git$/, '');
+    pathInput.value = last;
+  }
+}
+
+document.getElementById('repo-manual-local-path')?.addEventListener('input', function() {
+  this.dataset.edited = 'true';
+});
+</script>
