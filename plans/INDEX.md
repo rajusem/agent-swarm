@@ -44,6 +44,14 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   status: "Closed"
   pr: "https://github.com/stolostron/agent-swarm/pull/41"
   summary: "Add OSC 52 handler to xterm.js so TUI clipboard copies in the pod reach the user's browser clipboard"
+# ──────────────────────────────────────────────────────────
+- date: "2026-05-04"
+  title: "Investigate and fix PVC lifecycle between session runs: persistence and cleanup"
+  jira: "ACM-33566"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-33566"
+  status: "In Progress"
+  pr: ~
+  summary: "Audit PVC contents and lifecycle across session runs; implement cleanup so per-run working directories are reset to a clean state before each agent run"
 
 ## Foundation & Feature Plans
 
