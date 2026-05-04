@@ -53,7 +53,7 @@
                      border-radius:var(--pf-t--global--border--radius--small);">+</button>
 
     {% elif not session.github_pat %}
-      {# No PAT selected — show hint on click #}
+      {# No PAT selected — show manual entry form on click #}
       <button type="button" id="repo-add-btn"
               class="pf-v6-c-button pf-m-plain pf-m-small"
               aria-label="Add repository"
@@ -61,17 +61,51 @@
               style="color:var(--pf-t--global--text--color--link--default);
                      border:1px solid currentColor;
                      border-radius:var(--pf-t--global--border--radius--small);"
-              onclick="document.getElementById('repo-no-pat-msg').style.display='';
+              onclick="document.getElementById('repo-add-form').style.display='';
                        this.style.display='none';">+</button>
-      <span id="repo-no-pat-msg"
-            style="display:none; font-size:var(--pf-t--global--font--size--sm);
-                   color:var(--pf-t--global--text--color--subtle);">
-        Select a GitHub PAT above to browse repositories.
-        <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
-                style="padding:0 0 0 var(--pf-t--global--spacer--xs);"
-                onclick="this.closest('#repo-no-pat-msg').style.display='none';
-                         document.getElementById('repo-add-btn').style.display='';">Dismiss</button>
-      </span>
+      <form id="repo-add-form" style="display:none;"
+            hx-post="/workspaces/{{ ws_id }}/sessions/{{ session.id }}/repos"
+            hx-swap="none"
+            hx-on::after-request="document.getElementById('repo-add-form').style.display='none';
+                                   document.getElementById('repo-add-btn').style.display='';">
+        <div style="display:flex; flex-direction:column; gap:var(--pf-t--global--spacer--xs);
+                    margin-bottom:var(--pf-t--global--spacer--xs);">
+          <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+            <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                           color:var(--pf-t--global--text--color--subtle); text-align:right;">URL</label>
+            <input type="text" class="pf-v6-c-form-control pf-m-sm" name="repo_url"
+                   id="repo-add-url-input"
+                   placeholder="https://github.com/org/repo"
+                   oninput="(function(el){
+                     var lp=document.getElementById('repo-add-local-path');
+                     if(lp&&!lp.dataset.edited){
+                       var parts=el.value.trim().split('/');
+                       lp.value=parts[parts.length-1].replace(/\.git$/,'');
+                     }
+                   })(this)"
+                   style="flex:1;">
+          </div>
+          <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+            <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                           color:var(--pf-t--global--text--color--subtle); text-align:right;">Branch</label>
+            <input type="text" class="pf-v6-c-form-control pf-m-sm" name="branch"
+                   placeholder="main" value="main" style="flex:1;">
+          </div>
+          <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm);">
+            <label style="flex:0 0 70px; font-size:var(--pf-t--global--font--size--sm);
+                           color:var(--pf-t--global--text--color--subtle); text-align:right;">Local path</label>
+            <input type="text" class="pf-v6-c-form-control pf-m-sm" name="local_path"
+                   id="repo-add-local-path" placeholder="auto-derived" style="flex:1;"
+                   oninput="this.dataset.edited='true';">
+          </div>
+        </div>
+        <div style="display:flex; gap:var(--pf-t--global--spacer--sm); justify-content:flex-end;">
+          <button type="button" class="pf-v6-c-button pf-m-link pf-m-small"
+                  onclick="document.getElementById('repo-add-form').style.display='none';
+                           document.getElementById('repo-add-btn').style.display='';">Cancel</button>
+          <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Add</button>
+        </div>
+      </form>
 
     {% else %}
       {# PAT selected — HTMX repo picker #}
