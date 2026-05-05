@@ -26,7 +26,7 @@ class OpenCodeStrategy(AgentToolStrategy):
     def get_config_map_name(self) -> str:
         return "opencode-config"
 
-    def build_config_data(self, secret=None) -> dict[str, str]:
+    def build_config_data(self, secret=None, mcp_servers=None) -> dict[str, str]:
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
             "disabled_providers": ["opencode"],

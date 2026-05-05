@@ -71,6 +71,7 @@ def build_session_pod(
     has_gemini: bool = False,
     privileged: bool = False,
     agent_tool: str = "opencode",
+    mcp_servers=None,
 ):  # -> client.V1Pod
     """Build a V1Pod spec for the given session.
 
@@ -282,6 +283,17 @@ def build_session_pod(
 
     # ---------- envFrom ----------
     env_from = tool.get_env_from_sources()
+
+    # Inject MCP server OAuth tokens from the shared K8s secret
+    if mcp_servers:
+        from swarmer.k8s import MCP_SECRET_NAME
+        env_from.append(
+            client.V1EnvFromSource(
+                secret_ref=client.V1SecretEnvSource(
+                    name=MCP_SECRET_NAME, optional=True
+                )
+            )
+        )
 
     # ---------- container ----------
     # Non-privileged sessions omit runAsUser so OpenShift can assign a UID from

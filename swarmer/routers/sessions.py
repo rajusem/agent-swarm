@@ -485,6 +485,23 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
     has_adc = oc_secret.has_adc if oc_secret else False
     has_gemini = bool(oc_secret and oc_secret.google_api_key_enc)
 
+    # Fetch enabled & authenticated MCP servers for this workspace
+    from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+    mcp_servers = await get_enabled_mcp_servers(session.workspace_id, db)
+
+    # Sync MCP server tokens to K8s secret and update agent config
+    if mcp_servers:
+        from swarmer import k8s as _k8s2
+        try:
+            await asyncio.to_thread(_k8s2.sync_mcp_server_secret, ws.k8s_namespace, mcp_servers)
+            await asyncio.to_thread(
+                _k8s2.apply_agent_config, ws.k8s_namespace,
+                secret=oc_secret, agent_tool=session.agent_tool, mcp_servers=mcp_servers,
+            )
+        except Exception:
+            log.warning("MCP server sync failed, continuing launch without MCP", exc_info=True)
+            mcp_servers = []
+
     pod_spec = k8s_sess.build_session_pod(
         session=session,
         namespace=ws.k8s_namespace,
@@ -495,6 +512,7 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
         has_gemini=has_gemini,
         privileged=session.privileged,
         agent_tool=session.agent_tool,
+        mcp_servers=mcp_servers,
     )
     from kubernetes import client as k8s_client
 

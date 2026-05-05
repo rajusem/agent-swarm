@@ -149,8 +149,10 @@ async def opencode_secret_save(
     try:
         k8s.sync_all_agent_secrets(ws.k8s_namespace, secret)
         from swarmer.agent_tools.registry import all_tools
+        from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+        mcp_servers = await get_enabled_mcp_servers(ws_id, db)
         for tool in all_tools():
-            k8s.apply_agent_config(ws.k8s_namespace, secret=secret, agent_tool=tool.name)
+            k8s.apply_agent_config(ws.k8s_namespace, secret=secret, agent_tool=tool.name, mcp_servers=mcp_servers)
     except Exception as exc:
         flash(request, f"Saved, but K8s sync failed: {exc}", "warning")
 
