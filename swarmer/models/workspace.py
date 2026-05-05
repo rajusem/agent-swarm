@@ -29,6 +29,9 @@ class Workspace(Base):
     sessions: Mapped[list["Session"]] = relationship(  # noqa: F821
         back_populates="workspace", cascade="all, delete-orphan"
     )
+    mcp_servers: Mapped[list["McpServer"]] = relationship(  # noqa: F821
+        back_populates="workspace", cascade="all, delete-orphan"
+    )
 
     @property
     def k8s_namespace(self) -> str:
