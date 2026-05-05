@@ -110,17 +110,24 @@
 {% endif %}
 
 {# ── Add from catalog ── #}
+{% set configured_slugs = servers | map(attribute='slug') | list %}
+{% set available_entries = [] %}
+{% for entry in catalog %}
+  {% if entry.slug not in configured_slugs %}
+    {% if available_entries.append(entry) %}{% endif %}
+  {% endif %}
+{% endfor %}
+
+{% if available_entries %}
 <h2 class="pf-v6-c-title pf-m-lg" style="margin-bottom:var(--pf-t--global--spacer--md);">Available MCP Servers</h2>
 <p style="color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
   Add a pre-configured MCP server to this workspace, then connect via OAuth to authenticate.
 </p>
 
-{% set configured_slugs = servers | map(attribute='slug') | list %}
-
 <div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--md);">
-{% for entry in catalog %}
+{% for entry in available_entries %}
   <div class="pf-v6-l-grid__item pf-m-6-col-on-md pf-m-4-col-on-lg">
-    <div class="pf-v6-c-card{% if entry.slug in configured_slugs %} pf-m-selectable pf-m-selected{% endif %}" style="height:100%;">
+    <div class="pf-v6-c-card" style="height:100%;">
       <div class="pf-v6-c-card__header">
         <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">
           {{ entry.display_name }}
@@ -135,20 +142,15 @@
         </div>
       </div>
       <div class="pf-v6-c-card__footer">
-        {% if entry.slug in configured_slugs %}
-          <span class="pf-v6-c-label pf-m-green">
-            <span class="pf-v6-c-label__content">Already added</span>
-          </span>
-        {% else %}
-          <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/add">
-            <input type="hidden" name="catalog_slug" value="{{ entry.slug }}">
-            <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">+ Add to Workspace</button>
-          </form>
-        {% endif %}
+        <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/add">
+          <input type="hidden" name="catalog_slug" value="{{ entry.slug }}">
+          <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">+ Add to Workspace</button>
+        </form>
       </div>
     </div>
   </div>
 {% endfor %}
 </div>
+{% endif %}
 
 {% endblock %}

@@ -10,6 +10,13 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
+def _mcp_token_env_var(slug: str) -> str:
+    """Derive an env var name from an MCP server slug."""
+    import re
+    clean = re.sub(r"[^a-zA-Z0-9]+", "_", slug).strip("_").upper()
+    return f"MCP_TOKEN_{clean}"
+
+
 class OpenCodeStrategy(AgentToolStrategy):
 
     @property
@@ -35,6 +42,21 @@ class OpenCodeStrategy(AgentToolStrategy):
                 "port": 4096,
             },
         }
+
+        if mcp_servers:
+            mcp_config = {}
+            for srv in mcp_servers:
+                env_var_name = _mcp_token_env_var(srv.slug)
+                mcp_config[srv.slug] = {
+                    "type": "remote",
+                    "url": srv.server_url,
+                    "oauth": False,
+                    "headers": {
+                        "Authorization": f"Bearer {{env:{env_var_name}}}",
+                    },
+                }
+            if mcp_config:
+                config["mcp"] = mcp_config
 
         return {
             "opencode.json": json.dumps(config, indent=2),
