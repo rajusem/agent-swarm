@@ -213,6 +213,8 @@ async def session_new(
     _avail = await asyncio.gather(
         *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
     )
+    from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+    mcp_servers = await get_enabled_mcp_servers(ws_id, db)
     return templates.TemplateResponse(
         request,
         "sessions/new.html",
@@ -224,6 +226,7 @@ async def session_new(
             "agent_tools": _tools,
             "default_agent_tool": default_agent_tool,
             "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
+            "mcp_servers": mcp_servers,
         },
     )
 
@@ -277,6 +280,13 @@ async def session_create(
         agent_tool=agent_tool,
         working_branch=wb,
     )
+    # Gather MCP server checkbox selections from the multi-value form field
+    form_data = await request.form()
+    selected_mcp_ids = [int(v) for v in form_data.getlist("mcp_server_ids") if str(v).isdigit()]
+    if selected_mcp_ids:
+        session.enabled_mcp_ids = selected_mcp_ids
+    else:
+        session.mcp_server_ids = "none"
     db.add(session)
     try:
         await db.commit()
@@ -372,6 +382,8 @@ async def session_detail(
         canonical_agent_tool = get_tool(session.agent_tool).name
     except ValueError:
         canonical_agent_tool = session.agent_tool
+    from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+    mcp_servers = await get_enabled_mcp_servers(ws_id, db)
     return templates.TemplateResponse(
         request,
         "sessions/detail.html",
@@ -391,6 +403,7 @@ async def session_detail(
             "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
             "patch_filename": _patch_filename(session),
             "cron_presets": CRON_PRESETS,
+            "mcp_servers": mcp_servers,
         },
     )
 
@@ -446,6 +459,12 @@ async def session_edit(
             return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
         session.working_branch = branch_val
 
+    selected_mcp_ids = [int(v) for v in form_data.getlist("mcp_server_ids") if str(v).isdigit()]
+    if selected_mcp_ids:
+        session.enabled_mcp_ids = selected_mcp_ids
+    else:
+        session.mcp_server_ids = "none"
+
     try:
         await db.commit()
     except IntegrityError:
@@ -485,6 +504,38 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
     has_adc = oc_secret.has_adc if oc_secret else False
     has_gemini = bool(oc_secret and oc_secret.google_api_key_enc)
 
+    # Fetch enabled & authenticated MCP servers for this workspace
+    from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+    ws_mcp_servers = await get_enabled_mcp_servers(session.workspace_id, db)
+
+    # Filter to only the MCP servers enabled for this specific session
+    # mcp_servers=None  → no MCP configured in workspace (skip override)
+    # mcp_servers=[]    → user explicitly disabled all (override with clean config)
+    # mcp_servers=[...] → user selected specific servers
+    if not ws_mcp_servers:
+        mcp_servers = None
+    elif session.mcp_server_ids == "none":
+        mcp_servers = []
+    elif session.enabled_mcp_ids:
+        enabled_ids = set(session.enabled_mcp_ids)
+        mcp_servers = [s for s in ws_mcp_servers if s.id in enabled_ids]
+    else:
+        # No MCP selection stored — default to all workspace-enabled servers
+        mcp_servers = ws_mcp_servers
+
+    # Sync MCP server tokens to K8s secret and update agent config
+    if mcp_servers:
+        from swarmer import k8s as _k8s2
+        try:
+            await asyncio.to_thread(_k8s2.sync_mcp_server_secret, ws.k8s_namespace, mcp_servers)
+            await asyncio.to_thread(
+                _k8s2.apply_agent_config, ws.k8s_namespace,
+                secret=oc_secret, agent_tool=session.agent_tool, mcp_servers=mcp_servers,
+            )
+        except Exception:
+            log.warning("MCP server sync failed, continuing launch without MCP", exc_info=True)
+            mcp_servers = []
+
     pod_spec = k8s_sess.build_session_pod(
         session=session,
         namespace=ws.k8s_namespace,
@@ -495,6 +546,7 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
         has_gemini=has_gemini,
         privileged=session.privileged,
         agent_tool=session.agent_tool,
+        mcp_servers=mcp_servers,
     )
     from kubernetes import client as k8s_client
 

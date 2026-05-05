@@ -10,6 +10,13 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
+def _mcp_token_env_var(slug: str) -> str:
+    """Derive an env var name from an MCP server slug, e.g. 'atlassian-jira' -> 'MCP_TOKEN_ATLASSIAN_JIRA'."""
+    import re
+    clean = re.sub(r"[^a-zA-Z0-9]+", "_", slug).strip("_").upper()
+    return f"MCP_TOKEN_{clean}"
+
+
 class CrushStrategy(AgentToolStrategy):
 
     @property
@@ -26,7 +33,7 @@ class CrushStrategy(AgentToolStrategy):
     def get_config_map_name(self) -> str:
         return "crush-config"
 
-    def build_config_data(self, secret=None) -> dict[str, str]:
+    def build_config_data(self, secret=None, mcp_servers=None) -> dict[str, str]:
         config = {
             "$schema": "https://charm.land/crush.json",
             "options": {
@@ -35,6 +42,21 @@ class CrushStrategy(AgentToolStrategy):
                 "data_directory": ".crush",
             },
         }
+
+        if mcp_servers:
+            mcp_config = {}
+            for srv in mcp_servers:
+                env_var_name = _mcp_token_env_var(srv.slug)
+                mcp_config[srv.slug] = {
+                    "type": srv.server_type or "http",
+                    "url": srv.server_url,
+                    "headers": {
+                        "Authorization": f"Bearer ${env_var_name}",
+                    },
+                }
+            if mcp_config:
+                config["mcp"] = mcp_config
+
         return {
             "crush.json": json.dumps(config, indent=2),
             "gitconfig": "[safe]\n\tdirectory = *\n",
@@ -227,3 +249,31 @@ class CrushStrategy(AgentToolStrategy):
                 secret.application_default_credentials
             )
         return data
+
+    def build_mcp_config_cmd(self, mcp_servers) -> str:
+        config = {
+            "$schema": "https://charm.land/crush.json",
+            "options": {
+                "disable_metrics": True,
+                "disable_notifications": True,
+                "data_directory": ".crush",
+            },
+        }
+        if mcp_servers:
+            mcp_config = {}
+            for srv in mcp_servers:
+                env_var_name = _mcp_token_env_var(srv.slug)
+                mcp_config[srv.slug] = {
+                    "type": srv.server_type or "http",
+                    "url": srv.server_url,
+                    "headers": {
+                        "Authorization": f"Bearer ${env_var_name}",
+                    },
+                }
+            config["mcp"] = mcp_config
+        config_json = json.dumps(config)
+        config_path = self.get_config_mount_path()
+        return (
+            f"printf '%s' {shlex.quote(config_json)} "
+            f"> {config_path}/crush.json && "
+        )

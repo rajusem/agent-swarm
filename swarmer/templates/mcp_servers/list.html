@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}MCP Servers — {{ ws.display_name }} — Swarmer{% endblock %}
+
+{% block content %}
+{# ── Breadcrumb ── #}
+<nav class="pf-v6-c-breadcrumb" aria-label="breadcrumb" style="margin-bottom:var(--pf-t--global--spacer--md);">
+  <ol class="pf-v6-c-breadcrumb__list">
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+      <a href="/workspaces" class="pf-v6-c-breadcrumb__link">Workspaces</a>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+      <a href="/workspaces/{{ ws.id }}" class="pf-v6-c-breadcrumb__link">{{ ws.display_name }}</a>
+    </li>
+    <li class="pf-v6-c-breadcrumb__item">
+      <span class="pf-v6-c-breadcrumb__item-divider">/</span>
+      <span class="pf-v6-c-breadcrumb__link pf-m-current">MCP Servers</span>
+    </li>
+  </ol>
+</nav>
+
+<h1 class="pf-v6-c-title pf-m-2xl" style="margin-bottom:var(--pf-t--global--spacer--xs);">MCP Servers</h1>
+<p style="color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--lg);">
+  Connect external tool servers via the Model Context Protocol (MCP).
+  Authenticated servers are available to all sessions in this workspace.
+  OAuth tokens are encrypted at rest.
+</p>
+
+{# ── Configured servers ── #}
+{% if servers %}
+<h2 class="pf-v6-c-title pf-m-lg" style="margin-bottom:var(--pf-t--global--spacer--md);">Configured Servers</h2>
+
+<div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--md); margin-bottom:var(--pf-t--global--spacer--xl);">
+{% for s in servers %}
+  <div class="pf-v6-l-grid__item pf-m-6-col-on-md pf-m-4-col-on-lg">
+    <div class="pf-v6-c-card" style="height:100%;">
+      <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">
+          {{ s.display_name }}
+        </h3>
+        <span class="pf-v6-c-label pf-m-{{ s.auth_status_color }}">
+          <span class="pf-v6-c-label__content">{{ s.auth_status_label }}</span>
+        </span>
+      </div>
+      <div class="pf-v6-c-card__body">
+        <dl style="margin:0;">
+          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-bottom:var(--pf-t--global--spacer--xs);">
+            <dt style="font-weight:bold; min-width:60px;">URL:</dt>
+            <dd style="margin:0;"><code style="font-size:var(--pf-t--global--font--size--sm);">{{ s.server_url }}</code></dd>
+          </div>
+          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-bottom:var(--pf-t--global--spacer--xs);">
+            <dt style="font-weight:bold; min-width:60px;">Type:</dt>
+            <dd style="margin:0;">{{ s.server_type | upper }}</dd>
+          </div>
+          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-bottom:var(--pf-t--global--spacer--xs);">
+            <dt style="font-weight:bold; min-width:60px;">Status:</dt>
+            <dd style="margin:0;">
+              {% if s.enabled %}
+                <span style="color:var(--pf-t--global--color--status--success--default);">Enabled</span>
+              {% else %}
+                <span style="color:var(--pf-t--global--text--color--subtle);">Disabled</span>
+              {% endif %}
+            </dd>
+          </div>
+          {% if s.token_expires_at %}
+          <div style="display:flex; gap:var(--pf-t--global--spacer--sm); margin-bottom:var(--pf-t--global--spacer--xs);">
+            <dt style="font-weight:bold; min-width:60px;">Expires:</dt>
+            <dd style="margin:0; font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">
+              {{ s.token_expires_at.strftime('%Y-%m-%d %H:%M UTC') }}
+            </dd>
+          </div>
+          {% endif %}
+        </dl>
+      </div>
+      <div class="pf-v6-c-card__footer" style="display:flex; gap:var(--pf-t--global--spacer--xs); flex-wrap:wrap;">
+        {% if not s.is_authenticated %}
+        <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/{{ s.id }}/connect" style="display:inline;">
+          <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Connect via OAuth</button>
+        </form>
+        {% else %}
+          {% if s.is_expired and s.refresh_token_enc %}
+          <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/{{ s.id }}/refresh" style="display:inline;">
+            <button type="submit" class="pf-v6-c-button pf-m-secondary pf-m-small">Refresh Token</button>
+          </form>
+          {% elif s.is_expired %}
+          <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/{{ s.id }}/connect" style="display:inline;">
+            <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">Reconnect</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/{{ s.id }}/disconnect" style="display:inline;">
+            <button type="submit" class="pf-v6-c-button pf-m-secondary pf-m-small">Disconnect</button>
+          </form>
+        {% endif %}
+        <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/{{ s.id }}/toggle" style="display:inline;">
+          <button type="submit" class="pf-v6-c-button pf-m-tertiary pf-m-small">
+            {{ 'Disable' if s.enabled else 'Enable' }}
+          </button>
+        </form>
+        <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/{{ s.id }}/delete"
+              style="display:inline;"
+              onsubmit="return confirm('Remove {{ s.display_name }}? OAuth tokens will be deleted.')">
+          <button type="submit" class="pf-v6-c-button pf-m-danger pf-m-small">Remove</button>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+{# ── Add from catalog ── #}
+{% set configured_slugs = servers | map(attribute='slug') | list %}
+{% set available_entries = [] %}
+{% for entry in catalog %}
+  {% if entry.slug not in configured_slugs %}
+    {% if available_entries.append(entry) %}{% endif %}
+  {% endif %}
+{% endfor %}
+
+{% if available_entries %}
+<h2 class="pf-v6-c-title pf-m-lg" style="margin-bottom:var(--pf-t--global--spacer--md);">Available MCP Servers</h2>
+<p style="color:var(--pf-t--global--text--color--subtle); margin-bottom:var(--pf-t--global--spacer--md);">
+  Add a pre-configured MCP server to this workspace, then connect via OAuth to authenticate.
+</p>
+
+<div class="pf-v6-l-grid pf-m-gutter" style="--pf-v6-l-grid--m-gutter--GridGap:var(--pf-t--global--spacer--md);">
+{% for entry in available_entries %}
+  <div class="pf-v6-l-grid__item pf-m-6-col-on-md pf-m-4-col-on-lg">
+    <div class="pf-v6-c-card" style="height:100%;">
+      <div class="pf-v6-c-card__header">
+        <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">
+          {{ entry.display_name }}
+        </h3>
+      </div>
+      <div class="pf-v6-c-card__body">
+        <p style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin:0 0 var(--pf-t--global--spacer--sm) 0;">
+          {{ entry.description }}
+        </p>
+        <div style="font-size:var(--pf-t--global--font--size--sm);">
+          <code>{{ entry.server_url }}</code>
+        </div>
+      </div>
+      <div class="pf-v6-c-card__footer">
+        <form method="post" action="/workspaces/{{ ws.id }}/mcp-servers/add">
+          <input type="hidden" name="catalog_slug" value="{{ entry.slug }}">
+          <button type="submit" class="pf-v6-c-button pf-m-primary pf-m-small">+ Add to Workspace</button>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

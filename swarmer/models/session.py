@@ -63,6 +63,7 @@ class Session(Base):
     patch_base_ref: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
     cron_schedule: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")
     cron_next_run: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    mcp_server_ids: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -131,3 +132,14 @@ class Session(Base):
             "failed": "danger",
             "stopped": "secondary",
         }.get(self.phase, "secondary")
+
+    @property
+    def enabled_mcp_ids(self) -> list[int]:
+        """Parse the comma-separated MCP server ID list."""
+        if not self.mcp_server_ids:
+            return []
+        return [int(x) for x in self.mcp_server_ids.split(",") if x.strip().isdigit()]
+
+    @enabled_mcp_ids.setter
+    def enabled_mcp_ids(self, ids: list[int]) -> None:
+        self.mcp_server_ids = ",".join(str(i) for i in ids)

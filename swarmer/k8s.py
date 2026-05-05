@@ -144,7 +144,7 @@ def get_namespace_status(namespace: str) -> str:
 # ---------- ConfigMap helpers ----------
 
 def apply_agent_config(
-    namespace: str, secret=None, agent_tool: str = "opencode"
+    namespace: str, secret=None, agent_tool: str = "opencode", mcp_servers=None
 ) -> None:
     """Create or update the agent tool's ConfigMap in the given namespace."""
     from kubernetes import client
@@ -152,7 +152,7 @@ def apply_agent_config(
 
     tool = get_tool(agent_tool)
     cm_name = tool.get_config_map_name()
-    data = tool.build_config_data(secret)
+    data = tool.build_config_data(secret, mcp_servers=mcp_servers)
 
     v1 = client.CoreV1Api()
     body = client.V1ConfigMap(
@@ -246,6 +246,31 @@ def apply_github_pat_secret(namespace: str, pat) -> None:
 
 def delete_github_pat_secret(namespace: str, pat) -> None:
     _delete_secret(namespace, pat.k8s_secret_name)
+
+
+MCP_SECRET_NAME = "mcp-server-tokens"
+
+
+def sync_mcp_server_secret(namespace: str, mcp_servers) -> None:
+    """Create or update the K8s Secret containing MCP server OAuth tokens.
+
+    Each enabled & authenticated MCP server gets an entry keyed by its
+    environment variable name (e.g. MCP_TOKEN_ATLASSIAN_JIRA).
+    """
+    import re
+
+    data = {}
+    for srv in mcp_servers:
+        if not srv.access_token_enc:
+            continue
+        clean = re.sub(r"[^a-zA-Z0-9]+", "_", srv.slug).strip("_").upper()
+        env_key = f"MCP_TOKEN_{clean}"
+        data[env_key] = _b64(srv.access_token)
+
+    if data:
+        _apply_secret(namespace, MCP_SECRET_NAME, data)
+    else:
+        _delete_secret(namespace, MCP_SECRET_NAME)
 
 
 # ---------- Pod / PVC helpers (used by sessions) ----------

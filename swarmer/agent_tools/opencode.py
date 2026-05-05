@@ -10,6 +10,13 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
+def _mcp_token_env_var(slug: str) -> str:
+    """Derive an env var name from an MCP server slug."""
+    import re
+    clean = re.sub(r"[^a-zA-Z0-9]+", "_", slug).strip("_").upper()
+    return f"MCP_TOKEN_{clean}"
+
+
 class OpenCodeStrategy(AgentToolStrategy):
 
     @property
@@ -26,7 +33,7 @@ class OpenCodeStrategy(AgentToolStrategy):
     def get_config_map_name(self) -> str:
         return "opencode-config"
 
-    def build_config_data(self, secret=None) -> dict[str, str]:
+    def build_config_data(self, secret=None, mcp_servers=None) -> dict[str, str]:
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
             "disabled_providers": ["opencode"],
@@ -35,6 +42,21 @@ class OpenCodeStrategy(AgentToolStrategy):
                 "port": 4096,
             },
         }
+
+        if mcp_servers:
+            mcp_config = {}
+            for srv in mcp_servers:
+                env_var_name = _mcp_token_env_var(srv.slug)
+                mcp_config[srv.slug] = {
+                    "type": "remote",
+                    "url": srv.server_url,
+                    "oauth": False,
+                    "headers": {
+                        "Authorization": f"Bearer {{env:{env_var_name}}}",
+                    },
+                }
+            if mcp_config:
+                config["mcp"] = mcp_config
 
         return {
             "opencode.json": json.dumps(config, indent=2),
@@ -228,3 +250,32 @@ class OpenCodeStrategy(AgentToolStrategy):
                 secret.application_default_credentials
             )
         return data
+
+    def build_mcp_config_cmd(self, mcp_servers) -> str:
+        config: dict = {
+            "$schema": "https://opencode.ai/config.json",
+            "disabled_providers": ["opencode"],
+            "server": {
+                "hostname": "0.0.0.0",
+                "port": 4096,
+            },
+        }
+        if mcp_servers:
+            mcp_config = {}
+            for srv in mcp_servers:
+                env_var_name = _mcp_token_env_var(srv.slug)
+                mcp_config[srv.slug] = {
+                    "type": "remote",
+                    "url": srv.server_url,
+                    "oauth": False,
+                    "headers": {
+                        "Authorization": f"Bearer {{env:{env_var_name}}}",
+                    },
+                }
+            config["mcp"] = mcp_config
+        config_json = json.dumps(config)
+        config_path = self.get_config_mount_path()
+        return (
+            f"printf '%s' {shlex.quote(config_json)} "
+            f"> {config_path}/opencode.json && "
+        )

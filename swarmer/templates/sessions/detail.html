@@ -286,6 +286,28 @@
               </div>
             </div>
 
+            {% if mcp_servers %}
+            <div class="pf-v6-c-form__group" style="margin-bottom:var(--pf-t--global--spacer--md);">
+              <label class="pf-v6-c-form__label" style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">
+                <span class="pf-v6-c-form__label-text">MCP Servers</span>
+              </label>
+              <div class="pf-v6-c-form__group-control">
+                {% for srv in mcp_servers %}
+                <div class="pf-v6-c-check" style="margin-bottom:var(--pf-t--global--spacer--xs);">
+                  <input class="pf-v6-c-check__input" type="checkbox"
+                         name="mcp_server_ids" value="{{ srv.id }}"
+                         id="mcp-detail-{{ srv.id }}"
+                         {{ 'checked' if srv.id in session.enabled_mcp_ids or not session.mcp_server_ids }}
+                         {% if session.is_active %}disabled{% endif %}>
+                  <label class="pf-v6-c-check__label" for="mcp-detail-{{ srv.id }}" style="font-size:var(--pf-t--global--font--size--sm);">
+                    {{ srv.display_name }}
+                  </label>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            {% endif %}
+
             <div style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm); margin-bottom:var(--pf-t--global--spacer--md);">
               PVC: <code style="font-family:var(--pf-t--global--font--family--mono);">{{ session.pvc_name or '—' }}</code>
             </div>

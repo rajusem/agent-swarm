@@ -71,6 +71,7 @@ def build_session_pod(
     has_gemini: bool = False,
     privileged: bool = False,
     agent_tool: str = "opencode",
+    mcp_servers=None,
 ):  # -> client.V1Pod
     """Build a V1Pod spec for the given session.
 
@@ -278,10 +279,27 @@ def build_session_pod(
                 f"cd /workspace && "
             )
 
-    command = ["sh", "-c", config_setup + safe_dir_setup + git_setup + share_setup + agent_md_setup + model_setup + branch_setup + main_cmd]
+    # Per-session MCP config override (overwrites the shared ConfigMap config)
+    # mcp_servers=None means "not applicable" (no override needed)
+    # mcp_servers=[] means "explicitly disabled" (write config without MCP)
+    # mcp_servers=[...] means "these specific servers" (write config with them)
+    mcp_config_setup = tool.build_mcp_config_cmd(mcp_servers) if mcp_servers is not None else ""
+
+    command = ["sh", "-c", config_setup + mcp_config_setup + safe_dir_setup + git_setup + share_setup + agent_md_setup + model_setup + branch_setup + main_cmd]
 
     # ---------- envFrom ----------
     env_from = tool.get_env_from_sources()
+
+    # Inject MCP server OAuth tokens from the shared K8s secret
+    if mcp_servers:
+        from swarmer.k8s import MCP_SECRET_NAME
+        env_from.append(
+            client.V1EnvFromSource(
+                secret_ref=client.V1SecretEnvSource(
+                    name=MCP_SECRET_NAME, optional=True
+                )
+            )
+        )
 
     # ---------- container ----------
     # Non-privileged sessions omit runAsUser so OpenShift can assign a UID from
