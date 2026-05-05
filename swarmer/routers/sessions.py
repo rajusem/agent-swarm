@@ -283,7 +283,10 @@ async def session_create(
     # Gather MCP server checkbox selections from the multi-value form field
     form_data = await request.form()
     selected_mcp_ids = [int(v) for v in form_data.getlist("mcp_server_ids") if str(v).isdigit()]
-    session.enabled_mcp_ids = selected_mcp_ids
+    if selected_mcp_ids:
+        session.enabled_mcp_ids = selected_mcp_ids
+    else:
+        session.mcp_server_ids = "none"
     db.add(session)
     try:
         await db.commit()
@@ -457,7 +460,10 @@ async def session_edit(
         session.working_branch = branch_val
 
     selected_mcp_ids = [int(v) for v in form_data.getlist("mcp_server_ids") if str(v).isdigit()]
-    session.enabled_mcp_ids = selected_mcp_ids
+    if selected_mcp_ids:
+        session.enabled_mcp_ids = selected_mcp_ids
+    else:
+        session.mcp_server_ids = "none"
 
     try:
         await db.commit()
@@ -503,7 +509,9 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession) -> None:
     mcp_servers = await get_enabled_mcp_servers(session.workspace_id, db)
 
     # Filter to only the MCP servers enabled for this specific session
-    if mcp_servers and session.enabled_mcp_ids:
+    if session.mcp_server_ids == "none":
+        mcp_servers = []
+    elif mcp_servers and session.enabled_mcp_ids:
         enabled_ids = set(session.enabled_mcp_ids)
         mcp_servers = [s for s in mcp_servers if s.id in enabled_ids]
     elif not session.mcp_server_ids:
