@@ -42,6 +42,12 @@ class CrushStrategy(AgentToolStrategy):
         return "Crush"
 
     def get_image(self) -> str:
+        if not settings.agent_image_crush:
+            raise ValueError(
+                "AGENT_IMAGE_CRUSH is not set. "
+                "Set it in .env or as an environment variable to the Crush container image "
+                "(e.g. quay.io/jpacker/crush:0.2.1)."
+            )
         return settings.agent_image_crush
 
     def get_config_map_name(self) -> str:
@@ -93,20 +99,10 @@ class CrushStrategy(AgentToolStrategy):
         return "$HOME/.local/share/crush"
 
     def build_share_setup_cmd(self) -> str:
-        crush_version = getattr(settings, "crush_version", "0.57.0")
         return (
-            "mkdir -p /workspace/.crush $HOME/.local/share $HOME/.local/bin && "
+            "mkdir -p /workspace/.crush $HOME/.local/share && "
             "rm -rf $HOME/.local/share/crush && "
             "ln -sf /workspace/.crush $HOME/.local/share/crush && "
-            "export PATH=\"$HOME/.local/bin:$PATH\" && "
-            "if ! command -v crush >/dev/null 2>&1; then "
-            f"echo 'Downloading Crush v{crush_version}...' && "
-            f"curl -fsSL 'https://github.com/charmbracelet/crush/releases/download/v{crush_version}"
-            f"/crush_{crush_version}_Linux_x86_64.tar.gz' "
-            "| tar -xz --strip-components=1 -C $HOME/.local/bin "
-            f"crush_{crush_version}_Linux_x86_64/crush && "
-            "chmod +x $HOME/.local/bin/crush; "
-            "fi && "
         )
 
     def build_model_setup_cmd(self, model: str) -> str:
