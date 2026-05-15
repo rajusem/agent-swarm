@@ -59,6 +59,7 @@ async def env_vars_add(
         return RedirectResponse(url=f"/workspaces/{ws_id}/env-vars", status_code=302)
 
     try:
+        await asyncio.to_thread(k8s.ensure_namespace, ws.k8s_namespace)
         await asyncio.to_thread(k8s.set_extra_env_var, ws.k8s_namespace, key, value)
         flash(request, f"Environment variable '{key}' saved.", "success")
     except Exception as exc:
