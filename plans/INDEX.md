@@ -165,7 +165,25 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   jira_url: "https://redhat.atlassian.net/browse/ACM-34123"
   status: "Done"
   pr: "https://github.com/stolostron/agent-swarm/pull/72"
-  summary: "Implemented a workspace-level prompt library with git-backed folders, recursive .md file caching, and an HTMX-powered per-session prompt picker with live preview."
+   summary: "Implemented a workspace-level prompt library with git-backed folders, recursive .md file caching, and an HTMX-powered per-session prompt picker with live preview."
+
+# ──────────────────────────────────────────────────────────
+- date: "2026-05-20"
+  title: "Add REST API server to agent-swarm alongside existing Console"
+  jira: "ACM-34254"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-34254"
+  status: "Done"
+  pr: "https://github.com/stolostron/agent-swarm/pull/75"
+  summary: "Added 51 REST API endpoints under /api/v1/ with K8s bearer token auth, Pydantic schemas, and 32 unit tests alongside the existing HTMX Console"
+
+# ──────────────────────────────────────────────────────────
+- date: "2026-05-20"
+  title: "Refactor Console routes to consume REST API instead of direct DB/K8s access"
+  jira: "ACM-34269"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-34269"
+  status: "Done"
+  pr: "https://github.com/stolostron/agent-swarm/pull/76"
+  summary: "Refactored 6 Console route handlers (workspaces, env_vars, secrets, mcp_servers, prompts, auth) to call /api/v1/ via internal API client with httpx ASGI transport, DotDict template compat, and 27 new unit tests"
 
 # ──────────────────────────────────────────────────────────
 - date: "2026-05-20"
