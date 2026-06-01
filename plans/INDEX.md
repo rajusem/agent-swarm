@@ -223,6 +223,13 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   jira_url: "https://redhat.atlassian.net/browse/ACM-34642"
   pr: "https://github.com/stolostron/agent-swarm/pull/96"
   summary: "Symlinked CLAUDE.md → AGENTS.md; extracted architecture and project structure to docs/ARCHITECTURE.md; added personal config lookup, Fleet Engineering skills table, and .cursor/rules/architecture.mdc."
+---
+- date: "2026-05-31"
+  title: "Fix ERR_TOO_MANY_REDIRECTS loop when K8s token expires in Agent Swarm"
+  jira: "ACM-34643"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-34643"
+  pr: "https://github.com/stolostron/agent-swarm/pull/95"
+  summary: "Added request.session.clear() in not_authenticated_handler before redirecting to /login, eliminating ERR_TOO_MANY_REDIRECTS caused by stale authenticated=True session flag when K8s bearer token expires"
 
 # ──────────────────────────────────────────────────────────
 - date: "2026-05-14"
