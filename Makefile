@@ -26,6 +26,11 @@ AGENT_IMAGE_CRUSH    ?= ghcr.io/gurnben/crush-container:latest
 CRUSH_IMAGE   ?= crush:latest
 CRUSH_VERSION ?= 0.1.127
 
+# OpenShell gateway — version synced from ../agent-containers/Makefile via make update-deps
+OPENSHELL_VERSION   ?= 0.0.51
+OPENSHELL_NAMESPACE ?= openshell
+OPENSHELL_TLS_DIR   ?= auth/openshell
+
 # Kubernetes
 NAMESPACE            ?= swarmer
 KIND_CLUSTER         ?= swarmer
@@ -44,6 +49,8 @@ AC_DEFAULTS ?= .push-defaults
         k8s-deploy k8s-delete k8s-connect \
         openshift-deploy \
         kind-create kind-load kind-load-opencode kind-load-crush kind-deploy kind-delete kind-connect \
+        openshell-setup openshell-extract-tls openshell-status openshell-delete \
+        test-e2e \
         sync-images help
 
 # ──────────────────────────────────────────────────────────────
@@ -333,6 +340,147 @@ kind-connect:  ## Open a port-forward to the kind-deployed dashboard on localhos
 kind-delete:  ## Delete the kind cluster (removes all data inside it)
 	kind delete cluster --name $(KIND_CLUSTER)
 	@echo "✓ kind cluster '$(KIND_CLUSTER)' deleted."
+
+# ──────────────────────────────────────────────────────────────
+#  OpenShell gateway (installs to the CURRENT kubectl context)
+# ──────────────────────────────────────────────────────────────
+
+openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl context (idempotent)
+	@HELM_VER=$$(helm version --short 2>/dev/null | grep -oP 'v\K[0-9]+\.[0-9]+' | head -1); \
+	HELM_MAJOR=$$(echo "$$HELM_VER" | cut -d. -f1); \
+	HELM_MINOR=$$(echo "$$HELM_VER" | cut -d. -f2); \
+	if [ -z "$$HELM_VER" ] || { [ "$$HELM_MAJOR" -lt 4 ] && { [ "$$HELM_MAJOR" -lt 3 ] || [ "$$HELM_MINOR" -lt 8 ]; }; }; then \
+	  echo "Error: Helm 3.8+ required for OCI chart support (found: $$(helm version --short 2>/dev/null || echo 'not installed'))"; \
+	  echo "       Upgrade: https://helm.sh/docs/intro/install/"; \
+	  exit 1; \
+	fi
+	@echo "Installing Agent Sandbox CRD controller..."
+	$(eval SANDBOX_VER := $(shell curl -fsSL 'https://api.github.com/repos/kubernetes-sigs/agent-sandbox/releases/latest' | jq -r '.tag_name'))
+	kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(SANDBOX_VER)/manifest.yaml
+	@echo "Waiting for agent-sandbox controller..."
+	kubectl rollout status deployment -n agent-sandbox-system --timeout=90s
+	@echo "Installing OpenShell $(OPENSHELL_VERSION)..."
+	kubectl create namespace $(OPENSHELL_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	DOCKER_CONFIG=$$(mktemp -d) helm upgrade --install openshell \
+	  oci://ghcr.io/nvidia/openshell/helm-chart \
+	  --version $(OPENSHELL_VERSION) \
+	  --namespace $(OPENSHELL_NAMESPACE) \
+	  --wait --timeout 5m
+	$(MAKE) openshell-extract-tls
+	@echo ""
+	@echo "✓ OpenShell $(OPENSHELL_VERSION) installed."
+	@echo "  Port-forward: kubectl port-forward -n $(OPENSHELL_NAMESPACE) svc/openshell 17670:8080"
+	@echo "  TLS certs:    $(OPENSHELL_TLS_DIR)/"
+
+openshell-extract-tls:  ## Extract mTLS client certs from cluster to auth/openshell/
+	@mkdir -p $(OPENSHELL_TLS_DIR)
+	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
+	  -o jsonpath='{.data.ca\.crt}'  | base64 -d > $(OPENSHELL_TLS_DIR)/ca.crt
+	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
+	  -o jsonpath='{.data.tls\.crt}' | base64 -d > $(OPENSHELL_TLS_DIR)/tls.crt
+	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
+	  -o jsonpath='{.data.tls\.key}' | base64 -d > $(OPENSHELL_TLS_DIR)/tls.key
+	@echo "✓ mTLS certs written to $(OPENSHELL_TLS_DIR)/"
+
+openshell-status:  ## Show OpenShell installation status on current kubectl context
+	@echo "=== Helm release ==="
+	@helm status openshell -n $(OPENSHELL_NAMESPACE) 2>/dev/null || echo "  (not installed)"
+	@echo ""
+	@echo "=== Gateway pods ==="
+	@kubectl get pods -n $(OPENSHELL_NAMESPACE) 2>/dev/null || echo "  (namespace not found)"
+	@echo ""
+	@echo "=== Agent Sandbox CRDs ==="
+	@kubectl get crds | grep -i sandbox 2>/dev/null || echo "  (none)"
+	@echo ""
+	@echo "=== mTLS certs ==="
+	@ls -la $(OPENSHELL_TLS_DIR)/ 2>/dev/null || echo "  (not extracted — run 'make openshell-extract-tls')"
+
+openshell-delete:  ## Remove OpenShell and Agent Sandbox CRDs from current kubectl context
+	@echo "Removing OpenShell..."
+	helm uninstall openshell -n $(OPENSHELL_NAMESPACE) 2>/dev/null || true
+	kubectl delete namespace $(OPENSHELL_NAMESPACE) --ignore-not-found
+	@echo "Removing Agent Sandbox CRDs..."
+	$(eval SANDBOX_VER := $(shell curl -fsSL 'https://api.github.com/repos/kubernetes-sigs/agent-sandbox/releases/latest' | jq -r '.tag_name'))
+	kubectl delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(SANDBOX_VER)/manifest.yaml --ignore-not-found
+	@echo "✓ OpenShell removed."
+
+# ──────────────────────────────────────────────────────────────
+#  E2E tests (ephemeral kind cluster, self-contained)
+# ──────────────────────────────────────────────────────────────
+
+test-e2e:  ## Run OpenShell e2e tests in an ephemeral kind cluster (creates + tears down)
+	@echo "╔══════════════════════════════════════════════════════╗"
+	@echo "║  OpenShell E2E Test Suite                            ║"
+	@echo "╚══════════════════════════════════════════════════════╝"
+	@set -e; \
+	CLUSTER="swarmer-e2e-$$(date +%s)"; \
+	ORIG_CTX=$$(kubectl config current-context 2>/dev/null || echo ""); \
+	PF_PID=""; \
+	cleanup() { \
+	  echo ""; \
+	  echo "Tearing down e2e cluster $$CLUSTER..."; \
+	  [ -n "$$PF_PID" ] && kill "$$PF_PID" 2>/dev/null || true; \
+	  kind delete cluster --name "$$CLUSTER" 2>/dev/null || true; \
+	  [ -n "$$ORIG_CTX" ] && kubectl config use-context "$$ORIG_CTX" 2>/dev/null || true; \
+	  echo "✓ Cleanup complete."; \
+	}; \
+	trap cleanup EXIT; \
+	\
+	echo ""; \
+	echo "Step 1/8: Creating ephemeral kind cluster $$CLUSTER..."; \
+	kind create cluster --name "$$CLUSTER" --config k8s/kind-config-e2e.yaml; \
+	\
+	echo ""; \
+	echo "Step 2/8: Installing OpenShell $(OPENSHELL_VERSION)..."; \
+	$(MAKE) openshell-setup OPENSHELL_VERSION=$(OPENSHELL_VERSION) OPENSHELL_NAMESPACE=$(OPENSHELL_NAMESPACE) OPENSHELL_TLS_DIR=$(OPENSHELL_TLS_DIR); \
+	\
+	echo ""; \
+	echo "Step 3/8: Building swarmer image..."; \
+	$(MAKE) image-build SILENT=1; \
+	\
+	echo ""; \
+	echo "Step 4/8: Loading swarmer image into cluster $$CLUSTER..."; \
+	if [ "$(CONTAINER_CMD)" = "podman" ]; then \
+	  podman save $(IMAGE_REF) | kind load image-archive /dev/stdin --name "$$CLUSTER"; \
+	else \
+	  kind load docker-image $(IMAGE_REF) --name "$$CLUSTER"; \
+	fi; \
+	\
+	echo ""; \
+	echo "Step 5/8: Loading opencode agent image into cluster $$CLUSTER..."; \
+	$(CONTAINER_CMD) tag $(AGENT_IMAGE_OPENCODE) opencode:latest; \
+	if [ "$(CONTAINER_CMD)" = "podman" ]; then \
+	  podman save opencode:latest | kind load image-archive /dev/stdin --name "$$CLUSTER"; \
+	else \
+	  kind load docker-image opencode:latest --name "$$CLUSTER"; \
+	fi; \
+	\
+	echo ""; \
+	echo "Step 6/8: Deploying swarmer..."; \
+	$(MAKE) setup-secret 2>/dev/null || true; \
+	$(MAKE) k8s-deploy NAMESPACE=$(NAMESPACE); \
+	\
+	echo ""; \
+	echo "Step 7/8: Port-forwarding OpenShell gateway → localhost:17670..."; \
+	kubectl port-forward -n $(OPENSHELL_NAMESPACE) svc/openshell 17670:8080 & \
+	PF_PID=$$!; \
+	sleep 3; \
+	\
+	echo ""; \
+	echo "Step 8/8: Running e2e tests..."; \
+	OPENSHELL_GATEWAY_URL="localhost:17670" \
+	OPENSHELL_TLS_CA_PATH="$$(pwd)/$(OPENSHELL_TLS_DIR)/ca.crt" \
+	OPENSHELL_TLS_CERT_PATH="$$(pwd)/$(OPENSHELL_TLS_DIR)/tls.crt" \
+	OPENSHELL_TLS_KEY_PATH="$$(pwd)/$(OPENSHELL_TLS_DIR)/tls.key" \
+	OPENSHELL_CLUSTER_TYPE=kind \
+	OPENSHELL_NAMESPACE=agent-swarm-e2e-test \
+	OPENSHELL_AGENT_IMAGE="$(AGENT_IMAGE_OPENCODE)" \
+	python3 -m pytest tests/test_e2e_openshell.py -v --tb=short; \
+	\
+	echo ""; \
+	echo "╔══════════════════════════════════════════════════════╗"; \
+	echo "║  ✓ All e2e tests passed                              ║"; \
+	echo "╚══════════════════════════════════════════════════════╝"
 
 # ──────────────────────────────────────────────────────────────
 #  Help

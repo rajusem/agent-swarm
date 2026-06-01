@@ -230,6 +230,13 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   jira_url: "https://redhat.atlassian.net/browse/ACM-34583"
   pr: ~
   summary: "Implement openshell_client.py, migrate credentials from K8s Secrets to OpenShell Providers, rewrite _do_launch(), update chat_proxy.py and tui_ws.py to use exec relay, add sandbox_name to Session model with Alembic migration, and remove all dead K8s pod/PVC/Secret code."
+---
+- date: "2026-06-01"
+  title: "OpenShell kind cluster setup, Makefile targets, version sync, and e2e test harness"
+  jira: "ACM-34655"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-34655"
+  pr: ~
+  summary: "Add openshell-setup/delete/status Makefile targets for any kubectl context, test-e2e target creating ephemeral kind cluster with OpenShell, version sync in agent-containers update-deps, and mTLS cert extraction to auth/openshell/"
 
 # ──────────────────────────────────────────────────────────
 - date: "2026-05-14"

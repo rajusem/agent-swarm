@@ -737,6 +737,29 @@ All targets can be listed with `make help`. Run `make lint` to check code style 
 | `kind-connect` | Port-forward to the kind-deployed dashboard | |
 | `kind-delete` | Delete the kind cluster and all data | `KIND_CLUSTER` |
 
+#### OpenShell Gateway
+
+Targets operate on the **current `kubectl` context** — they work equally on kind or OpenShift.
+
+| Target | Description | Key Variables |
+|---|---|---|
+| `openshell-setup` | Install Agent Sandbox CRDs + OpenShell Helm chart (idempotent). Requires Helm 3.8+. | `OPENSHELL_VERSION` (default `0.0.51`), `OPENSHELL_NAMESPACE` |
+| `openshell-extract-tls` | Extract mTLS client certs from cluster to `auth/openshell/` | `OPENSHELL_NAMESPACE`, `OPENSHELL_TLS_DIR` |
+| `openshell-status` | Show Helm release, gateway pods, CRDs, and cert presence | |
+| `openshell-delete` | Remove OpenShell Helm release, namespace, and Agent Sandbox CRDs | |
+| `test-e2e` | Full e2e lifecycle in an ephemeral kind cluster: create → deploy OpenShell + swarmer → run `test_e2e_openshell.py` → teardown | `OPENSHELL_VERSION`, `AGENT_IMAGE_OPENCODE` |
+
+**Prerequisites for `openshell-setup`:**
+- Helm 3.8+ (`helm version` — upgrade at https://helm.sh/docs/intro/install/ if older)
+- Internet access to `ghcr.io` (Helm OCI chart) and `github.com` (Agent Sandbox CRD manifest)
+
+**mTLS certs** are written to `auth/openshell/` (covered by the existing `auth/` gitignore entry). Pass them to the SDK via:
+```
+OPENSHELL_TLS_CA_PATH=auth/openshell/ca.crt
+OPENSHELL_TLS_CERT_PATH=auth/openshell/tls.crt
+OPENSHELL_TLS_KEY_PATH=auth/openshell/tls.key
+```
+
 #### User Management
 
 | Target | Description | Key Variables |
