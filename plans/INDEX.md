@@ -231,6 +231,13 @@ Parent epic: [ACM-32892](https://redhat.atlassian.net/browse/ACM-32892) — Impl
   pr: "https://github.com/stolostron/agent-swarm/pull/95"
   summary: "Added request.session.clear() in not_authenticated_handler before redirecting to /login, eliminating ERR_TOO_MANY_REDIRECTS caused by stale authenticated=True session flag when K8s bearer token expires"
 ---
+- date: "2026-06-02"
+  title: "Limit concurrent agent containers to a configurable maximum"
+  jira: "ACM-34697"
+  jira_url: "https://redhat.atlassian.net/browse/ACM-34697"
+  pr: "https://github.com/stolostron/agent-swarm/pull/100"
+  summary: "Add MAX_CONCURRENT_AGENTS global cap with queued phase, FIFO queue processor, workspace capacity display, and per-session queue position"
+---
 - date: "2026-06-01"
   title: "Add .coderabbit.yaml with project-specific and prodsec review configuration"
   jira: "ACM-34654"

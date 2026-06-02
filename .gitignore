@@ -13,3 +13,4 @@ dist/
 .claude/
 libpod/tmp/pause.pid
 .mcp.json
+.deploy-defaults

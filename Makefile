@@ -176,11 +176,25 @@ k8s-deploy:  ## Deploy swarmer to the current kubectl context  (IMAGE_REF, NAMES
 	    read OAUTH_URL; \
 	  fi; \
 	fi; \
+	PREV_MAX=$$(grep '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null | cut -d= -f2); \
+	DEF_MAX=$${PREV_MAX:-5}; \
+	MAX_VAL="$(MAX_CONCURRENT_AGENTS)"; \
+	if [ -z "$$MAX_VAL" ] && [ "$(SILENT)" != "1" ]; then \
+	  printf "MAX_CONCURRENT_AGENTS [$$DEF_MAX]: "; \
+	  read MAX_INPUT; \
+	  MAX_VAL=$${MAX_INPUT:-$$DEF_MAX}; \
+	else \
+	  MAX_VAL=$${MAX_VAL:-$$DEF_MAX}; \
+	fi; \
+	grep -v '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null > .deploy-defaults.tmp || true; \
+	echo "MAX_CONCURRENT_AGENTS=$$MAX_VAL" >> .deploy-defaults.tmp; \
+	mv .deploy-defaults.tmp .deploy-defaults; \
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|REDIRECT_BASE_URL_VALUE||g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
-	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g" \
+	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g; \
+	     s|MAX_CONCURRENT_AGENTS_VALUE|$$MAX_VAL|g" \
 	  k8s/swarmer/deployment.yaml | kubectl apply -f -
 	# 4. Wait for rollout
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
@@ -245,10 +259,24 @@ openshift-deploy:  ## Deploy to OpenShift: Route + OAuthClient + app  (SWARMER_H
 	  printf "OPENSHIFT_OAUTH_URL (e.g. https://oauth-openshift.apps.example.com): "; \
 	  read OAUTH_URL; \
 	fi; \
+	PREV_MAX=$$(grep '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null | cut -d= -f2); \
+	DEF_MAX=$${PREV_MAX:-5}; \
+	MAX_VAL="$(MAX_CONCURRENT_AGENTS)"; \
+	if [ -z "$$MAX_VAL" ] && [ "$(SILENT)" != "1" ]; then \
+	  printf "MAX_CONCURRENT_AGENTS [$$DEF_MAX]: "; \
+	  read MAX_INPUT; \
+	  MAX_VAL=$${MAX_INPUT:-$$DEF_MAX}; \
+	else \
+	  MAX_VAL=$${MAX_VAL:-$$DEF_MAX}; \
+	fi; \
+	grep -v '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null > .deploy-defaults.tmp || true; \
+	echo "MAX_CONCURRENT_AGENTS=$$MAX_VAL" >> .deploy-defaults.tmp; \
+	mv .deploy-defaults.tmp .deploy-defaults; \
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
-	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g" \
+	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g; \
+	     s|MAX_CONCURRENT_AGENTS_VALUE|$$MAX_VAL|g" \
 	  k8s/openshift/deployment.yaml | kubectl apply -f -
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
 	@echo ""

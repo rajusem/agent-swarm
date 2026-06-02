@@ -15,7 +15,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from swarmer.database import Base
 
 # Valid phase values
-PHASES = ("idle", "pending", "running", "succeeded", "failed", "stopped")
+PHASES = ("idle", "queued", "pending", "running", "succeeded", "failed", "stopped")
 
 AGENT_TOOLS = ("opencode", "crush")
 
@@ -122,7 +122,7 @@ class Session(Base):
 
     @property
     def is_active(self) -> bool:
-        return self.phase in ("pending", "running")
+        return self.phase in ("queued", "pending", "running")
 
     @property
     def cron_label(self) -> str:
@@ -133,6 +133,7 @@ class Session(Base):
     def phase_badge_class(self) -> str:
         return {
             "idle": "secondary",
+            "queued": "info",
             "pending": "warning",
             "running": "success",
             "succeeded": "primary",
