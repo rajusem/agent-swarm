@@ -180,7 +180,8 @@ k8s-deploy:  ## Deploy swarmer to the current kubectl context  (IMAGE_REF, NAMES
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|REDIRECT_BASE_URL_VALUE||g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
-	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g" \
+	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g; \
+	     s|MAX_CONCURRENT_AGENTS_VALUE|$(or $(MAX_CONCURRENT_AGENTS),5)|g" \
 	  k8s/swarmer/deployment.yaml | kubectl apply -f -
 	# 4. Wait for rollout
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
@@ -248,7 +249,8 @@ openshift-deploy:  ## Deploy to OpenShift: Route + OAuthClient + app  (SWARMER_H
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
-	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g" \
+	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g; \
+	     s|MAX_CONCURRENT_AGENTS_VALUE|$(or $(MAX_CONCURRENT_AGENTS),5)|g" \
 	  k8s/openshift/deployment.yaml | kubectl apply -f -
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
 	@echo ""

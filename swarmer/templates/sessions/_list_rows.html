@@ -1,3 +1,18 @@
+{% if capacity and capacity.max > 0 %}
+<div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; margin-bottom:var(--pf-t--global--spacer--md);">
+  <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--subtle);">Cluster capacity:</span>
+  <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">{{ capacity.ws_active }} active</span></span>
+  {% if capacity.ws_queued > 0 %}
+  <span class="pf-v6-c-label pf-m-cyan"><span class="pf-v6-c-label__content">{{ capacity.ws_queued }} queued</span></span>
+  {% else %}
+  <span class="pf-v6-c-label pf-m-outline">
+    <span class="pf-v6-c-label__content">
+      {% if capacity.slots_available == 1 %}1 slot available{% else %}{{ capacity.slots_available }} slots available{% endif %}
+    </span>
+  </span>
+  {% endif %}
+</div>
+{% endif %}
 <table class="pf-v6-c-table pf-m-grid-md" role="grid">
   <thead class="pf-v6-c-table__thead">
     <tr class="pf-v6-c-table__tr" role="row">
@@ -28,7 +43,12 @@
         <span class="pf-v6-c-label pf-m-{{ mode_badge(s) }}"><span class="pf-v6-c-label__content">{{ mode_label(s) }}</span></span>
       </td>
       <td class="pf-v6-c-table__td" role="cell" data-label="Status">
-        {% if s.phase == 'running' %}
+        {% if s.phase == 'queued' %}
+          {% set _qpos = queue_positions.get(s.id) if queue_positions else None %}
+          <span class="pf-v6-c-label pf-m-cyan">
+            <span class="pf-v6-c-label__content">⏸ {% if _qpos %}#{{ _qpos[0] }} in queue{% else %}Queued{% endif %}</span>
+          </span>
+        {% elif s.phase == 'running' %}
           {% if s.mode == 'prompt' %}
             <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">▶ Running</span></span>
           {% else %}

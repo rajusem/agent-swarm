@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -213,6 +213,14 @@ async def session_list_rows(
     _avail = await asyncio.gather(
         *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
     )
+
+    queued_ids = [s.id for s in sessions if s.phase == "queued"]
+    queue_positions: dict[int, tuple[int, int]] = {}
+    for sid in queued_ids:
+        queue_positions[sid] = await _get_queue_position(sid, db)
+
+    capacity = await _get_capacity_summary(ws_id, db)
+
     return templates.TemplateResponse(
         request,
         "sessions/_list_rows.html",
@@ -222,6 +230,8 @@ async def session_list_rows(
             "mode_label": _session_mode_label,
             "mode_badge": _session_mode_badge_class,
             "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
+            "queue_positions": queue_positions,
+            "capacity": capacity,
         },
     )
 
@@ -443,6 +453,10 @@ async def session_detail(
     from swarmer.routers.mcp_servers import get_enabled_mcp_servers
     mcp_servers = await get_enabled_mcp_servers(ws_id, db, user_id=_current_user(request))
     prompt_sources = await _get_prompt_sources(ws_id, db)
+    queue_position = None
+    if session.phase == "queued":
+        queue_position = await _get_queue_position(session.id, db)
+    capacity = await _get_capacity_summary(ws_id, db)
     return templates.TemplateResponse(
         request,
         "sessions/detail.html",
@@ -456,6 +470,8 @@ async def session_detail(
             "mode_label": _session_mode_label(session),
             "mode_badge": _session_mode_badge_class(session),
             "status_detail": status_detail,
+            "queue_position": queue_position,
+            "capacity": capacity,
             "model_options": model_options,
             "repo_info": repo_info,
             "agent_tools": _tools,
@@ -586,10 +602,78 @@ async def _resolve_session_prompt(session: Session, db: AsyncSession) -> str:
     return resolved_prompt
 
 
+async def _count_running_sessions(db: AsyncSession) -> int:
+    """Count sessions globally with pods: pending or running only."""
+    result = await db.execute(
+        select(func.count()).select_from(Session).where(
+            Session.phase.in_(["pending", "running"])
+        )
+    )
+    return result.scalar_one()
+
+
+async def _get_queue_position(session_id: int, db: AsyncSession) -> tuple[int, int]:
+    """Return (1-based position, total queued) for a queued session, global FIFO by created_at."""
+    result = await db.execute(
+        select(Session.id, Session.created_at)
+        .where(Session.phase == "queued")
+        .order_by(Session.created_at)
+    )
+    rows = result.all()
+    total = len(rows)
+    for i, (sid, _) in enumerate(rows):
+        if sid == session_id:
+            return i + 1, total
+    return 0, total
+
+
+async def _get_capacity_summary(workspace_id: int, db: AsyncSession) -> dict:
+    """Return workspace-scoped capacity info for the sessions list display."""
+    global_running = await _count_running_sessions(db)
+
+    ws_active_result = await db.execute(
+        select(func.count()).select_from(Session).where(
+            Session.workspace_id == workspace_id,
+            Session.phase.in_(["pending", "running"]),
+        )
+    )
+    ws_active = ws_active_result.scalar_one()
+
+    ws_queued_result = await db.execute(
+        select(func.count()).select_from(Session).where(
+            Session.workspace_id == workspace_id,
+            Session.phase == "queued",
+        )
+    )
+    ws_queued = ws_queued_result.scalar_one()
+
+    max_agents = settings.max_concurrent_agents
+    if max_agents <= 0:
+        slots_available = None
+    else:
+        slots_available = max(0, max_agents - global_running)
+
+    return {
+        "ws_active": ws_active,
+        "slots_available": slots_available,
+        "ws_queued": ws_queued,
+        "max": max_agents,
+    }
+
+
 async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id: str = "") -> None:
     """Core launch logic shared by the HTTP endpoint and the background scheduler."""
     if user_id == "unknown":
         raise ValueError("Session expired — please log in again")
+
+    if settings.max_concurrent_agents > 0:
+        running = await _count_running_sessions(db)
+        if running >= settings.max_concurrent_agents:
+            session.phase = "queued"
+            session.status_detail = f"Waiting for capacity ({running}/{settings.max_concurrent_agents} active)"
+            await db.commit()
+            return
+
     import secrets as _secrets
     session.last_output = ""
 
@@ -838,6 +922,8 @@ async def session_launch(
 
     try:
         await _do_launch(session, ws, db, user_id=request.session.get("username", ""))
+        if session.phase == "queued":
+            flash(request, f"Session queued — {session.status_detail}", "info")
     except Exception as exc:
         log.error("session_launch failed for session %d: %s", sid, exc, exc_info=True)
         flash(request, f"Launch failed: {exc}", "danger")
@@ -864,6 +950,12 @@ async def session_stop(
     session = await db.get(Session, sid)
     if ws is None or session is None or session.workspace_id != ws_id:
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions", status_code=302)
+
+    if session.phase == "queued":
+        session.phase = "idle"
+        session.status_detail = ""
+        await db.commit()
+        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
 
     if session.pod_name:
         from swarmer import log_poller
@@ -999,7 +1091,11 @@ async def session_status(
     # The log_poller handles this for prompt mode; for TUI/server we do it here
     # on each poll so the JS handler can detect the running→Active transition.
     status_detail = session.status_detail
-    if session.pod_name and session.phase in ("pending", "running"):
+    queue_position = None
+
+    if session.phase == "queued":
+        queue_position = await _get_queue_position(session.id, db)
+    elif session.pod_name and session.phase in ("pending", "running"):
         live_phase, live_detail = await asyncio.to_thread(
             k8s.get_pod_status, session.pod_name, ws.k8s_namespace
         )
@@ -1017,6 +1113,7 @@ async def session_status(
             "session": session,
             "mode_label": _session_mode_label(session),
             "status_detail": status_detail,
+            "queue_position": queue_position,
         },
     )
 

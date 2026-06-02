@@ -145,7 +145,20 @@ Two background asyncio systems run during app lifespan:
 
 1. **Log Poller** (`log_poller.py`) — Per-session tasks that poll pod status and logs every 5s. Saves phase/detail/output to DB. Auto-cleans up completed prompt-mode pods (deletes pod + PVC if `persist=False`). Restarted for in-flight sessions on app restart via `_restart_prompt_pollers()`.
 
-2. **Cron Scheduler** (`scheduler.py`) — Single global task that checks every 30s for prompt-mode sessions with a due `cron_next_run`. Uses atomic `UPDATE … RETURNING` to claim sessions. On launch failure, resets phase to `idle` and advances `cron_next_run`.
+2. **Cron Scheduler + Queue Processor** (`scheduler.py`) — Single global task that checks every 30s. Each cycle:
+   - **Queue processor** (`_process_queue`): If the global concurrency cap is not reached, fetches sessions in `"queued"` phase ordered by `created_at` (FIFO) and launches them up to the available slot count. Applies a 2-minute in-memory cooldown when still at capacity to avoid tight retry loops.
+   - **Cron launcher**: Claims prompt-mode sessions with a due `cron_next_run` via atomic `UPDATE … RETURNING`. Respects the concurrency cap — does not over-claim. On launch failure, resets phase to `idle` and advances `cron_next_run`.
+
+### Concurrency Limiting
+
+`MAX_CONCURRENT_AGENTS` (default 5, configurable via env var) caps the number of simultaneously running agent pods (sessions in `pending` or `running` phase). When this limit is reached:
+
+- All new launches (manual, API, or scheduled) set `phase="queued"` and return immediately without creating a pod.
+- The queue processor re-evaluates every 2 minutes and launches queued sessions as capacity frees up.
+- Stopping a queued session (no pod exists) returns it directly to `"idle"` without any K8s cleanup.
+- Setting `MAX_CONCURRENT_AGENTS=0` disables the limit entirely.
+
+The sessions list shows a workspace-scoped capacity summary ("N active | N slots available | N queued") that refreshes every 3s via HTMX. Queued sessions show their global queue position ("Position N of M") on both the list and detail pages.
 
 ## Chat Proxy
 

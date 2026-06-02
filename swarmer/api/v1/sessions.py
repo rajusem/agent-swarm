@@ -266,6 +266,13 @@ async def stop_session(
 ):
     session = await _get_session_or_404(ws_id, sid, db)
 
+    if session.phase == "queued":
+        session.phase = "idle"
+        session.status_detail = ""
+        await db.commit()
+        await db.refresh(session)
+        return session
+
     if session.pod_name:
         from swarmer import log_poller
         log_poller.stop_log_poller(sid)

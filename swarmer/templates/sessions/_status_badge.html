@@ -1,6 +1,6 @@
-{# HTMX partial — polled every 5s while session is active #}
+{# HTMX partial — polled every 5s while session is active or queued #}
 <div id="session-status"
-  {% if session.phase in ('pending', 'running') or session.pod_name %}
+  {% if session.phase in ('queued', 'pending', 'running') or session.pod_name %}
   hx-get="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/status"
   hx-trigger="every 5s"
   hx-swap="outerHTML"
@@ -8,7 +8,11 @@
 
   <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap;">
 
-    {% if session.phase == 'running' %}
+    {% if session.phase == 'queued' %}
+      <span class="pf-v6-c-label pf-m-cyan">
+        <span class="pf-v6-c-label__content">⏸ Queued{% if queue_position %} · #{{ queue_position[0] }} of {{ queue_position[1] }}{% endif %}{% if status_detail %} · {{ status_detail }}{% endif %}</span>
+      </span>
+    {% elif session.phase == 'running' %}
       {% if session.mode == 'prompt' %}
         <span class="pf-v6-c-label pf-m-green"><span class="pf-v6-c-label__content">▶ Running</span></span>
       {% else %}

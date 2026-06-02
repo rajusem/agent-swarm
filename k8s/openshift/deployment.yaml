@@ -47,6 +47,8 @@ spec:
               value: "AGENT_IMAGE_OPENCODE_VALUE"
             - name: AGENT_IMAGE_CRUSH
               value: "AGENT_IMAGE_CRUSH_VALUE"
+            - name: MAX_CONCURRENT_AGENTS
+              value: "MAX_CONCURRENT_AGENTS_VALUE"
             - name: DEFAULT_AGENT_TOOL
               value: "opencode"
 

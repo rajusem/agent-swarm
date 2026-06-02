@@ -99,6 +99,7 @@ Use placeholder patterns instead: `<YOUR_PROJECT>`, `example.com`, `your-registr
 - All settings have sensible defaults for local development
 - Key env vars: `DATABASE_URL`, `SWARMER_SECRET_KEY`, `K8S_IN_CLUSTER`, `K8S_API_URL`, `OPENSHIFT_OAUTH_URL`
 - Agent images: `AGENT_IMAGE_OPENCODE`, `AGENT_IMAGE_CRUSH`, `CRUSH_VERSION`, `DEFAULT_AGENT_TOOL`
+- Concurrency: `MAX_CONCURRENT_AGENTS` (default 5) — global cap on concurrent agent pods; set to 0 to disable
 - Container runtime defaults to `podman` (override with `CONTAINER_CMD=docker`)
 
 ### Testing
@@ -144,6 +145,8 @@ Use placeholder patterns instead: `<YOUR_PROJECT>`, `example.com`, `your-registr
 15. **`image-build` requires `sync-images`**: The `image-build` Makefile target depends on `sync-images`, which reads `../agent-containers/.push-defaults`. If that file doesn't exist, the build fails. Use `SILENT=1` to skip the interactive version prompt.
 
 16. **Container image runs as non-root**: The Containerfile uses UBI10 `python-312-minimal` with UID 1001. Directories `/data` and `/auth` are created as root then ownership dropped. PVCs must be group-0 writable for the non-root user.
+
+17. **Concurrency limit queues, not rejects**: When `MAX_CONCURRENT_AGENTS` is reached, `_do_launch()` sets `phase="queued"` and returns without creating a pod — it does NOT raise an exception. The queue processor in `scheduler.py` re-evaluates every 2 minutes (with a 2-minute in-memory cooldown). Stopping a queued session (no pod exists) returns it to `"idle"` not `"stopped"`, and skips all K8s cleanup. The `"queued"` phase is included in `is_active`, so the session is protected from re-launch and editing while waiting.
 
 ## Personal configuration
 
