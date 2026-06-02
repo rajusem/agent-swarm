@@ -714,10 +714,17 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
             log.warning("Session MCP secret creation failed", exc_info=True)
             _mcp_secret_name = ""
 
-    session.k8s_secret_names = ",".join(secret_names)
-
     # Resolve prompt using layered composition
     resolved_prompt = await _resolve_session_prompt(session, db)
+
+    if settings.openshell_enabled:
+        await _do_launch_openshell(
+            session, ws, db, oc_secret, mcp_servers,
+            has_adc, has_gemini, resolved_prompt,
+        )
+        return
+
+    session.k8s_secret_names = ",".join(secret_names)
 
     pod_spec = k8s_sess.build_session_pod(
         session=session,
@@ -752,6 +759,134 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
     if session.mode in ("prompt", "server"):
         from swarmer import log_poller
         log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace, session.mode)
+
+
+async def _do_launch_openshell(
+    session: Session,
+    ws: Workspace,
+    db: AsyncSession,
+    oc_secret,
+    mcp_servers,
+    has_adc: bool,
+    has_gemini: bool,
+    resolved_prompt: str,
+) -> None:
+    """Launch a session via OpenShell sandbox (replaces K8s pod lifecycle)."""
+    from swarmer import openshell_client as oc
+    from swarmer import log_poller
+
+    tool = get_tool(session.agent_tool)
+    model = session.model or tool.get_default_model(has_adc, has_gemini)
+
+    # 1. Create OpenShell Provider (injects credentials as env vars into sandbox)
+    github_pat = session.github_pat if session.github_pat else None
+    env_vars = await oc.create_provider(session, oc_secret, github_pat, mcp_servers or [])
+
+    # 2. Create sandbox with the agent image
+    image = tool.get_image() or settings.agent_image
+    sandbox_ref = await oc.create_sandbox(image, env_vars, "")
+    session.sandbox_name = sandbox_ref.name
+    session.phase = "pending"
+    await db.commit()  # protect sandbox from GC before slow setup steps
+
+    # 3. Write agent config (all files: .json + gitconfig)
+    config_data = tool.build_config_data(oc_secret, mcp_servers=mcp_servers)
+    for filename, content in config_data.items():
+        if filename.endswith(".json"):
+            await oc.write_agent_config(sandbox_ref.name, session.agent_tool, content)
+        elif filename == "gitconfig":
+            await oc.write_file(sandbox_ref.name, "/sandbox/.gitconfig", content)
+
+    # 4. Clone repos
+    if session.repos:
+        await oc.clone_repos(sandbox_ref.name, session.repos)
+
+    # 5. Write AGENTS.md (prompt mode uses it via startup script; TUI/server write it here)
+    if resolved_prompt and session.mode in ("tui", "server"):
+        await oc.write_agents_md(sandbox_ref.name, resolved_prompt)
+
+    # 6. Build full startup script matching K8s command chain:
+    #    mcp_config + safe_dir + share + model + agent_md + branch + main_cmd
+    mcp_config_setup = tool.build_mcp_config_cmd(mcp_servers) if mcp_servers is not None else ""
+
+    safe_dir_setup = ""
+    if session.repos:
+        safe_dir_setup = "git config --global --add safe.directory '*' && "
+
+    share_setup = tool.build_share_setup_cmd()
+    model_setup = tool.build_model_setup_cmd(model)
+
+    agent_md_setup = ""
+    if resolved_prompt and session.mode == "prompt":
+        agent_md_setup = (
+            f"printf '%s' {shlex.quote(resolved_prompt)} > /sandbox/AGENTS.md && "
+        )
+
+    branch_setup = ""
+    if session.repos and getattr(session, "working_branch", ""):
+        branch = shlex.quote(session.working_branch)
+        for repo in session.repos:
+            lp = shlex.quote(repo.local_path)
+            branch_setup += (
+                f"cd /sandbox/{lp} && "
+                f"git checkout -b {branch} 2>/dev/null || git checkout {branch} && "
+                f"cd /sandbox && "
+            )
+
+    main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+    full_script = (
+        mcp_config_setup
+        + safe_dir_setup
+        + share_setup
+        + model_setup
+        + agent_md_setup
+        + branch_setup
+        + main_cmd
+        + " 2>&1 | tee /sandbox/.agent.log"
+    )
+
+    session.phase = "running"
+    session.run_started_at = datetime.utcnow()
+    session.run_completed_at = None
+    await db.commit()
+
+    # 7. Start agent in background (exec blocks until agent finishes)
+    asyncio.create_task(
+        _run_openshell_agent(session.id, sandbox_ref.name, full_script, session.mode),
+        name=f"openshell-agent-{session.id}",
+    )
+
+    # 8. Start log poller
+    if session.mode in ("prompt", "server"):
+        log_poller.start_openshell_log_poller(session.id, sandbox_ref.name, session.mode)
+
+
+async def _run_openshell_agent(session_id: int, sandbox_name: str, script: str, mode: str) -> None:
+    """Background task: exec agent in sandbox, update session phase on completion."""
+    from swarmer import openshell_client as oc
+    from swarmer.database import get_db
+    from swarmer.models.session import Session
+
+    success = False
+    try:
+        await oc.start_agent(sandbox_name, ["sh", "-c", script])
+        success = True
+    except Exception:
+        log.exception("OpenShell agent exec failed for session %d", session_id)
+
+    async for db in get_db():
+        session = await db.get(Session, session_id)
+        if session:
+            session.phase = "succeeded" if success else "failed"
+            session.run_completed_at = datetime.utcnow()
+            await db.commit()
+        break
+
+    if mode == "prompt":
+        try:
+            await oc.delete_sandbox(sandbox_name)
+        except Exception:
+            log.warning("OpenShell sandbox cleanup failed for session %d", session_id)
 
 
 @router.post(

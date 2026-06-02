@@ -30,7 +30,11 @@ class OpenCodeStrategy(AgentToolStrategy):
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
             "disabled_providers": ["opencode"],
-            "lsp": True,
+            "lsp": {
+                "go": {"command": ["gopls"]},
+                "python": {"command": ["pyright-langserver", "--stdio"]},
+                "make": {"command": ["make-ls"]},
+            },
             "server": {
                 "hostname": "0.0.0.0",
                 "port": 4096,
@@ -59,7 +63,7 @@ class OpenCodeStrategy(AgentToolStrategy):
         }
 
     def get_config_mount_path(self) -> str:
-        return "/workspace/.config/opencode"
+        return "/sandbox/.config/opencode"
 
     def get_secret_name(self) -> str:
         return "opencode-secret"
@@ -74,17 +78,17 @@ class OpenCodeStrategy(AgentToolStrategy):
         return 4096
 
     def get_share_dir(self) -> str:
-        return "/workspace/.local/share/opencode"
+        return "/sandbox/.local/share/opencode"
 
     def build_share_setup_cmd(self) -> str:
         return (
-            "mkdir -p /workspace/.opencode /workspace/.local/share && "
-            "rm -rf /workspace/.local/share/opencode && "
-            "ln -sf /workspace/.opencode /workspace/.local/share/opencode && "
-            "find /workspace/.opencode -name '*.db-wal' -o -name '*.db-shm' | xargs rm -f 2>/dev/null; "
+            "mkdir -p /sandbox/.opencode /sandbox/.local/share && "
+            "rm -rf /sandbox/.local/share/opencode && "
+            "ln -sf /sandbox/.opencode /sandbox/.local/share/opencode && "
+            "find /sandbox/.opencode -name '*.db-wal' -o -name '*.db-shm' | xargs rm -f 2>/dev/null; "
             "[ -n \"$GOOGLE_API_KEY\" ] && "
             "printf '{\"google\":{\"type\":\"api\",\"key\":\"%s\"}}' \"$GOOGLE_API_KEY\" "
-            "> /workspace/.opencode/auth.json; "
+            "> /sandbox/.opencode/auth.json; "
         )
 
     def build_model_setup_cmd(self, model: str) -> str:
@@ -97,9 +101,9 @@ class OpenCodeStrategy(AgentToolStrategy):
             "variant": {f"{provider_id}/{model_id}": "default"},
         })
         return (
-            "mkdir -p /workspace/.local/state/opencode && "
+            "mkdir -p /sandbox/.local/state/opencode && "
             f"printf '%s' {shlex.quote(model_json)} "
-            "> /workspace/.local/state/opencode/model.json && "
+            "> /sandbox/.local/state/opencode/model.json && "
         )
 
     def build_main_cmd(self, session, model: str, resolved_prompt: str = "") -> str:
@@ -162,8 +166,8 @@ class OpenCodeStrategy(AgentToolStrategy):
         model_json = json.dumps(model_data)
         cmd = [
             "sh", "-c",
-            "mkdir -p /workspace/.local/state/opencode && "
-            f"printf '%s' {shlex.quote(model_json)} > /workspace/.local/state/opencode/model.json",
+            "mkdir -p /sandbox/.local/state/opencode && "
+            f"printf '%s' {shlex.quote(model_json)} > /sandbox/.local/state/opencode/model.json",
         ]
         v1 = client.CoreV1Api()
         stream(
@@ -242,7 +246,11 @@ class OpenCodeStrategy(AgentToolStrategy):
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
             "disabled_providers": ["opencode"],
-            "lsp": True,
+            "lsp": {
+                "go": {"command": ["gopls"]},
+                "python": {"command": ["pyright-langserver", "--stdio"]},
+                "make": {"command": ["make-ls"]},
+            },
             "server": {
                 "hostname": "0.0.0.0",
                 "port": 4096,

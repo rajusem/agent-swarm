@@ -89,7 +89,7 @@ class CrushStrategy(AgentToolStrategy):
         }
 
     def get_config_mount_path(self) -> str:
-        return "/workspace/.config/crush"
+        return "/sandbox/.config/crush"
 
     def get_secret_name(self) -> str:
         return "crush-secret"
@@ -105,9 +105,9 @@ class CrushStrategy(AgentToolStrategy):
 
     def build_share_setup_cmd(self) -> str:
         return (
-            "mkdir -p /workspace/.crush $HOME/.local/share && "
+            "mkdir -p /sandbox/.crush $HOME/.local/share && "
             "rm -rf $HOME/.local/share/crush && "
-            "ln -sf /workspace/.crush $HOME/.local/share/crush && "
+            "ln -sf /sandbox/.crush $HOME/.local/share/crush && "
         )
 
     def build_model_setup_cmd(self, model: str) -> str:

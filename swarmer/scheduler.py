@@ -9,33 +9,42 @@ from sqlalchemy.orm import selectinload
 log = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 30.0
+
 _scheduler_task: asyncio.Task | None = None
+_gc_task: asyncio.Task | None = None
 
 
 def start_scheduler() -> None:
-    global _scheduler_task
+    global _scheduler_task, _gc_task
     stop_scheduler()
     _scheduler_task = asyncio.create_task(
         _scheduler_loop(),
         name="cron-scheduler",
     )
+    _gc_task = asyncio.create_task(
+        _sandbox_gc_loop(),
+        name="sandbox-gc",
+    )
 
 
 def stop_scheduler() -> None:
-    global _scheduler_task
-    if _scheduler_task and not _scheduler_task.done():
-        _scheduler_task.cancel()
+    global _scheduler_task, _gc_task
+    for task in (_scheduler_task, _gc_task):
+        if task and not task.done():
+            task.cancel()
     _scheduler_task = None
+    _gc_task = None
 
 
 async def shutdown() -> None:
-    task = _scheduler_task
+    tasks = [_scheduler_task, _gc_task]
     stop_scheduler()
-    if task:
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+    for task in tasks:
+        if task:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 async def _scheduler_loop() -> None:
@@ -49,6 +58,67 @@ async def _scheduler_loop() -> None:
                 log.exception("scheduler: error in check_and_launch cycle")
     except asyncio.CancelledError:
         raise
+
+
+async def _sandbox_gc_loop() -> None:
+    from swarmer.config import settings
+    interval = settings.sandbox_gc_interval
+    log.warning("sandbox-gc: started, running every %ds", interval)
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await _collect_orphaned_sandboxes()
+            except Exception:
+                log.exception("sandbox-gc: error in collection cycle")
+    except asyncio.CancelledError:
+        raise
+
+
+async def _collect_orphaned_sandboxes() -> None:
+    """Delete OpenShell sandboxes that have no corresponding active DB session."""
+    from swarmer.config import settings
+    from swarmer.database import get_db
+    from swarmer.models.session import Session
+
+    if not settings.openshell_enabled:
+        return
+
+    try:
+        from swarmer.openshell_client import _get_client
+        client = _get_client()
+        live_sandboxes = client.list(limit=200)
+    except Exception:
+        log.exception("sandbox-gc: failed to list sandboxes from gateway")
+        return
+
+    if not live_sandboxes:
+        return
+
+    live_names = {s.name for s in live_sandboxes}
+
+    # Find which sandbox names belong to active sessions in the DB.
+    async for db in get_db():
+        result = await db.execute(
+            select(Session.sandbox_name).where(
+                Session.sandbox_name.isnot(None),
+                Session.phase.in_(["pending", "running"]),
+            )
+        )
+        active_names = {row[0] for row in result.fetchall() if row[0]}
+        break
+
+    orphans = live_names - active_names
+    if not orphans:
+        return
+
+    log.warning("sandbox-gc: found %d orphaned sandbox(es): %s", len(orphans), orphans)
+    for name in orphans:
+        try:
+            client.delete(name)
+            log.warning("sandbox-gc: deleted orphaned sandbox %r", name)
+        except Exception:
+            log.exception("sandbox-gc: failed to delete sandbox %r", name)
 
 
 async def _check_and_launch() -> None:

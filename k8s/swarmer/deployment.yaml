@@ -49,10 +49,25 @@ spec:
               value: "AGENT_IMAGE_OPENCODE_VALUE"
             - name: AGENT_IMAGE_CRUSH
               value: "AGENT_IMAGE_CRUSH_VALUE"
+            - name: OPENSHELL_ENABLED
+              value: "true"
+            - name: OPENSHELL_GATEWAY_URL
+              value: "openshell.openshell.svc.cluster.local:8080"
+            - name: OPENSHELL_TLS_CA_PATH
+              value: "/etc/openshell-tls/ca.crt"
+            - name: OPENSHELL_TLS_CERT_PATH
+              value: "/etc/openshell-tls/tls.crt"
+            - name: OPENSHELL_TLS_KEY_PATH
+              value: "/etc/openshell-tls/tls.key"
+            - name: SANDBOX_GC_INTERVAL
+              value: "600"
 
           volumeMounts:
             - name: swarmer-data
               mountPath: /data
+            - name: openshell-tls
+              mountPath: /etc/openshell-tls
+              readOnly: true
 
           resources:
             requests:
@@ -73,3 +88,6 @@ spec:
         - name: swarmer-data
           persistentVolumeClaim:
             claimName: swarmer-data
+        - name: openshell-tls
+          secret:
+            secretName: openshell-tls

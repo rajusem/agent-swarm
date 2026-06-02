@@ -1,11 +1,13 @@
 import logging
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +22,26 @@ _AsyncSessionLocal: async_sessionmaker | None = None
 
 def init_db(database_url: str) -> None:
     global _engine, _AsyncSessionLocal
-    _engine = create_async_engine(database_url, echo=False)
+    pool_kwargs = {}
+    if database_url.startswith("sqlite"):
+        # NullPool: each session gets its own connection opened fresh and
+        # released immediately on close — eliminates concurrent-write lock
+        # contention between the scheduler, log pollers, and HTTP handlers.
+        pool_kwargs["poolclass"] = NullPool
+    _engine = create_async_engine(database_url, echo=False, **pool_kwargs)
+    if database_url.startswith("sqlite"):
+        # Set pragmas on every new connection (outside any transaction).
+        # WAL mode allows concurrent readers alongside a writer.
+        # busy_timeout=30000 ms makes SQLite retry writes for up to 30 s
+        # instead of immediately raising "database is locked".
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_conn, _record):
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=30000")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.close()
+
     _AsyncSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
 
 
@@ -64,6 +85,7 @@ async def migrate_db() -> None:
         "ALTER TABLE mcp_servers ADD COLUMN shared BOOLEAN NOT NULL DEFAULT 1",
         "ALTER TABLE sessions ADD COLUMN prompt_id INTEGER REFERENCES workspace_prompts(id) ON DELETE SET NULL",
         "ALTER TABLE sessions DROP COLUMN resume",
+        "ALTER TABLE sessions ADD COLUMN sandbox_name VARCHAR(255)",
     ]
     async with _engine.begin() as conn:
         for stmt in migrations:

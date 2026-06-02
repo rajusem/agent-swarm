@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     openshell_tls_ca_path: str = ""
     openshell_tls_cert_path: str = ""
     openshell_tls_key_path: str = ""
+    openshell_bearer_token: str = ""
     openshell_enabled: bool = False
+    sandbox_gc_interval: int = 600  # seconds between sandbox GC runs
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

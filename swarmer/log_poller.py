@@ -98,6 +98,51 @@ async def _auto_cleanup_pod(session_id: int, pod_name: str, namespace: str) -> N
         log.exception("log_poller: pod_name clear failed for session %d", session_id)
 
 
+def start_openshell_log_poller(session_id: int, sandbox_name: str, mode: str) -> None:
+    stop_log_poller(session_id)
+    task = asyncio.create_task(
+        _poll_openshell_loop(session_id, sandbox_name, mode),
+        name=f"log-poller-{session_id}",
+    )
+    _poller_tasks[session_id] = task
+    task.add_done_callback(lambda t: _poller_tasks.pop(session_id, None))
+
+
+async def _poll_openshell_loop(session_id: int, sandbox_name: str, mode: str) -> None:
+    from swarmer import openshell_client as oc
+
+    client = oc._get_client()
+    try:
+        while True:
+            try:
+                result = await oc.exec_command(sandbox_name, ["cat", "/sandbox/.agent.log"], client)
+                logs = result.stdout if result and hasattr(result, "stdout") else ""
+                if logs:
+                    async for db in _get_session_db():
+                        from swarmer.models.session import Session
+                        session = await db.get(Session, session_id)
+                        if session is None:
+                            return
+                        if session.phase in _TERMINAL_PHASES:
+                            return
+                        session.last_output = logs
+                        await db.commit()
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(_POLL_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("openshell log_poller: unexpected error for session %d", session_id)
+
+
+async def _get_session_db():
+    from swarmer.database import get_db
+    async for db in get_db():
+        yield db
+
+
 async def _save_to_db(session_id: int, phase: str, detail: str, logs: str) -> None:
     from datetime import datetime
 

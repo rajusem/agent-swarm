@@ -1,29 +1,43 @@
 """
 OpenShell sandbox client wrapper for AgentSwarm session lifecycle.
 
-Wraps the OpenShell Python SDK (pip install openshell) to provide async
-functions for sandbox create/delete, credential Provider creation (replaces
-K8s Secrets), and exec operations for git clone, config injection, and agent
-startup. All exec paths target /sandbox/ — never /workspace/.
+Wraps the synchronous OpenShell gRPC SDK (pip install openshell) and exposes
+async helpers by running blocking calls in the default thread-pool executor.
+
+Credential injection: env vars go directly into SandboxSpec.environment —
+there is no provider_create RPC in this SDK version.
 """
+import asyncio
+import functools
 import logging
+import pathlib
+import shlex
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 
+def _run(fn, *args, **kwargs):
+    """Run a blocking SDK call in the thread-pool and await it."""
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+
+
 def _get_client():
-    """Return a configured SandboxClient from settings."""
     from swarmer.config import settings
     from openshell import SandboxClient, TlsConfig
     tls = None
     if settings.openshell_tls_ca_path:
         tls = TlsConfig(
-            ca_path=settings.openshell_tls_ca_path,
-            cert_path=settings.openshell_tls_cert_path,
-            key_path=settings.openshell_tls_key_path,
+            ca_path=pathlib.Path(settings.openshell_tls_ca_path),
+            cert_path=pathlib.Path(settings.openshell_tls_cert_path),
+            key_path=pathlib.Path(settings.openshell_tls_key_path),
         )
-    return SandboxClient(settings.openshell_gateway_url, tls=tls)
+    return SandboxClient(
+        settings.openshell_gateway_url,
+        tls=tls,
+        bearer_token=settings.openshell_bearer_token or None,
+    )
 
 
 def get_client(
@@ -36,7 +50,11 @@ def get_client(
     from openshell import SandboxClient, TlsConfig
     tls = None
     if tls_ca_path:
-        tls = TlsConfig(ca_path=tls_ca_path, cert_path=tls_cert_path, key_path=tls_key_path)
+        tls = TlsConfig(
+            ca_path=pathlib.Path(tls_ca_path),
+            cert_path=pathlib.Path(tls_cert_path),
+            key_path=pathlib.Path(tls_key_path),
+        )
     return SandboxClient(gateway_url, tls=tls)
 
 
@@ -46,16 +64,13 @@ async def create_provider(
     github_pat,
     mcp_servers: list,
     client=None,
-):
-    """Create an OpenShell Provider from DB credentials (replaces K8s Secrets).
+) -> dict[str, str]:
+    """Collect credentials from DB into an env-var dict (replaces provider_create RPC).
 
-    Credential injection path: AgentSwarm DB -> OpenShell Provider via mTLS.
-    K8s Secret functions (create_session_agent_secret, create_session_pat_secret,
-    create_session_mcp_secret) are never called from this path.
+    The OpenShell SDK injects credentials via SandboxSpec.environment, not
+    via a separate Provider object. This function returns a plain dict that
+    create_sandbox passes into the spec.
     """
-    if client is None:
-        client = _get_client()
-
     env_vars: dict[str, str] = {}
 
     if workspace_secret:
@@ -77,8 +92,7 @@ async def create_provider(
             for k, v in config.items():
                 env_vars[k] = str(v)
 
-    provider_spec = {"env": env_vars}
-    return await client.provider_create(provider_spec)
+    return env_vars
 
 
 async def create_provider_from_env(
@@ -86,10 +100,8 @@ async def create_provider_from_env(
     anthropic_api_key: str,
     github_pat: str,
     client=None,
-) -> str:
-    """Create a Provider from explicit credential values; returns provider_id."""
-    if client is None:
-        client = _get_client()
+) -> dict[str, str]:
+    """Build env-var dict from explicit credential values (used by e2e tests)."""
     env_vars: dict[str, str] = {}
     if google_api_key:
         env_vars["GOOGLE_API_KEY"] = google_api_key
@@ -97,53 +109,56 @@ async def create_provider_from_env(
         env_vars["ANTHROPIC_API_KEY"] = anthropic_api_key
     if github_pat:
         env_vars["GITHUB_PAT"] = github_pat
-    ref = await client.provider_create({"env": env_vars})
-    return ref.id
+    return env_vars
 
 
 async def create_sandbox(
     image: str,
-    provider_id: str | None,
+    env_vars: dict[str, str] | None,
     policy_yaml: str,
     client=None,
 ):
     """Create an OpenShell sandbox and wait for it to be ready.
 
-    Returns the SandboxRef. Caller stores ref.name as session.sandbox_name.
-    No PVCs are created — PVCs are gone in the OpenShell model.
+    Credentials are injected via SandboxSpec.environment (no Provider RPC).
+    Returns the SandboxRef; caller stores ref.name as session.sandbox_name.
     """
+    from openshell._proto import openshell_pb2
     if client is None:
         client = _get_client()
-    spec: dict[str, Any] = {
-        "image": image,
-        "policy": policy_yaml,
-    }
-    if provider_id:
-        spec["provider_id"] = provider_id
-    ref = await client.create(spec)
-    await client.wait_ready(ref.name)
+
+    spec = openshell_pb2.SandboxSpec()
+    if image:
+        spec.template.image = image
+    for k, v in (env_vars or {}).items():
+        spec.environment[k] = v
+
+    ref = await _run(client.create, spec=spec)
+    await _run(client.wait_ready, ref.name)
     return ref
 
 
 async def delete_sandbox(sandbox_name: str, client=None) -> None:
-    """Delete an OpenShell sandbox.
-
-    No PVC or K8s Secret cleanup needed — the Provider is cleaned up by
-    the gateway and there are no PVCs in the OpenShell model.
-    """
+    """Delete an OpenShell sandbox."""
     if client is None:
         client = _get_client()
-    await client.delete(sandbox_name)
+    await _run(client.delete, sandbox_name)
+
+
+async def _sandbox_id(sandbox_name: str, client) -> str:
+    """Resolve sandbox name → id (needed by the exec RPC)."""
+    ref = await _run(client.get, sandbox_name)
+    return ref.id
 
 
 async def clone_repos(sandbox_name: str, repos: list, client=None) -> None:
-    """Clone git repos into /sandbox/ via exec (one exec call per repo)."""
+    """Clone git repos into /sandbox/ via exec (one call per repo)."""
     if client is None:
         client = _get_client()
+    sid = await _sandbox_id(sandbox_name, client)
     for repo in repos:
         target = f"/sandbox/{repo.local_path}"
-        cmd = ["git", "clone", repo.url, target]
-        await client.exec(sandbox_name, cmd)
+        await _run(client.exec, sid, ["git", "clone", repo.url, target])
 
 
 async def write_agent_config(
@@ -155,27 +170,40 @@ async def write_agent_config(
     """Write agent config JSON to /sandbox/.config/{tool_name}/."""
     if client is None:
         client = _get_client()
+    sid = await _sandbox_id(sandbox_name, client)
     config_dir = f"/sandbox/.config/{tool_name}"
     config_path = f"{config_dir}/{tool_name}.json"
     script = f"mkdir -p {config_dir} && cat > {config_path} << 'EOCFG'\n{config_json}\nEOCFG"
-    await client.exec(sandbox_name, ["sh", "-c", script])
+    await _run(client.exec, sid, ["sh", "-c", script])
 
 
 async def write_agents_md(sandbox_name: str, content: str, client=None) -> None:
     """Write content to /sandbox/AGENTS.md."""
     if client is None:
         client = _get_client()
+    sid = await _sandbox_id(sandbox_name, client)
     script = f"cat > /sandbox/AGENTS.md << 'EOMD'\n{content}\nEOMD"
-    await client.exec(sandbox_name, ["sh", "-c", script])
+    await _run(client.exec, sid, ["sh", "-c", script])
+
+
+async def write_file(sandbox_name: str, path: str, content: str, client=None) -> None:
+    """Write arbitrary content to a file path inside the sandbox."""
+    if client is None:
+        client = _get_client()
+    sid = await _sandbox_id(sandbox_name, client)
+    script = f"mkdir -p {shlex.quote(str(pathlib.Path(path).parent))} && cat > {shlex.quote(path)} << 'EOFILE'\n{content}\nEOFILE"
+    await _run(client.exec, sid, ["sh", "-c", script])
 
 
 async def start_agent(sandbox_name: str, cmd: list[str], client=None) -> None:
-    """Start the agent process inside the sandbox via exec."""
+    """Start the agent process inside the sandbox via exec (blocks until done)."""
     if client is None:
         client = _get_client()
-    await client.exec(sandbox_name, cmd)
+    sid = await _sandbox_id(sandbox_name, client)
+    await _run(client.exec, sid, cmd)
 
 
 async def exec_command(sandbox_name: str, cmd: list[str], client) -> Any:
-    """Execute a command inside the sandbox and return the result (has .stdout, .stderr, .exit_code)."""
-    return await client.exec(sandbox_name, cmd)
+    """Execute a command inside the sandbox; returns ExecResult (.stdout, .stderr, .exit_code)."""
+    sid = await _sandbox_id(sandbox_name, client)
+    return await _run(client.exec, sid, cmd)
