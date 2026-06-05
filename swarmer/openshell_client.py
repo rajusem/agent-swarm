@@ -486,6 +486,49 @@ async def start_agent(sandbox_name: str, cmd: list[str], client=None) -> None:
     await asyncio.to_thread(_do_start)
 
 
+async def read_opencode_response(sandbox_name: str, client=None) -> str:
+    """Read the last assistant message from OpenCode's SQLite DB.
+
+    OpenCode stores conversation history in /sandbox/.opencode/opencode.db rather
+    than writing to stdout. This extracts the most recent assistant text parts.
+    """
+    if client is None:
+        client = _get_client()
+
+    reader = b"""
+import sqlite3, json, sys
+db = '/sandbox/.opencode/opencode.db'
+try:
+    conn = sqlite3.connect(db)
+    conn.execute('PRAGMA wal_checkpoint(FULL)')
+    rows = conn.execute('''
+        SELECT p.data FROM part p
+        JOIN message m ON p.message_id = m.id
+        WHERE json_extract(m.data, '$.role') = 'assistant'
+          AND json_extract(p.data, '$.type') = 'text'
+        ORDER BY p.time_created DESC LIMIT 5
+    ''').fetchall()
+    texts = [json.loads(r[0]).get('text', '') for r in rows if r[0]]
+    result = '\\n'.join(t for t in reversed(texts) if t.strip())
+    print(result[:8000] if result else '', end='')
+    conn.close()
+except Exception as e:
+    print('', end='')
+"""
+
+    def _do_read():
+        try:
+            sid = client.get(sandbox_name).id
+            # Write the reader script via stdin then execute it
+            client.exec(sid, ["sh", "-c", "cat > /tmp/_oc_read.py"], stdin=reader)
+            result = client.exec(sid, ["python3", "/tmp/_oc_read.py"])
+            return (result.stdout or "").strip()
+        except Exception:
+            return ""
+
+    return await asyncio.to_thread(_do_read)
+
+
 async def exec_command(sandbox_name: str, cmd: list[str], client) -> Any:
     """Execute a command inside the sandbox; returns ExecResult (.stdout, .stderr, .exit_code)."""
     if client is None:

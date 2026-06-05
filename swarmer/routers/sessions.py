@@ -1071,8 +1071,11 @@ async def _run_openshell_agent(
             exit_code = getattr(result, "exit_code", None)
             stdout = getattr(result, "stdout", "") or ""
             stderr = getattr(result, "stderr", "") or ""
-            output = stdout or stderr
             phase = "succeeded" if exit_code == 0 else "failed"
+
+            # OpenCode stores the response in its SQLite DB, not stdout.
+            # Extract the last assistant message after the run completes.
+            output = await openshell_client.read_opencode_response(sandbox_name) or stdout or stderr
 
             new_sandbox_name: str | None = sandbox_name
             if phase == "succeeded":
