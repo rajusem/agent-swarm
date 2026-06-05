@@ -869,6 +869,7 @@ async def _do_launch_openshell(
     # Mark pending and commit — HTTP handler returns immediately; browser unblocks.
     session.phase = "pending"
     session.last_output = ""
+    session.status_detail = ""   # clear stale status from any previous run
     session.run_started_at = datetime.utcnow()
     session.run_completed_at = None
     await db.commit()
@@ -1023,15 +1024,18 @@ async def _setup_openshell_sandbox(
         if agents_md:
             await openshell_client.write_agents_md(sandbox_name=ref.name, content=agents_md)
 
-        # Pre-flight probe: run a no-op opencode command so the supervisor observes
+        # Pre-flight probe: run a quick opencode command so the supervisor observes
         # the denied AI API connections and generates draft policy chunks.
         # Then approve expected chunks so the actual agent run can reach the API.
         # Without this probe, approval runs before any chunks exist.
         if mode == "prompt":
             import asyncio as _asyncio
+            await _update_db(status_detail="Configuring network policy…")
             _probe_cmd = f"HOME=/sandbox opencode run --model {shlex.quote(model)} '' 2>/dev/null; true"
             try:
-                await openshell_client.exec_command(ref.name, ["sh", "-c", _probe_cmd], client=None)
+                await openshell_client.exec_command(
+                    ref.name, ["sh", "-c", _probe_cmd], client=None,
+                )
             except Exception:
                 pass  # probe failure is non-fatal; approval may still find existing chunks
             await _asyncio.sleep(12)  # supervisor needs ~10s to submit denial analysis
