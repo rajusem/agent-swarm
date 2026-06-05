@@ -1031,10 +1031,14 @@ async def _setup_openshell_sandbox(
         if mode == "prompt":
             import asyncio as _asyncio
             await _update_db(status_detail="Configuring network policy…")
-            _probe_cmd = f"HOME=/sandbox opencode run --model {shlex.quote(model)} '' 2>/dev/null; true"
+            # Use a real prompt so opencode makes an API call and generates policy denials.
+            # An empty prompt '' causes opencode to exit immediately without calling the API.
+            _probe_prompt = shlex.quote("Reply with one word: ready")
+            _probe_cmd = f"HOME=/sandbox opencode run --model {shlex.quote(model)} {_probe_prompt} 2>/dev/null; true"
             try:
                 await openshell_client.exec_command(
                     ref.name, ["sh", "-c", _probe_cmd], client=None,
+                    timeout_seconds=30,
                 )
             except Exception:
                 pass  # probe failure is non-fatal; approval may still find existing chunks

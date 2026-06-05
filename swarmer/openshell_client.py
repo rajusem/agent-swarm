@@ -497,36 +497,33 @@ async def read_opencode_response(sandbox_name: str, client=None) -> str:
     if client is None:
         client = _get_client()
 
-    # Use base64-encoded inline script to avoid temp files and newline-in-arg issues
-    script = b"""
+    # Write the reader script via stdin (no newlines in command arg) then execute it.
+    reader = b"""
 import sqlite3, json
-db = '/sandbox/.opencode/opencode.db'
 try:
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect('/sandbox/.opencode/opencode.db')
     conn.execute('PRAGMA wal_checkpoint(FULL)')
     rows = conn.execute('''
         SELECT p.data FROM part p
         JOIN message m ON p.message_id = m.id
-        WHERE json_extract(m.data, "$.role") = "assistant"
-          AND json_extract(p.data, "$.type") = "text"
-        ORDER BY p.time_created DESC LIMIT 5
+        WHERE json_extract(m.data, '$.role') = 'assistant'
+          AND json_extract(p.data, '$.type') = 'text'
+        ORDER BY p.time_created ASC
     ''').fetchall()
     texts = [json.loads(r[0]).get('text', '') for r in rows if r[0]]
-    out = '\\n'.join(t for t in reversed(texts) if t.strip())
+    out = '\\n'.join(t for t in texts if t.strip())
     print(out[:8000] if out else '', end='')
     conn.close()
 except Exception as exc:
     import sys; print(f'DB_ERR:{exc}', file=sys.stderr, end='')
 """
-    b64 = base64.b64encode(script).decode()
-    # Decode and run inline — no temp file, no newlines in command argument
-    run_cmd = f"python3 -c \"import base64,sys; exec(base64.b64decode('{b64}').decode())\""
 
     def _do_read():
         try:
             sid = client.get(sandbox_name).id
-            result = client.exec(sid, ["sh", "-c", run_cmd], timeout_seconds=15)
-            if result.stderr and result.stderr.strip().startswith("DB_ERR:"):
+            client.exec(sid, ["sh", "-c", "cat > /tmp/_oc_read.py"], stdin=reader, timeout_seconds=10)
+            result = client.exec(sid, ["python3", "/tmp/_oc_read.py"], timeout_seconds=15)
+            if result.stderr and "DB_ERR:" in result.stderr:
                 log.warning("read_opencode_response: %s  sandbox=%s", result.stderr.strip(), sandbox_name)
             return (result.stdout or "").strip()
         except Exception as exc:
