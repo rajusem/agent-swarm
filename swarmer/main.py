@@ -33,7 +33,9 @@ _OPENSHELL_CUSTOM_PROFILES = [
         "inference_capable": True,
         "credentials": [
             {
-                "name": "api_key",
+                # Credential name IS the env var injected into the sandbox.
+                # env_vars is used by the gateway proxy for HTTP request rewriting.
+                "name": "GOOGLE_API_KEY",
                 "env_vars": ["GOOGLE_API_KEY"],
                 "required": True,
                 "auth_style": "header",

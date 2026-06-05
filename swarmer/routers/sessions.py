@@ -774,14 +774,17 @@ async def _do_launch_openshell(
     ws_id = session.workspace_id
     if oc_secret and oc_secret.anthropic_api_key:
         pname = f"swarmer-ws-{ws_id}-claude-code"
+        # claude-code profile credential name is "api_key" (built-in profile)
         await openshell_client.ensure_provider(pname, "claude-code", {}, credentials={"api_key": oc_secret.anthropic_api_key})
         provider_names.append(pname)
     if oc_secret and oc_secret.google_api_key:
         pname = f"swarmer-ws-{ws_id}-google-ai-studio"
-        await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={"api_key": oc_secret.google_api_key})
+        # google-ai-studio profile credential name is "GOOGLE_API_KEY" — gateway injects it as that env var
+        await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={"GOOGLE_API_KEY": oc_secret.google_api_key})
         provider_names.append(pname)
     if session.github_pat:
         pname = f"swarmer-ws-{ws_id}-github"
+        # github profile credential name is "api_token" — gateway injects as GH_TOKEN/GITHUB_TOKEN
         pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
         await openshell_client.ensure_provider(pname, "github", {}, credentials={"api_token": pat_token})
         provider_names.append(pname)
