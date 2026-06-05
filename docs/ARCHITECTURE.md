@@ -138,6 +138,45 @@ All sensitive fields (PATs, API keys, ADC credentials) are Fernet-encrypted at r
 - OpenShift compatibility: `_grant_anyuid_scc()` creates a RoleBinding for the anyuid SCC; silently skips on non-OpenShift (404/403)
 - OpenShift Routes: created automatically for server-mode sessions
 
+## OpenShell Integration
+
+[NVIDIA OpenShell](https://github.com/nvidia/openshift-ai-openShell) replaces direct K8s pod and Secret management with a Gateway + Supervisor model. Swarmer sends credentials to the Gateway (which injects them securely) and requests sandboxes from the Supervisor (which provides the isolated runtime). Swarmer never writes AI tokens or PATs into K8s Secrets again.
+
+- **Gateway** -- credential injection API; Swarmer sends AI tokens, PATs, and MCP tokens to the Gateway instead of writing K8s Secrets via `envFrom`
+- **Supervisor** -- sandboxed agent runtime; replaces `build_session_pod()` + `create_namespaced_pod()`
+- **Feature flag** -- `settings.openshell_enabled` gates the new path; the K8s pod path remains as a fallback
+- **Sandbox lifecycle** -- `create_sandbox()` replaces `build_session_pod()` + `create_namespaced_pod()`; `delete_sandbox()` replaces `delete_pod()` + PVC cleanup
+- **No PVCs** -- sandbox lifetime is managed by OpenShell; `session.persist` and PVC lifecycle are removed in the final cleanup sub-task
+- **No K8s Secrets** -- credentials are injected via Gateway env vars, not `envFrom` K8s Secrets; `session.k8s_secret_names` becomes unused
+- **`session.sandbox_name`** -- stores the OpenShell sandbox identifier; analogous to `session.pod_name` for the K8s path
+- **Network policy** -- `openshell_policy.py` builds per-sandbox YAML policies controlling outbound access (AI provider endpoints, per-repo GitHub, Jira MCP)
+- **Client module** -- `swarmer/openshell_client.py` wraps the OpenShell gRPC SDK with async helpers using `asyncio.run_in_executor`
+
+## Agent Container Data Interface
+
+Every data item Swarmer currently pushes into agent pods, its source model, the current K8s mechanism, and the target OpenShell API call. This table is the migration contract for ACM-34850.
+
+| Category | Data | Source Model | Current K8s Mechanism | Target OpenShell API |
+|---|---|---|---|---|
+| AI Credentials | GCP Project, Vertex Location, ADC JSON, Gemini key, Anthropic key, OpenAI key | `OpencodeSecret` | K8s Secret → `envFrom` | Gateway `create_provider()` env injection |
+| Git Auth | PAT token, GitHub username | `GitHubPAT` | K8s Secret → `secretKeyRef` + init container credential store | Gateway credential injection + `clone_repos()` |
+| Git Repos | repo_url, branch, local_path (per repo) | `SessionRepo` | Init container git clone | `openshell_client.clone_repos()` |
+| MCP Tokens | Jira URL, Jira access token, Jira email | `McpServer` | K8s Secret → `envFrom` | Gateway env injection |
+| Agent Config | Tool-specific JSON + gitconfig | ConfigMap | Volume mount at `/tmp/agent-config-ro` | `write_agent_config()` into sandbox |
+| MCP Config | MCP server definitions in agent config JSON | `McpServer` | Startup script overwrites config | `write_file()` into sandbox |
+| Model Config | model.json (OpenCode) or crush.json (Crush) | `Session.model` | Startup script writes JSON file | `write_file()` into sandbox |
+| Prompt | instruction_prompt + base_prompt + repo_context | `Session` + `WorkspacePrompt` | CLI arg (prompt mode) or `SWARMER_AGENT_MD` env → AGENTS.md (TUI/server) | `write_file()` for AGENTS.md; CLI arg for prompt mode |
+| Env Vars | HOME, NODE_OPTIONS, GOOGLE_APPLICATION_CREDENTIALS | Hardcoded | Pod env spec | Sandbox env vars via Gateway |
+| Extra Env | Arbitrary workspace key-value pairs | External K8s Secret | `envFrom` (`swarmer-agent-extra-env`, optional) | Gateway env injection |
+| Volumes | PVC → /workspace, ConfigMap → /tmp/agent-config-ro, ADC → /app/gcloud | N/A | Pod volume spec | Sandbox filesystem (no separate volumes) |
+| Startup Script | Config copy, safe dir, git creds, symlinks, AGENTS.md write, model write, branch checkout | N/A | `sh -c` command chain | Simplified script — removes credential setup and git clone stages |
+| Pod Config | Resources (1Gi-8Gi/500m-2000m), fsGroup, runAsUser, imagePullPolicy, restartPolicy | `Session` + `Settings` | Pod spec | Sandbox resource config |
+| Networking | Container port 4096 (server mode), ClusterIP Service, OpenShift Route | `Session.mode` | K8s Service/Route | OpenShell network endpoint |
+
+- **Startup script simplification** -- the OpenShell startup script removes: credential helper setup, git clone, `envFrom` secret injection, ADC volume mount. Keeps: config copy, MCP config overwrite, model JSON write, AGENTS.md write, branch checkout, agent binary invocation
+- **Filesystem layout** -- `/sandbox` replaces `/workspace` as the agent HOME and git clone root in OpenShell mode; `stolostron/agent-containers` images must support this path
+- **Init containers removed** -- repo cloning moves to `openshell_client.clone_repos()`; the `git-init` init container is eliminated
+
 ## Background Tasks
 
 Two background asyncio systems run during app lifespan:
