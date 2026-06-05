@@ -1023,8 +1023,19 @@ async def _setup_openshell_sandbox(
         if agents_md:
             await openshell_client.write_agents_md(sandbox_name=ref.name, content=agents_md)
 
-        # Approve only expected draft policy chunks (those matching this session's
-        # known endpoints). Unexpected endpoints are logged but not auto-approved.
+        # Pre-flight probe: run a no-op opencode command so the supervisor observes
+        # the denied AI API connections and generates draft policy chunks.
+        # Then approve expected chunks so the actual agent run can reach the API.
+        # Without this probe, approval runs before any chunks exist.
+        if mode == "prompt":
+            import asyncio as _asyncio
+            _probe_cmd = f"HOME=/sandbox opencode run --model {shlex.quote(model)} '' 2>/dev/null; true"
+            try:
+                await openshell_client.exec_command(ref.name, ["sh", "-c", _probe_cmd], client=None)
+            except Exception:
+                pass  # probe failure is non-fatal; approval may still find existing chunks
+            await _asyncio.sleep(12)  # supervisor needs ~10s to submit denial analysis
+
         expected = _build_expected_hosts(model, repos_data, tool_name, mode)
         await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=expected)
 
@@ -1109,6 +1120,7 @@ async def _run_openshell_agent(
             await _update_db(
                 phase=phase,
                 last_output=output,
+                status_detail="",  # clear any stale status from previous runs
                 run_completed_at=datetime.utcnow(),
                 sandbox_name=new_sandbox_name,
             )
