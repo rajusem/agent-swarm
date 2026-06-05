@@ -41,7 +41,8 @@ async def lifespan(app: FastAPI):
 
 
 async def _restart_prompt_pollers() -> None:
-    """Re-launch background log pollers for prompt sessions still active after a restart."""
+    """Re-launch background monitors for prompt sessions still active after a restart."""
+    import asyncio
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
@@ -55,12 +56,22 @@ async def _restart_prompt_pollers() -> None:
             .where(
                 Session.mode == "prompt",
                 Session.phase.in_(["pending", "running"]),
-                Session.pod_name.isnot(None),
             )
             .options(selectinload(Session.workspace))
         )
         for s in result.scalars().all():
-            log_poller.start_log_poller(s.id, s.pod_name, s.workspace.k8s_namespace)
+            if s.sandbox_name:
+                from swarmer.routers.sessions import _run_openshell_agent
+                from swarmer.agent_tools.registry import get as _get_tool
+                _tool = _get_tool(s.agent_tool)
+                _model = s.model or _tool.get_default_model(False, False)
+                _main_cmd = _tool.build_main_cmd(s, _model)
+                asyncio.create_task(
+                    _run_openshell_agent(s.id, s.sandbox_name, ["sh", "-c", _main_cmd], s.mode),
+                    name=f"openshell-agent-{s.id}",
+                )
+            elif s.pod_name:
+                log_poller.start_log_poller(s.id, s.pod_name, s.workspace.k8s_namespace)
         break
 
 
