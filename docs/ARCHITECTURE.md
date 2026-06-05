@@ -148,9 +148,24 @@ All sensitive fields (PATs, API keys, ADC credentials) are Fernet-encrypted at r
 - **Sandbox lifecycle** -- `create_sandbox()` replaces `build_session_pod()` + `create_namespaced_pod()`; `delete_sandbox()` replaces `delete_pod()` + PVC cleanup
 - **No PVCs** -- sandbox lifetime is managed by OpenShell; `session.persist` and PVC lifecycle are removed in the final cleanup sub-task
 - **No K8s Secrets** -- credentials are injected via Gateway env vars, not `envFrom` K8s Secrets; `session.k8s_secret_names` becomes unused
-- **`session.sandbox_name`** -- stores the OpenShell sandbox identifier; analogous to `session.pod_name` for the K8s path
+- **`session.sandbox_name`** -- stores the OpenShell sandbox identifier; analogous to `session.pod_name` for the K8s path (nullable `VARCHAR(255)`, `NULL` when K8s path is active)
 - **Network policy** -- `openshell_policy.py` builds per-sandbox YAML policies controlling outbound access (AI provider endpoints, per-repo GitHub, Jira MCP)
 - **Client module** -- `swarmer/openshell_client.py` wraps the OpenShell gRPC SDK with async helpers using `asyncio.run_in_executor`
+
+### OpenShell Config Settings
+
+All settings live in `swarmer/config.py` (`Settings` class) and are read from env vars:
+
+| Setting | Env Var | Type | Default | Purpose |
+|---|---|---|---|---|
+| `openshell_enabled` | `OPENSHELL_ENABLED` | `bool` | `False` | Feature flag — enables OpenShell path; K8s is the fallback |
+| `openshell_gateway_url` | `OPENSHELL_GATEWAY_URL` | `str` | `""` | Gateway API base URL for credential injection |
+| `openshell_supervisor_url` | `OPENSHELL_SUPERVISOR_URL` | `str` | `""` | Supervisor API base URL for sandbox lifecycle |
+| `openshell_tls_cert` | `OPENSHELL_TLS_CERT` | `str` | `""` | Path to client TLS certificate (mTLS) |
+| `openshell_tls_key` | `OPENSHELL_TLS_KEY` | `str` | `""` | Path to client TLS private key (mTLS) |
+| `openshell_tls_ca` | `OPENSHELL_TLS_CA` | `str` | `""` | Path to CA bundle for server cert verification |
+| `openshell_bearer_token` | `OPENSHELL_BEARER_TOKEN` | `str` | `""` | Bearer token for Gateway/Supervisor authentication |
+| `sandbox_gc_interval` | `SANDBOX_GC_INTERVAL` | `int` | `300` | Seconds between sandbox garbage-collection sweeps |
 
 ## Agent Container Data Interface
 

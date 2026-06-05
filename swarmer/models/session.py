@@ -70,6 +70,7 @@ class Session(Base):
     k8s_secret_names: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     # Runtime state — managed by dashboard
     pod_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sandbox_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_output: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status_detail: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")

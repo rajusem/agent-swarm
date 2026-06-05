@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     k8s_namespace: str = ""
     max_concurrent_agents: int = 5
 
+    # OpenShell integration (feature-flagged — K8s pod path is the default)
+    openshell_enabled: bool = False
+    openshell_gateway_url: str = ""
+    openshell_supervisor_url: str = ""
+    openshell_tls_cert: str = ""        # path to client TLS cert
+    openshell_tls_key: str = ""         # path to client TLS key
+    openshell_tls_ca: str = ""          # path to CA bundle
+    openshell_bearer_token: str = ""    # bearer token for gateway/supervisor auth
+    sandbox_gc_interval: int = 300      # seconds between sandbox GC sweeps
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
