@@ -32,18 +32,24 @@ KIND_CLUSTER         ?= swarmer
 OPENSHIFT_OAUTH_URL  ?=
 SWARMER_HOST         ?=
 
+# OpenShell gateway
+OPENSHELL_VERSION   ?= 0.0.51
+OPENSHELL_NAMESPACE ?= openshell
+OPENSHELL_TLS_DIR   ?= auth/openshell
+
 # agent-containers build defaults (registry + image tag — checked in)
 AC_DEFAULTS ?= .push-defaults
 
 # ──────────────────────────────────────────────────────────────
 #  Phony targets
 # ──────────────────────────────────────────────────────────────
-.PHONY: setup-secret k8s-secret user-token grant-workspace \
+.PHONY: setup-secret k8s-secret k8s-openshell-tls-secret user-token grant-workspace \
         install dev lint test db-reset \
         image-build image-push image-build-crush \
         k8s-deploy k8s-delete k8s-connect \
         openshift-deploy \
         kind-create kind-load kind-load-opencode kind-load-crush kind-deploy kind-delete kind-connect \
+        openshell-setup openshell-extract-tls openshell-gen-token openshell-status openshell-delete \
         sync-images help
 
 # ──────────────────────────────────────────────────────────────
@@ -69,6 +75,14 @@ k8s-secret:  ## Create/update the swarmer-secret K8s Secret from auth/secret.key
 	@test -f auth/secret.key || (echo "Run 'make setup-secret' first" && exit 1)
 	kubectl create secret generic swarmer-secret \
 	  --from-literal=SWARMER_SECRET_KEY=$$(cat auth/secret.key) \
+	  -n $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+
+k8s-openshell-tls-secret:  ## Create/update the openshell-tls K8s Secret from auth/openshell/ certs
+	@test -f $(OPENSHELL_TLS_DIR)/ca.crt || (echo "OpenShell mTLS certs not found. Run 'make openshell-setup' first." && exit 1)
+	kubectl create secret generic openshell-tls \
+	  --from-file=ca.crt=$(OPENSHELL_TLS_DIR)/ca.crt \
+	  --from-file=tls.crt=$(OPENSHELL_TLS_DIR)/tls.crt \
+	  --from-file=tls.key=$(OPENSHELL_TLS_DIR)/tls.key \
 	  -n $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 
 TOKEN_DURATION ?= 8h
@@ -361,6 +375,67 @@ kind-connect:  ## Open a port-forward to the kind-deployed dashboard on localhos
 kind-delete:  ## Delete the kind cluster (removes all data inside it)
 	kind delete cluster --name $(KIND_CLUSTER)
 	@echo "✓ kind cluster '$(KIND_CLUSTER)' deleted."
+
+# ──────────────────────────────────────────────────────────────
+#  OpenShell gateway (installs to the CURRENT kubectl context)
+# ──────────────────────────────────────────────────────────────
+
+openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl context (idempotent)
+	@HELM_VER=$$(helm version --short 2>/dev/null | grep -oP 'v\K[0-9]+\.[0-9]+' | head -1); \
+	HELM_MAJOR=$$(echo "$$HELM_VER" | cut -d. -f1); \
+	HELM_MINOR=$$(echo "$$HELM_VER" | cut -d. -f2); \
+	if [ -z "$$HELM_VER" ] || { [ "$$HELM_MAJOR" -lt 4 ] && { [ "$$HELM_MAJOR" -lt 3 ] || [ "$$HELM_MINOR" -lt 8 ]; }; }; then \
+	  echo "Error: Helm 3.8+ required for OCI chart support (found: $$(helm version --short 2>/dev/null || echo 'not installed'))"; \
+	  exit 1; \
+	fi
+	@echo "Installing OpenShell $(OPENSHELL_VERSION)..."
+	kubectl create namespace $(OPENSHELL_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	DOCKER_CONFIG=$$(mktemp -d) helm upgrade --install openshell \
+	  oci://ghcr.io/nvidia/openshell/helm-chart \
+	  --version $(OPENSHELL_VERSION) \
+	  --namespace $(OPENSHELL_NAMESPACE) \
+	  --wait --timeout 5m
+	$(MAKE) openshell-extract-tls
+	$(MAKE) k8s-openshell-tls-secret NAMESPACE=$(NAMESPACE)
+	@echo ""
+	@echo "✓ OpenShell $(OPENSHELL_VERSION) installed."
+	@echo "  Port-forward: kubectl port-forward -n $(OPENSHELL_NAMESPACE) svc/openshell 17670:8080"
+	@echo "  TLS certs:    $(OPENSHELL_TLS_DIR)/"
+
+openshell-extract-tls:  ## Extract mTLS client certs from cluster to auth/openshell/
+	@mkdir -p $(OPENSHELL_TLS_DIR)
+	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
+	  -o jsonpath='{.data.ca\.crt}'  | base64 -d > $(OPENSHELL_TLS_DIR)/ca.crt
+	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
+	  -o jsonpath='{.data.tls\.crt}' | base64 -d > $(OPENSHELL_TLS_DIR)/tls.crt
+	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
+	  -o jsonpath='{.data.tls\.key}' | base64 -d > $(OPENSHELL_TLS_DIR)/tls.key
+	@echo "✓ mTLS certs written to $(OPENSHELL_TLS_DIR)/"
+
+openshell-gen-token:  ## Generate a JWT bearer token for the in-cluster OIDC provider and append to .env
+	@TOKEN=$$(python3 scripts/openshell_gen_token.py) && \
+	sed -i '/^OPENSHELL_BEARER_TOKEN=/d' .env 2>/dev/null || true && \
+	echo "OPENSHELL_BEARER_TOKEN=$$TOKEN" >> .env && \
+	echo "✓ OPENSHELL_BEARER_TOKEN appended to .env (valid 30 days)"
+
+openshell-status:  ## Show OpenShell installation status on current kubectl context
+	@echo "=== Helm release ==="
+	@helm status openshell -n $(OPENSHELL_NAMESPACE) 2>/dev/null || echo "  (not installed)"
+	@echo ""
+	@echo "=== Gateway pods ==="
+	@kubectl get pods -n $(OPENSHELL_NAMESPACE) 2>/dev/null || echo "  (namespace not found)"
+	@echo ""
+	@echo "=== Agent Sandbox CRDs ==="
+	@kubectl get crds | grep -i sandbox 2>/dev/null || echo "  (none)"
+	@echo ""
+	@echo "=== mTLS certs ==="
+	@ls -la $(OPENSHELL_TLS_DIR)/ 2>/dev/null || echo "  (not extracted — run 'make openshell-extract-tls')"
+
+openshell-delete:  ## Remove OpenShell and Agent Sandbox CRDs from current kubectl context
+	@echo "Removing OpenShell..."
+	helm uninstall openshell -n $(OPENSHELL_NAMESPACE) 2>/dev/null || true
+	kubectl delete namespace $(OPENSHELL_NAMESPACE) --ignore-not-found
+	@echo "✓ OpenShell removed."
 
 # ──────────────────────────────────────────────────────────────
 #  Help
