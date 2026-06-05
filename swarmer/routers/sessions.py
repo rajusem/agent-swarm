@@ -676,7 +676,6 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
             return
 
     import secrets as _secrets
-    session.last_output = ""
     suffix = _secrets.token_hex(4)
 
     from swarmer.models.opencode_secret import OpencodeSecret
@@ -769,27 +768,23 @@ async def _do_launch_openshell(
     #     Must happen BEFORE sandbox creation: provider names go into SandboxSpec.providers
     #     so the supervisor can call GetSandboxProviderEnvironment at startup and receive
     #     the injected env vars (GOOGLE_API_KEY, ANTHROPIC_API_KEY, GH_TOKEN, etc.).
-    #     Credentials are stored securely by the gateway (UpdateProvider for rotation).
     provider_names: list[str] = []
     ws_id = session.workspace_id
     if oc_secret and oc_secret.anthropic_api_key:
         pname = f"swarmer-ws-{ws_id}-claude-code"
-        # claude-code profile credential name is "api_key" (built-in profile)
         await openshell_client.ensure_provider(pname, "claude-code", {}, credentials={"api_key": oc_secret.anthropic_api_key})
         provider_names.append(pname)
     if oc_secret and oc_secret.google_api_key:
         pname = f"swarmer-ws-{ws_id}-google-ai-studio"
-        # google-ai-studio profile credential name is "GOOGLE_API_KEY" — gateway injects it as that env var
         await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={"GOOGLE_API_KEY": oc_secret.google_api_key})
         provider_names.append(pname)
     if session.github_pat:
         pname = f"swarmer-ws-{ws_id}-github"
-        # github profile credential name is "api_token" — gateway injects as GH_TOKEN/GITHUB_TOKEN
         pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
         await openshell_client.ensure_provider(pname, "github", {}, credentials={"api_token": pat_token})
         provider_names.append(pname)
 
-    # 2. Build network/filesystem policy YAML
+    # 2. Build policy YAML (pure computation, no I/O)
     policy_yaml = build_session_policy(
         session=session,
         repos=list(session.repos or []),
@@ -798,96 +793,111 @@ async def _do_launch_openshell(
         model=session.model or "",
     )
 
-    # 3. Create sandbox — providers listed in spec so supervisor sees them at startup
-    image = tool.get_image()
-    ref = await openshell_client.create_sandbox(
-        image=image,
-        env_vars=env_vars,
-        policy_yaml=policy_yaml,
-        provider_names=provider_names,
-    )
-    session.sandbox_name = ref.name
-
-    # 4. Write agent config (includes MCP configuration)
-    config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
-    config_json = config_data.get(f"{tool.name}.json", "{}")
-    await openshell_client.write_agent_config(
-        sandbox_name=ref.name,
-        tool_name=tool.name,
-        config_json=config_json,
-    )
-
-    # 5. Configure git credentials before cloning (uses $GH_TOKEN injected by github provider)
-    if session.repos and session.github_pat:
-        pat = session.github_pat
-        username = pat.github_username or ""
-        git_setup_cmd = (
-            "git config --global credential.helper store && "
-            f"printf 'https://{username}:%s@github.com\\n' \"$GH_TOKEN\" "
-            "> /root/.git-credentials && "
-            f'git config --global user.name "{username}" && '
-            f'git config --global user.email "{username}@users.noreply.github.com"'
-        )
-        await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
-
-    # 5b. Clone repos and configure git inside the sandbox
-    if session.repos:
-        await openshell_client.clone_repos(sandbox_name=ref.name, repos=list(session.repos))
-        safe_dir_cmd = "git config --global --add safe.directory '*'"
-        await openshell_client.exec_command(ref.name, ["sh", "-c", safe_dir_cmd], client=None)
-        if session.working_branch:
-            for repo in session.repos:
-                branch_cmd = (
-                    f"cd /sandbox/{repo.local_path} && "
-                    f"git checkout -b {shlex.quote(session.working_branch)} 2>/dev/null "
-                    f"|| git checkout {shlex.quote(session.working_branch)}"
-                )
-                await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
-
-    # 6. Resolve model
+    # Resolve model before committing so main_cmd can be built later
     if session.model and tool.is_valid_model(session.model):
         model = session.model
     else:
         model = tool.get_default_model(has_adc, has_gemini)
 
-    # 7. Write model config (strip trailing " && " from the shell fragment)
-    model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
-    if model_setup_cmd.strip():
-        clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
-        await openshell_client.exec_command(ref.name, ["sh", "-c", clean_cmd], client=None)
-
-    # 8. Share/state dir setup (symlinks, auth.json)
-    share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
-    if share_cmd.strip():
-        clean_share = share_cmd.rstrip().rstrip(";").rstrip()
-        await openshell_client.exec_command(ref.name, ["sh", "-c", clean_share], client=None)
-
-    # 9. Write AGENTS.md for tui/server modes
-    if session.mode in ("tui", "server"):
-        repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
-        agents_md_content = (resolved_prompt or "") + repo_context
-        if agents_md_content:
-            await openshell_client.write_agents_md(
-                sandbox_name=ref.name,
-                content=agents_md_content,
-            )
-
-    # 10. Commit state and start background agent task
+    # Mark pending immediately and release the DB lock before slow gRPC operations.
+    # Status poller and scheduler see the correct state; SQLite single-writer
+    # contention is eliminated for the duration of sandbox creation (30-60 s).
     session.phase = "pending"
+    session.last_output = ""
     session.run_started_at = datetime.utcnow()
     session.run_completed_at = None
     await db.commit()
 
-    main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
-    asyncio.create_task(
-        _run_openshell_agent(
-            session_id=session.id,
+    try:
+        # 3. Create sandbox — wait_ready blocks until the container is up (slow)
+        image = tool.get_image()
+        ref = await openshell_client.create_sandbox(
+            image=image,
+            env_vars=env_vars,
+            policy_yaml=policy_yaml,
+            provider_names=provider_names,
+        )
+        session.sandbox_name = ref.name
+        await db.commit()  # persist sandbox_name so GC can track it
+
+        # 4. Write agent config to /sandbox/{tool}.json (read by agent from CWD)
+        config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
+        config_json = config_data.get(f"{tool.name}.json", "{}")
+        await openshell_client.write_agent_config(
             sandbox_name=ref.name,
-            cmd=["sh", "-c", main_cmd],
-            mode=session.mode,
-        ),
-        name=f"openshell-agent-{session.id}",
-    )
+            tool_name=tool.name,
+            config_json=config_json,
+        )
+
+        # 5. Configure git credentials before cloning (uses $GH_TOKEN from github provider)
+        if session.repos and session.github_pat:
+            pat = session.github_pat
+            username = pat.github_username or ""
+            git_setup_cmd = (
+                "git config --global credential.helper store && "
+                f"printf 'https://{username}:%s@github.com\\n' \"$GH_TOKEN\" "
+                "> /root/.git-credentials && "
+                f'git config --global user.name "{username}" && '
+                f'git config --global user.email "{username}@users.noreply.github.com"'
+            )
+            await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
+
+        # 5b. Clone repos
+        if session.repos:
+            await openshell_client.clone_repos(sandbox_name=ref.name, repos=list(session.repos))
+            safe_dir_cmd = "git config --global --add safe.directory '*'"
+            await openshell_client.exec_command(ref.name, ["sh", "-c", safe_dir_cmd], client=None)
+            if session.working_branch:
+                for repo in session.repos:
+                    branch_cmd = (
+                        f"cd /sandbox/{repo.local_path} && "
+                        f"git checkout -b {shlex.quote(session.working_branch)} 2>/dev/null "
+                        f"|| git checkout {shlex.quote(session.working_branch)}"
+                    )
+                    await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
+
+        # 6. Write model selection config
+        model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
+        if model_setup_cmd.strip():
+            clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
+            await openshell_client.exec_command(ref.name, ["sh", "-c", clean_cmd], client=None)
+
+        # 7. Share/state dir setup (symlinks, auth.json written using $GOOGLE_API_KEY from provider)
+        share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
+        if share_cmd.strip():
+            clean_share = share_cmd.rstrip().rstrip(";").rstrip()
+            await openshell_client.exec_command(ref.name, ["sh", "-c", clean_share], client=None)
+
+        # 8. Write AGENTS.md for tui/server modes
+        if session.mode in ("tui", "server"):
+            repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
+            agents_md_content = (resolved_prompt or "") + repo_context
+            if agents_md_content:
+                await openshell_client.write_agents_md(
+                    sandbox_name=ref.name,
+                    content=agents_md_content,
+                )
+
+        # 9. Start background agent task
+        main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+        asyncio.create_task(
+            _run_openshell_agent(
+                session_id=session.id,
+                sandbox_name=ref.name,
+                cmd=["sh", "-c", main_cmd],
+                mode=session.mode,
+            ),
+            name=f"openshell-agent-{session.id}",
+        )
+
+    except Exception:
+        log.exception("_do_launch_openshell failed for session %d", session.id)
+        session.phase = "failed"
+        session.run_completed_at = datetime.utcnow()
+        if not session.sandbox_name:
+            pass  # sandbox was never created
+        await db.commit()
+        raise
 
 
 async def _run_openshell_agent(
