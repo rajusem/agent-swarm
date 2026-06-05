@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from swarmer import k8s, k8s_session as k8s_sess
+from swarmer import k8s
 from swarmer.agent_tools.registry import get as get_tool
 from swarmer.database import get_db
 from swarmer.api.deps import get_current_user, get_workspace_or_404, require_api_auth
@@ -215,12 +215,14 @@ async def delete_session(
     if session.is_active:
         raise HTTPException(status_code=409, detail="Stop the session before deleting")
 
-    if session.pvc_name:
+    if session.sandbox_name:
+        from swarmer import openshell_client
         try:
-            k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
+            await openshell_client.delete_sandbox(session.sandbox_name)
         except Exception:
             pass
     try:
+        # Kept for any legacy K8s sessions still in the database
         k8s.cleanup_session_secrets(ws.k8s_namespace, session)
     except Exception:
         pass
@@ -273,26 +275,17 @@ async def stop_session(
         await db.refresh(session)
         return session
 
-    if session.pod_name:
-        from swarmer import log_poller
-        log_poller.stop_log_poller(sid)
+    if session.sandbox_name:
+        from swarmer import openshell_client
         try:
-            k8s.delete_pod(session.pod_name, ws.k8s_namespace)
-            if session.mode == "server":
-                k8s.delete_service(f"session-{session.id}-svc", ws.k8s_namespace)
-                k8s.delete_session_route(session.id, ws.k8s_namespace)
+            await openshell_client.delete_sandbox(session.sandbox_name)
         except Exception:
             pass
-
-    if not session.persist and session.pvc_name:
-        try:
-            k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
-            session.pvc_name = None
-        except Exception:
-            pass
+        session.sandbox_name = None
 
     if not session.cron_schedule:
         try:
+            # Kept for any legacy K8s sessions still in the database
             k8s.cleanup_session_secrets(ws.k8s_namespace, session)
         except Exception:
             pass

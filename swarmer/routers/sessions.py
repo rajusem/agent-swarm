@@ -157,7 +157,8 @@ async def _list_sessions_data(ws_id: int, db: AsyncSession):
 async def _sync_session_phases(sessions, ws, db: AsyncSession):
     dirty = False
     for s in sessions:
-        if s.phase in ("pending", "running") and s.pod_name:
+        # OpenShell sessions manage their own phase via _run_openshell_agent
+        if s.phase in ("pending", "running") and s.pod_name and not s.sandbox_name:
             live_phase, _ = await asyncio.to_thread(k8s.get_pod_status, s.pod_name, ws.k8s_namespace)
             if live_phase != s.phase:
                 s.phase = live_phase
@@ -676,17 +677,7 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
 
     import secrets as _secrets
     session.last_output = ""
-
     suffix = _secrets.token_hex(4)
-
-    pvc_name = await asyncio.to_thread(
-        k8s_sess.ensure_session_pvc, ws.k8s_namespace, session.id, suffix, session.pvc_name,
-    )
-    if pvc_name != session.pvc_name:
-        session.pvc_name = pvc_name
-
-    from swarmer import k8s as _k8s
-    await asyncio.to_thread(_k8s._grant_anyuid_scc, ws.k8s_namespace)
 
     from swarmer.models.opencode_secret import OpencodeSecret
     _user_filter = [OpencodeSecret.workspace_id == session.workspace_id]
@@ -733,119 +724,203 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
         # No MCP selection stored — default to all workspace-enabled servers
         mcp_servers = ws_mcp_servers
 
-    # Sync MCP server tokens to K8s secret and update agent config
-    if mcp_servers:
-        from swarmer import k8s as _k8s2
-        try:
-            await asyncio.to_thread(
-                _k8s2.apply_agent_config, ws.k8s_namespace,
-                secret=oc_secret, agent_tool=session.agent_tool, mcp_servers=mcp_servers,
-            )
-        except Exception:
-            log.warning("MCP config sync failed, continuing launch without MCP", exc_info=True)
-            mcp_servers = []
-
-    # ---------- Create session-scoped K8s Secrets ----------
-    secret_names = []
-    _agent_secret_name = ""
-    _pat_secret_name = ""
-    _mcp_secret_name = ""
-
-    # Determine suffix: CronJob sessions use a fixed suffix for secret persistence
-    if session.cron_schedule:
-        secret_suffix = f"s{session.id}-cron"
-    else:
-        secret_suffix = f"s{session.id}-{suffix}"
-
-    # 1. Agent tool secret (AI credentials)
-    if oc_secret:
-        from swarmer.agent_tools.registry import get as _get_tool
-        _tool = _get_tool(session.agent_tool)
-        _agent_secret_name = f"{_tool.get_secret_name()}-{secret_suffix}"
-        try:
-            await asyncio.to_thread(
-                k8s.create_session_agent_secret,
-                ws.k8s_namespace, _agent_secret_name, oc_secret, session.agent_tool,
-            )
-            secret_names.append(_agent_secret_name)
-        except Exception:
-            log.warning("Session agent secret creation failed", exc_info=True)
-            _agent_secret_name = ""
-
-    # 2. GitHub PAT secret
-    if session.github_pat:
-        _pat_secret_name = f"{session.github_pat.k8s_secret_name}-{secret_suffix}"
-        try:
-            await asyncio.to_thread(
-                k8s.create_session_pat_secret,
-                ws.k8s_namespace, _pat_secret_name, session.github_pat,
-            )
-            secret_names.append(_pat_secret_name)
-        except Exception:
-            log.warning("Session PAT secret creation failed", exc_info=True)
-            _pat_secret_name = ""
-
-    # 3. MCP server tokens
-    if mcp_servers:
-        _mcp_secret_name = f"{k8s.MCP_SECRET_NAME}-{secret_suffix}"
-        try:
-            await asyncio.to_thread(
-                k8s.create_session_mcp_secret,
-                ws.k8s_namespace, _mcp_secret_name, mcp_servers,
-            )
-            secret_names.append(_mcp_secret_name)
-        except Exception:
-            log.warning("Session MCP secret creation failed", exc_info=True)
-            _mcp_secret_name = ""
-
-    session.k8s_secret_names = ",".join(secret_names)
-
     # Resolve prompt using layered composition
     resolved_prompt = await _resolve_session_prompt(session, db)
 
-    pod_spec = k8s_sess.build_session_pod(
+    await _do_launch_openshell(
         session=session,
-        namespace=ws.k8s_namespace,
-        image=settings.agent_image,
+        ws=ws,
+        db=db,
         suffix=suffix,
-        image_pull_secret=k8s.PULL_SECRET_NAME,
+        oc_secret=oc_secret,
         has_adc=has_adc,
         has_gemini=has_gemini,
-        privileged=session.privileged,
-        agent_tool=session.agent_tool,
         mcp_servers=mcp_servers,
-        agent_secret_name=_agent_secret_name,
-        pat_secret_name=_pat_secret_name,
-        mcp_secret_name=_mcp_secret_name,
         resolved_prompt=resolved_prompt,
     )
-    from kubernetes import client as k8s_client
 
-    v1 = k8s_client.CoreV1Api()
 
-    if session.pod_name:
-        await asyncio.to_thread(k8s.delete_pod, session.pod_name, ws.k8s_namespace)
+async def _do_launch_openshell(
+    session: Session,
+    ws: Workspace,
+    db: AsyncSession,
+    suffix: str,
+    oc_secret,
+    has_adc: bool,
+    has_gemini: bool,
+    mcp_servers: list | None,
+    resolved_prompt: str,
+) -> None:
+    """Launch a session via the OpenShell sandbox API."""
+    from swarmer import openshell_client
+    from swarmer.openshell_policy import build_session_policy
 
-    pod = await asyncio.to_thread(v1.create_namespaced_pod, ws.k8s_namespace, pod_spec)
-    session.pod_name = pod.metadata.name
+    tool = get_tool(session.agent_tool)
+
+    # 1. Collect credentials into env-var dict
+    env_vars = await openshell_client.create_provider(
+        session=session,
+        workspace_secret=oc_secret,
+        github_pat=session.github_pat,
+        mcp_servers=mcp_servers or [],
+    )
+
+    # 2. Build network/filesystem policy YAML
+    policy_yaml = build_session_policy(
+        session=session,
+        repos=list(session.repos or []),
+        mcp_servers=list(mcp_servers or []),
+        agent_tool=session.agent_tool,
+        model=session.model or "",
+    )
+
+    # 3. Create sandbox (image from tool strategy)
+    image = tool.get_image()
+    ref = await openshell_client.create_sandbox(
+        image=image,
+        env_vars=env_vars,
+        policy_yaml=policy_yaml,
+    )
+    session.sandbox_name = ref.name
+
+    # 4. Write agent config (includes MCP configuration)
+    config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
+    config_json = config_data.get(f"{tool.name}.json", "{}")
+    await openshell_client.write_agent_config(
+        sandbox_name=ref.name,
+        tool_name=tool.name,
+        config_json=config_json,
+    )
+
+    # 5. Clone repos and configure git inside the sandbox
+    if session.repos:
+        await openshell_client.clone_repos(sandbox_name=ref.name, repos=list(session.repos))
+        safe_dir_cmd = "git config --global --add safe.directory '*'"
+        await openshell_client.exec_command(ref.name, ["sh", "-c", safe_dir_cmd], client=None)
+        if session.github_pat:
+            pat = session.github_pat
+            username = pat.github_username or ""
+            git_setup_cmd = (
+                "git config --global credential.helper store && "
+                f"printf 'https://{username}:%s@github.com\\n' \"$GITHUB_PAT\" "
+                "> /root/.git-credentials && "
+                f'git config --global user.name "{username}" && '
+                f'git config --global user.email "{username}@users.noreply.github.com"'
+            )
+            await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
+        if session.working_branch:
+            for repo in session.repos:
+                branch_cmd = (
+                    f"cd /sandbox/{repo.local_path} && "
+                    f"git checkout -b {shlex.quote(session.working_branch)} 2>/dev/null "
+                    f"|| git checkout {shlex.quote(session.working_branch)}"
+                )
+                await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
+
+    # 6. Resolve model
+    if session.model and tool.is_valid_model(session.model):
+        model = session.model
+    else:
+        model = tool.get_default_model(has_adc, has_gemini)
+
+    # 7. Write model config (strip trailing " && " from the shell fragment)
+    model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
+    if model_setup_cmd.strip():
+        clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
+        await openshell_client.exec_command(ref.name, ["sh", "-c", clean_cmd], client=None)
+
+    # 8. Share/state dir setup (symlinks, auth.json)
+    share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
+    if share_cmd.strip():
+        clean_share = share_cmd.rstrip().rstrip(";").rstrip()
+        await openshell_client.exec_command(ref.name, ["sh", "-c", clean_share], client=None)
+
+    # 9. Write AGENTS.md for tui/server modes
+    if session.mode in ("tui", "server"):
+        repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
+        agents_md_content = (resolved_prompt or "") + repo_context
+        if agents_md_content:
+            await openshell_client.write_agents_md(
+                sandbox_name=ref.name,
+                content=agents_md_content,
+            )
+
+    # 10. Commit state and start background agent task
     session.phase = "pending"
     session.run_started_at = datetime.utcnow()
     session.run_completed_at = None
-
-    if session.mode == "server":
-        tool = get_tool(session.agent_tool)
-        port = tool.get_server_port() or 4096
-        svc_name = await asyncio.to_thread(
-            k8s_sess.create_session_service, session.id, ws.k8s_namespace, port,
-        )
-        await asyncio.to_thread(
-            k8s.create_session_route, session.id, ws.k8s_namespace, svc_name, port,
-        )
-
     await db.commit()
-    if session.mode in ("prompt", "server"):
-        from swarmer import log_poller
-        log_poller.start_log_poller(session.id, session.pod_name, ws.k8s_namespace, session.mode)
+
+    main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+    asyncio.create_task(
+        _run_openshell_agent(
+            session_id=session.id,
+            sandbox_name=ref.name,
+            cmd=["sh", "-c", main_cmd],
+            mode=session.mode,
+        ),
+        name=f"openshell-agent-{session.id}",
+    )
+
+
+async def _run_openshell_agent(
+    session_id: int,
+    sandbox_name: str,
+    cmd: list[str],
+    mode: str,
+) -> None:
+    """Background task: starts the agent in the sandbox and tracks completion."""
+    from swarmer import openshell_client
+    from swarmer.database import get_db as _get_db
+    from swarmer.models.session import Session as _Session
+
+    async def _update_db(**fields) -> None:
+        async for _db in _get_db():
+            _s = await _db.get(_Session, session_id)
+            if _s:
+                for k, v in fields.items():
+                    setattr(_s, k, v)
+                await _db.commit()
+            break
+
+    try:
+        await _update_db(phase="running")
+
+        if mode == "prompt":
+            result = await openshell_client.exec_command(sandbox_name, cmd, client=None)
+            exit_code = getattr(result, "exit_code", None)
+            stdout = getattr(result, "stdout", "") or ""
+            stderr = getattr(result, "stderr", "") or ""
+            output = stdout or stderr
+            phase = "succeeded" if exit_code == 0 else "failed"
+
+            new_sandbox_name: str | None = sandbox_name
+            if phase == "succeeded":
+                try:
+                    await openshell_client.delete_sandbox(sandbox_name)
+                    new_sandbox_name = None
+                except Exception:
+                    log.warning("Auto-cleanup of sandbox %s failed", sandbox_name, exc_info=True)
+
+            await _update_db(
+                phase=phase,
+                last_output=output,
+                run_completed_at=datetime.utcnow(),
+                sandbox_name=new_sandbox_name,
+            )
+        else:
+            # Server/TUI: fire agent without blocking; sandbox stays alive
+            await openshell_client.start_agent(sandbox_name, cmd)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("_run_openshell_agent failed for session %d", session_id)
+        await _update_db(
+            phase="failed",
+            status_detail="OpenShell agent startup failed",
+            run_completed_at=datetime.utcnow(),
+        )
 
 
 @router.post(
@@ -957,30 +1032,13 @@ async def session_stop(
         await db.commit()
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
 
-    if session.pod_name:
-        from swarmer import log_poller
-        log_poller.stop_log_poller(sid)
+    if session.sandbox_name:
+        from swarmer import openshell_client
         try:
-            k8s.delete_pod(session.pod_name, ws.k8s_namespace)
-            if session.mode == "server":
-                k8s.delete_service(f"session-{session.id}-svc", ws.k8s_namespace)
-                k8s.delete_session_route(session.id, ws.k8s_namespace)
+            await openshell_client.delete_sandbox(session.sandbox_name)
         except Exception as exc:
-            flash(request, f"Pod deletion failed: {exc}", "warning")
-
-    if not session.persist and session.pvc_name:
-        try:
-            k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
-            session.pvc_name = None
-        except Exception as exc:
-            flash(request, f"PVC deletion failed: {exc}", "warning")
-
-    # Clean up session-scoped K8s Secrets (skip for scheduled sessions — they reuse secrets)
-    if not session.cron_schedule:
-        try:
-            k8s.cleanup_session_secrets(ws.k8s_namespace, session)
-        except Exception as exc:
-            flash(request, f"Secret cleanup failed: {exc}", "warning")
+            flash(request, f"Sandbox deletion failed: {exc}", "warning")
+        session.sandbox_name = None
 
     session.run_completed_at = datetime.utcnow()
     session.phase = "stopped"
