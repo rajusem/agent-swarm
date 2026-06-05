@@ -25,6 +25,7 @@ agent-swarm/
 ├── tests/                      # Test suite
 │   ├── test_api.py              # REST API unit tests (in-memory SQLite, no server)
 │   ├── test_list_repos_for_pat.py  # GitHub API helpers (respx mocking)
+│   ├── test_openshell_client.py # OpenShell client wrapper tests (mocked SDK, no package required)
 │   └── test_ui_patternfly.py   # Playwright e2e tests (requires running server at :8091)
 └── swarmer/                    # Python package (the application)
     ├── main.py                 # FastAPI app, lifespan, middleware, router registration
@@ -38,6 +39,7 @@ agent-swarm/
     ├── mcp_catalog.py          # Registry of well-known MCP servers (Jira, etc.) with OAuth defaults
     ├── scheduler.py            # Background asyncio cron scheduler for prompt-mode sessions
     ├── log_poller.py           # Background pod log poller with auto-cleanup
+    ├── openshell_client.py     # OpenShell sandbox SDK wrapper (async helpers, lazy SDK import)
     ├── agent_tools/            # Strategy pattern for multi-agent support
     │   ├── __init__.py         # AgentToolStrategy ABC (18 abstract methods)
     │   ├── registry.py         # Global registry + aliases (_init() auto-registers all tools)
@@ -150,7 +152,39 @@ All sensitive fields (PATs, API keys, ADC credentials) are Fernet-encrypted at r
 - **No K8s Secrets** -- credentials are injected via Gateway env vars, not `envFrom` K8s Secrets; `session.k8s_secret_names` becomes unused
 - **`session.sandbox_name`** -- stores the OpenShell sandbox identifier; analogous to `session.pod_name` for the K8s path (nullable `VARCHAR(255)`, `NULL` when K8s path is active)
 - **Network policy** -- `openshell_policy.py` builds per-sandbox YAML policies controlling outbound access (AI provider endpoints, per-repo GitHub, Jira MCP)
-- **Client module** -- `swarmer/openshell_client.py` wraps the OpenShell gRPC SDK with async helpers using `asyncio.run_in_executor`
+- **Client module** -- `swarmer/openshell_client.py` wraps the OpenShell gRPC SDK with async helpers using `asyncio.to_thread`
+
+### OpenShell Client API (`swarmer/openshell_client.py`)
+
+| Function | Signature | Description |
+|---|---|---|
+| `_get_client()` | `() → SandboxClient` | Internal factory; reads settings, returns configured SDK client |
+| `get_client()` | `(gateway_url, tls_ca_path?, tls_cert_path?, tls_key_path?) → SandboxClient` | Public factory for e2e tests |
+| `create_provider()` | `async (session, workspace_secret, github_pat, mcp_servers, client?) → dict[str,str]` | Collects DB credentials into env-var dict (no K8s Secrets, no I/O) |
+| `create_provider_from_env()` | `async (google_api_key, anthropic_api_key, github_pat, client?) → dict[str,str]` | Builds env-var dict from explicit values (for tests) |
+| `create_sandbox()` | `async (image, env_vars, policy_yaml, client?) → SandboxRef` | Creates sandbox, waits ready, returns ref |
+| `delete_sandbox()` | `async (sandbox_name, client?) → None` | Deletes sandbox by name |
+| `clone_repos()` | `async (sandbox_name, repos, client?) → None` | Clones git repos into `/sandbox/` via exec |
+| `write_agent_config()` | `async (sandbox_name, tool_name, config_json, client?) → None` | Writes tool config JSON to `/sandbox/.config/{tool}/` |
+| `write_agents_md()` | `async (sandbox_name, content, client?) → None` | Writes AGENTS.md to `/sandbox/` |
+| `write_file()` | `async (sandbox_name, path, content, client?) → None` | Writes arbitrary file to sandbox |
+| `start_agent()` | `async (sandbox_name, cmd, client?) → None` | Starts agent process via exec |
+| `exec_command()` | `async (sandbox_name, cmd, client) → ExecResult` | Runs command, returns result with stdout/stderr/exit_code |
+
+### OpenShell Config Settings
+
+All settings live in `swarmer/config.py` (`Settings` class) and are read from env vars:
+
+| Setting | Env Var | Type | Default | Purpose |
+|---|---|---|---|---|
+| `openshell_enabled` | `OPENSHELL_ENABLED` | `bool` | `False` | Feature flag — enables OpenShell path; K8s is the fallback |
+| `openshell_gateway_url` | `OPENSHELL_GATEWAY_URL` | `str` | `""` | Gateway API base URL for credential injection |
+| `openshell_supervisor_url` | `OPENSHELL_SUPERVISOR_URL` | `str` | `""` | Supervisor API base URL for sandbox lifecycle |
+| `openshell_tls_cert` | `OPENSHELL_TLS_CERT` | `str` | `""` | Path to client TLS certificate (mTLS) |
+| `openshell_tls_key` | `OPENSHELL_TLS_KEY` | `str` | `""` | Path to client TLS private key (mTLS) |
+| `openshell_tls_ca` | `OPENSHELL_TLS_CA` | `str` | `""` | Path to CA bundle for server cert verification |
+| `openshell_bearer_token` | `OPENSHELL_BEARER_TOKEN` | `str` | `""` | Bearer token for Gateway/Supervisor authentication |
+| `sandbox_gc_interval` | `SANDBOX_GC_INTERVAL` | `int` | `300` | Seconds between sandbox garbage-collection sweeps |
 
 ### OpenShell Config Settings
 
