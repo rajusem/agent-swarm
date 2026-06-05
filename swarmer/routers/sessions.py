@@ -1103,7 +1103,8 @@ async def _run_openshell_agent(
         await _update_db(phase="running")
 
         if mode == "prompt":
-            result = await openshell_client.exec_command(sandbox_name, cmd, client=None)
+            result = await openshell_client.exec_command(sandbox_name, cmd, client=None,
+                                                         timeout_seconds=300)
             exit_code = getattr(result, "exit_code", None)
             stdout = getattr(result, "stdout", "") or ""
             stderr = getattr(result, "stderr", "") or ""

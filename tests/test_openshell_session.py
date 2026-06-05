@@ -766,7 +766,7 @@ class TestRunOpenshellAgent:
 
         phases_seen = []
 
-        async def _fake_exec(sandbox_name, cmd, client=None):
+        async def _fake_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None):
             async with _TestSession() as db:
                 from sqlalchemy import select
                 from swarmer.models.session import Session
