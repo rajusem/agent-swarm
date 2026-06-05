@@ -146,7 +146,6 @@ All sensitive fields (PATs, API keys, ADC credentials) are Fernet-encrypted at r
 
 - **Gateway** -- credential injection API; Swarmer sends AI tokens, PATs, and MCP tokens to the Gateway instead of writing K8s Secrets via `envFrom`
 - **Supervisor** -- sandboxed agent runtime; replaces `build_session_pod()` + `create_namespaced_pod()`
-- **Feature flag** -- `settings.openshell_enabled` gates the new path; the K8s pod path remains as a fallback
 - **Sandbox lifecycle** -- `create_sandbox()` replaces `build_session_pod()` + `create_namespaced_pod()`; `delete_sandbox()` replaces `delete_pod()` + PVC cleanup
 - **No PVCs** -- sandbox lifetime is managed by OpenShell; `session.persist` and PVC lifecycle are removed in the final cleanup sub-task
 - **No K8s Secrets** -- credentials are injected via Gateway env vars, not `envFrom` K8s Secrets; `session.k8s_secret_names` becomes unused
@@ -177,7 +176,6 @@ All settings live in `swarmer/config.py` (`Settings` class) and are read from en
 
 | Setting | Env Var | Type | Default | Purpose |
 |---|---|---|---|---|
-| `openshell_enabled` | `OPENSHELL_ENABLED` | `bool` | `False` | Feature flag — enables OpenShell path; K8s is the fallback |
 | `openshell_gateway_url` | `OPENSHELL_GATEWAY_URL` | `str` | `""` | Gateway API base URL for credential injection |
 | `openshell_supervisor_url` | `OPENSHELL_SUPERVISOR_URL` | `str` | `""` | Supervisor API base URL for sandbox lifecycle |
 | `openshell_tls_cert` | `OPENSHELL_TLS_CERT` | `str` | `""` | Path to client TLS certificate (mTLS) |

@@ -20,8 +20,7 @@ class Settings(BaseSettings):
     k8s_namespace: str = ""
     max_concurrent_agents: int = 5
 
-    # OpenShell integration (feature-flagged — K8s pod path is the default)
-    openshell_enabled: bool = False
+    # OpenShell integration — replaces K8s pod/Secret management (ACM-34850)
     openshell_gateway_url: str = ""
     openshell_supervisor_url: str = ""
     openshell_tls_cert: str = ""        # path to client TLS cert
