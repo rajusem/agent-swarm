@@ -150,6 +150,18 @@ async def delete_sandbox(sandbox_name: str, client=None) -> None:
     await asyncio.to_thread(_do_delete)
 
 
+async def list_sandboxes(client=None) -> list[str]:
+    """Return names of all live sandboxes from the OpenShell gateway."""
+    if client is None:
+        client = _get_client()
+
+    def _do_list():
+        return client.list()
+
+    refs = await asyncio.to_thread(_do_list)
+    return [ref.name for ref in refs]
+
+
 async def _sandbox_id(sandbox_name: str, client) -> str:
     """Resolve sandbox name → id (needed by the exec RPC)."""
     ref = await asyncio.to_thread(client.get, sandbox_name)

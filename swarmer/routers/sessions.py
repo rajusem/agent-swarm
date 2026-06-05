@@ -1247,17 +1247,26 @@ async def session_delete(
         flash(request, "Stop the session before deleting it.", "danger")
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
 
-    if session.pvc_name:
+    if session.sandbox_name:
+        # OpenShell session — delete sandbox; skip K8s PVC/Secret cleanup
+        from swarmer import openshell_client
         try:
-            k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
+            await openshell_client.delete_sandbox(session.sandbox_name)
         except Exception as exc:
-            flash(request, f"PVC deletion failed: {exc}", "warning")
+            flash(request, f"Sandbox deletion failed: {exc}", "warning")
+    else:
+        # K8s session — clean up PVC and Secrets if present
+        if session.pvc_name:
+            try:
+                k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
+            except Exception as exc:
+                flash(request, f"PVC deletion failed: {exc}", "warning")
 
-    # Clean up any remaining session-scoped K8s Secrets
-    try:
-        k8s.cleanup_session_secrets(ws.k8s_namespace, session)
-    except Exception as exc:
-        flash(request, f"Secret cleanup failed: {exc}", "warning")
+        if session.k8s_secret_names:
+            try:
+                k8s.cleanup_session_secrets(ws.k8s_namespace, session)
+            except Exception as exc:
+                flash(request, f"Secret cleanup failed: {exc}", "warning")
 
     await db.delete(session)
     await db.commit()

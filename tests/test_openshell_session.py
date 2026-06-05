@@ -825,3 +825,182 @@ class TestBuildRepoContextBasePath:
         from swarmer.k8s_session import _build_repo_context
         assert _build_repo_context([]) == ""
         assert _build_repo_context([], base_path="/sandbox") == ""
+
+
+# ===========================================================================
+# 6. session_delete() — OpenShell sandbox cleanup
+# ===========================================================================
+
+
+class TestSessionDeleteOpenshell:
+    @pytest.mark.asyncio
+    async def test_delete_calls_delete_sandbox_when_sandbox_set(self, client):
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='sandbox-del-test', phase='stopped' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_delete:
+            resp = await client.delete(
+                f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}"
+            )
+
+        assert resp.status_code == 200
+        mock_delete.assert_called_once_with("sandbox-del-test")
+
+    @pytest.mark.asyncio
+    async def test_delete_skips_k8s_pvc_for_sandbox_session(self, client):
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='sandbox-nopvc', phase='stopped' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
+            with patch("swarmer.k8s_session.delete_session_pvc") as mock_pvc:
+                await client.delete(f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}")
+
+        mock_pvc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_skips_k8s_secrets_for_sandbox_session(self, client):
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='sandbox-nosecrets', phase='stopped' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
+            with patch("swarmer.k8s.cleanup_session_secrets") as mock_secrets:
+                await client.delete(f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}")
+
+        mock_secrets.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_handles_sandbox_error_gracefully(self, client):
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='sandbox-del-err', phase='stopped' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        with patch(
+            "swarmer.openshell_client.delete_sandbox",
+            new=AsyncMock(side_effect=RuntimeError("gateway unavailable")),
+        ):
+            resp = await client.delete(f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}")
+
+        # Session is deleted from DB despite sandbox error
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_no_sandbox_skips_k8s_secrets_when_empty(self, client):
+        """K8s cleanup is skipped when k8s_secret_names is empty (typical for stopped sandbox sessions)."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name=NULL, phase='stopped', k8s_secret_names='' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        with patch("swarmer.k8s.cleanup_session_secrets") as mock_secrets:
+            resp = await client.delete(f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}")
+
+        assert resp.status_code == 200
+        mock_secrets.assert_not_called()
+
+
+# ===========================================================================
+# 7. Sandbox GC — _collect_orphaned_sandboxes()
+# ===========================================================================
+
+
+class TestSandboxGC:
+    @pytest.mark.asyncio
+    async def test_deletes_sandbox_not_in_db(self):
+        async with _TestSession() as db:
+            with patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=["sandbox-orphan-1", "sandbox-orphan-2"])):
+                with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_delete:
+                    from swarmer.scheduler import _collect_orphaned_sandboxes
+                    await _collect_orphaned_sandboxes(db)
+
+        assert mock_delete.call_count == 2
+        deleted = {c.args[0] for c in mock_delete.call_args_list}
+        assert deleted == {"sandbox-orphan-1", "sandbox-orphan-2"}
+
+    @pytest.mark.asyncio
+    async def test_skips_sandbox_present_in_db(self, client):
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='sandbox-known', phase='running' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        async with _TestSession() as db:
+            with patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=["sandbox-known", "sandbox-orphan"])):
+                with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_delete:
+                    from swarmer.scheduler import _collect_orphaned_sandboxes
+                    await _collect_orphaned_sandboxes(db)
+
+        # Only the orphan is deleted
+        mock_delete.assert_called_once_with("sandbox-orphan")
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_no_live_sandboxes(self):
+        async with _TestSession() as db:
+            with patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=[])):
+                with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_delete:
+                    from swarmer.scheduler import _collect_orphaned_sandboxes
+                    await _collect_orphaned_sandboxes(db)
+
+        mock_delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_continues_after_delete_error(self):
+        async with _TestSession() as db:
+            with patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=["sandbox-a", "sandbox-b"])):
+                with patch(
+                    "swarmer.openshell_client.delete_sandbox",
+                    new=AsyncMock(side_effect=[RuntimeError("gateway error"), None]),
+                ) as mock_delete:
+                    from swarmer.scheduler import _collect_orphaned_sandboxes
+                    await _collect_orphaned_sandboxes(db)
+
+        assert mock_delete.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_handles_list_error_gracefully(self):
+        async with _TestSession() as db:
+            with patch(
+                "swarmer.openshell_client.list_sandboxes",
+                new=AsyncMock(side_effect=RuntimeError("gateway unavailable")),
+            ):
+                with patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_delete:
+                    from swarmer.scheduler import _collect_orphaned_sandboxes
+                    await _collect_orphaned_sandboxes(db)
+
+        mock_delete.assert_not_called()

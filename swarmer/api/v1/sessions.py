@@ -216,16 +216,19 @@ async def delete_session(
         raise HTTPException(status_code=409, detail="Stop the session before deleting")
 
     if session.sandbox_name:
+        # OpenShell session — delete sandbox; skip K8s PVC/Secret cleanup
         from swarmer import openshell_client
         try:
             await openshell_client.delete_sandbox(session.sandbox_name)
         except Exception:
             pass
-    try:
-        # Kept for any legacy K8s sessions still in the database
-        k8s.cleanup_session_secrets(ws.k8s_namespace, session)
-    except Exception:
-        pass
+    else:
+        # K8s session — clean up Secrets only if any were created
+        if session.k8s_secret_names:
+            try:
+                k8s.cleanup_session_secrets(ws.k8s_namespace, session)
+            except Exception:
+                pass
 
     name = session.name
     await db.delete(session)

@@ -10,33 +10,96 @@ log = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 30.0
 _scheduler_task: asyncio.Task | None = None
+_gc_task: asyncio.Task | None = None
 _queue_next_check: datetime | None = None
 
 
 def start_scheduler() -> None:
-    global _scheduler_task
+    global _scheduler_task, _gc_task
     stop_scheduler()
     _scheduler_task = asyncio.create_task(
         _scheduler_loop(),
         name="cron-scheduler",
     )
+    from swarmer.config import settings
+    if settings.openshell_gateway_url and settings.sandbox_gc_interval != 0:
+        _gc_task = asyncio.create_task(
+            _sandbox_gc_loop(),
+            name="sandbox-gc",
+        )
 
 
 def stop_scheduler() -> None:
-    global _scheduler_task
+    global _scheduler_task, _gc_task
     if _scheduler_task and not _scheduler_task.done():
         _scheduler_task.cancel()
     _scheduler_task = None
+    if _gc_task and not _gc_task.done():
+        _gc_task.cancel()
+    _gc_task = None
 
 
 async def shutdown() -> None:
+    gc = _gc_task
     task = _scheduler_task
     stop_scheduler()
-    if task:
+    for t in (task, gc):
+        if t:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+
+async def _sandbox_gc_loop() -> None:
+    from swarmer.config import settings
+    from swarmer.database import get_db
+
+    interval = max(60, settings.sandbox_gc_interval)  # floor at 60s; 0 is handled by start_scheduler (not started)
+    log.info("sandbox-gc: started, interval=%ds", interval)
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                async for _db in get_db():
+                    await _collect_orphaned_sandboxes(_db)
+                    break
+            except Exception:
+                log.exception("sandbox-gc: error in collect cycle")
+    except asyncio.CancelledError:
+        raise
+
+
+async def _collect_orphaned_sandboxes(db) -> None:
+    """Delete live sandboxes that have no matching active session in the DB."""
+    from swarmer import openshell_client
+    from swarmer.models.session import Session
+
+    try:
+        live_names = await openshell_client.list_sandboxes()
+    except Exception:
+        log.exception("sandbox-gc: failed to list sandboxes")
+        return
+
+    if not live_names:
+        return
+
+    result = await db.execute(
+        select(Session.sandbox_name).where(Session.sandbox_name.is_not(None))
+    )
+    known_names = {row[0] for row in result.all()}
+
+    orphaned = [name for name in live_names if name not in known_names]
+    if not orphaned:
+        return
+
+    log.warning("sandbox-gc: found %d orphaned sandbox(es): %s", len(orphaned), orphaned)
+    for name in orphaned:
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            await openshell_client.delete_sandbox(name)
+            log.info("sandbox-gc: deleted orphaned sandbox %s", name)
+        except Exception:
+            log.warning("sandbox-gc: failed to delete %s", name, exc_info=True)
 
 
 async def _scheduler_loop() -> None:
