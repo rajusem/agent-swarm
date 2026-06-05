@@ -898,6 +898,24 @@ async def _setup_openshell_sandbox(
         )
         await _update_db(sandbox_name=ref.name)
 
+        # Check if the session was stopped while sandbox was being created (race condition).
+        # If so, delete the sandbox and exit cleanly rather than starting the agent.
+        async def _session_phase() -> str:
+            async for _db in _get_db():
+                _s = await _db.get(_Session, session_id)
+                return _s.phase if _s else "unknown"
+            return "unknown"
+
+        current_phase = await _session_phase()
+        if current_phase != "pending":
+            log.info("_setup_openshell_sandbox: session %d no longer pending (phase=%s), cleaning up sandbox %s",
+                     session_id, current_phase, ref.name)
+            try:
+                await openshell_client.delete_sandbox(ref.name)
+            except Exception:
+                pass
+            return
+
         # Patch MCP config into container's existing tool config (preserve enabled_providers)
         if mcp_patch:
             merge_cmd = (
