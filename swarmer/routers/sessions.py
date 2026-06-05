@@ -799,105 +799,179 @@ async def _do_launch_openshell(
     else:
         model = tool.get_default_model(has_adc, has_gemini)
 
-    # Mark pending immediately and release the DB lock before slow gRPC operations.
-    # Status poller and scheduler see the correct state; SQLite single-writer
-    # contention is eliminated for the duration of sandbox creation (30-60 s).
+    # Capture serialisable data for the background task before committing.
+    # ORM objects cannot be used across DB sessions.
+    import json as _json
+    mcp_patch: dict = {}
+    if mcp_servers:
+        config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
+        config_json = config_data.get(f"{tool.name}.json", "{}")
+        try:
+            mcp_patch = _json.loads(config_json).get("mcp", {})
+        except Exception:
+            pass
+
+    repos_data = [
+        {"url": r.repo_url, "local_path": r.local_path, "branch": r.branch}
+        for r in (session.repos or [])
+    ]
+    git_username = (session.github_pat.github_username or "") if session.github_pat else ""
+    agents_md = ""
+    if session.mode in ("tui", "server"):
+        repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
+        agents_md = (resolved_prompt or "") + repo_context
+    main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+    model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
+    share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
+
+    # Mark pending and commit — HTTP handler returns immediately; browser unblocks.
     session.phase = "pending"
     session.last_output = ""
     session.run_started_at = datetime.utcnow()
     session.run_completed_at = None
     await db.commit()
 
+    # All slow gRPC work (create_sandbox wait_ready, exec setup) runs in the background.
+    asyncio.create_task(
+        _setup_openshell_sandbox(
+            session_id=session.id,
+            provider_names=provider_names,
+            env_vars=env_vars,
+            policy_yaml=policy_yaml,
+            image=tool.get_image(),
+            tool_name=tool.name,
+            model=model,
+            model_setup_cmd=model_setup_cmd,
+            share_cmd=share_cmd,
+            mcp_patch=mcp_patch,
+            repos_data=repos_data,
+            git_username=git_username,
+            working_branch=session.working_branch or "",
+            agents_md=agents_md,
+            mode=session.mode,
+            main_cmd=main_cmd,
+        ),
+        name=f"openshell-setup-{session.id}",
+    )
+
+
+async def _setup_openshell_sandbox(
+    session_id: int,
+    provider_names: list[str],
+    env_vars: dict,
+    policy_yaml: str,
+    image: str,
+    tool_name: str,
+    model: str,
+    model_setup_cmd: str,
+    share_cmd: str,
+    mcp_patch: dict,
+    repos_data: list[dict],
+    git_username: str,
+    working_branch: str,
+    agents_md: str,
+    mode: str,
+    main_cmd: str,
+) -> None:
+    """Background task: create sandbox and run all setup steps, then launch agent."""
+    from swarmer import openshell_client
+    from swarmer.database import get_db as _get_db
+    from swarmer.models.session import Session as _Session
+    import json as _json
+
+    async def _update_db(**fields) -> None:
+        async for _db in _get_db():
+            _s = await _db.get(_Session, session_id)
+            if _s:
+                for k, v in fields.items():
+                    setattr(_s, k, v)
+                await _db.commit()
+            break
+
     try:
-        # 3. Create sandbox — wait_ready blocks until the container is up (slow)
-        image = tool.get_image()
+        # Create sandbox (slow — wait_ready can take 30-120 s)
         ref = await openshell_client.create_sandbox(
             image=image,
             env_vars=env_vars,
             policy_yaml=policy_yaml,
             provider_names=provider_names,
         )
-        session.sandbox_name = ref.name
-        await db.commit()  # persist sandbox_name so GC can track it
+        await _update_db(sandbox_name=ref.name)
 
-        # 4. Write agent config to /sandbox/{tool}.json (read by agent from CWD)
-        config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
-        config_json = config_data.get(f"{tool.name}.json", "{}")
-        await openshell_client.write_agent_config(
-            sandbox_name=ref.name,
-            tool_name=tool.name,
-            config_json=config_json,
-        )
+        # Patch MCP config into container's existing tool config (preserve enabled_providers)
+        if mcp_patch:
+            merge_cmd = (
+                f"python3 -c \""
+                f"import json; "
+                f"cfg=json.load(open('/sandbox/{tool_name}.json')); "
+                f"cfg['mcp']={_json.dumps(mcp_patch)}; "
+                f"json.dump(cfg, open('/sandbox/{tool_name}.json','w'), indent=2)"
+                f"\""
+            )
+            await openshell_client.exec_command(ref.name, ["sh", "-c", merge_cmd], client=None)
 
-        # 5. Configure git credentials before cloning (uses $GH_TOKEN from github provider)
-        if session.repos and session.github_pat:
-            pat = session.github_pat
-            username = pat.github_username or ""
+        # Git credentials before cloning (uses $GH_TOKEN injected by github provider)
+        if repos_data and git_username:
             git_setup_cmd = (
                 "git config --global credential.helper store && "
-                f"printf 'https://{username}:%s@github.com\\n' \"$GH_TOKEN\" "
+                f"printf 'https://{git_username}:%s@github.com\\n' \"$GH_TOKEN\" "
                 "> /root/.git-credentials && "
-                f'git config --global user.name "{username}" && '
-                f'git config --global user.email "{username}@users.noreply.github.com"'
+                f'git config --global user.name "{git_username}" && '
+                f'git config --global user.email "{git_username}@users.noreply.github.com"'
             )
             await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
 
-        # 5b. Clone repos
-        if session.repos:
-            await openshell_client.clone_repos(sandbox_name=ref.name, repos=list(session.repos))
-            safe_dir_cmd = "git config --global --add safe.directory '*'"
-            await openshell_client.exec_command(ref.name, ["sh", "-c", safe_dir_cmd], client=None)
-            if session.working_branch:
-                for repo in session.repos:
+        # Clone repos
+        if repos_data:
+            class _Repo:
+                def __init__(self, d):
+                    self.repo_url = d["url"]
+                    self.local_path = d["local_path"]
+                    self.branch = d["branch"]
+            fake_repos = [_Repo(d) for d in repos_data]
+            await openshell_client.clone_repos(sandbox_name=ref.name, repos=fake_repos)
+            await openshell_client.exec_command(
+                ref.name, ["sh", "-c", "git config --global --add safe.directory '*'"], client=None
+            )
+            if working_branch:
+                for rd in repos_data:
                     branch_cmd = (
-                        f"cd /sandbox/{repo.local_path} && "
-                        f"git checkout -b {shlex.quote(session.working_branch)} 2>/dev/null "
-                        f"|| git checkout {shlex.quote(session.working_branch)}"
+                        f"cd /sandbox/{rd['local_path']} && "
+                        f"git checkout -b {shlex.quote(working_branch)} 2>/dev/null "
+                        f"|| git checkout {shlex.quote(working_branch)}"
                     )
                     await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
 
-        # 6. Write model selection config
-        model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
+        # Model selection config
         if model_setup_cmd.strip():
             clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
             await openshell_client.exec_command(ref.name, ["sh", "-c", clean_cmd], client=None)
 
-        # 7. Share/state dir setup (symlinks, auth.json written using $GOOGLE_API_KEY from provider)
-        share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
+        # Share/state dir setup (auth.json written using $GOOGLE_API_KEY from provider)
         if share_cmd.strip():
             clean_share = share_cmd.rstrip().rstrip(";").rstrip()
             await openshell_client.exec_command(ref.name, ["sh", "-c", clean_share], client=None)
 
-        # 8. Write AGENTS.md for tui/server modes
-        if session.mode in ("tui", "server"):
-            repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
-            agents_md_content = (resolved_prompt or "") + repo_context
-            if agents_md_content:
-                await openshell_client.write_agents_md(
-                    sandbox_name=ref.name,
-                    content=agents_md_content,
-                )
+        # AGENTS.md for tui/server modes
+        if agents_md:
+            await openshell_client.write_agents_md(sandbox_name=ref.name, content=agents_md)
 
-        # 9. Start background agent task
-        main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+        # Launch agent
         asyncio.create_task(
             _run_openshell_agent(
-                session_id=session.id,
+                session_id=session_id,
                 sandbox_name=ref.name,
                 cmd=["sh", "-c", main_cmd],
-                mode=session.mode,
+                mode=mode,
             ),
-            name=f"openshell-agent-{session.id}",
+            name=f"openshell-agent-{session_id}",
         )
 
-    except Exception:
-        log.exception("_do_launch_openshell failed for session %d", session.id)
-        session.phase = "failed"
-        session.run_completed_at = datetime.utcnow()
-        if not session.sandbox_name:
-            pass  # sandbox was never created
-        await db.commit()
+    except asyncio.CancelledError:
         raise
+    except Exception:
+        log.exception("_setup_openshell_sandbox failed for session %d", session_id)
+        await _update_db(phase="failed", run_completed_at=datetime.utcnow())
 
 
 async def _run_openshell_agent(
