@@ -181,6 +181,9 @@ async def import_provider_profiles(profiles: list[dict], client=None) -> None:
                 c = openshell_pb2.ProviderProfileCredential(
                     name=cred["name"],
                     required=cred.get("required", True),
+                    auth_style=cred.get("auth_style", ""),
+                    header_name=cred.get("header_name", ""),
+                    query_param=cred.get("query_param", ""),
                 )
                 for ev in cred.get("env_vars", []):
                     c.env_vars.append(ev)

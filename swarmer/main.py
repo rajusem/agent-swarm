@@ -31,7 +31,15 @@ _OPENSHELL_CUSTOM_PROFILES = [
         "id": "google-ai-studio",
         "display_name": "Google AI Studio",
         "inference_capable": True,
-        "credentials": [{"name": "api_key", "env_vars": ["GOOGLE_API_KEY"], "required": True}],
+        "credentials": [
+            {
+                "name": "api_key",
+                "env_vars": ["GOOGLE_API_KEY"],
+                "required": True,
+                "auth_style": "header",
+                "header_name": "x-goog-api-key",
+            }
+        ],
     },
 ]
 
