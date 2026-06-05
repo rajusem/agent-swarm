@@ -296,44 +296,47 @@ async def write_agent_config(
     config_json: str,
     client=None,
 ) -> None:
-    """Write agent config JSON to /sandbox/.config/{tool_name}/."""
+    """Write agent config JSON to /sandbox/{tool_name}.json (CWD config, read by agent at startup).
+
+    Uses stdin to deliver file content so the gateway's no-newline-in-args
+    restriction is never hit.
+    """
     if client is None:
         client = _get_client()
     sid = await _sandbox_id(sandbox_name, client)
-    config_dir = f"/sandbox/.config/{tool_name}"
-    config_path = f"{config_dir}/{tool_name}.json"
-    script = f"mkdir -p {config_dir} && cat > {config_path} << 'EOCFG'\n{config_json}\nEOCFG"
+    # Write directly to /sandbox/<tool>.json — OpenCode/Crush read config from CWD.
+    dest = shlex.quote(f"/sandbox/{tool_name}.json")
+    script = f"cat > {dest}"
 
     def _do_write(s=sid):
-        client.exec(s, ["sh", "-c", script])
+        client.exec(s, ["sh", "-c", script], stdin=config_json.encode())
 
     await asyncio.to_thread(_do_write)
 
 
 async def write_agents_md(sandbox_name: str, content: str, client=None) -> None:
-    """Write content to /sandbox/AGENTS.md."""
+    """Write content to /sandbox/AGENTS.md via stdin (avoids newline-in-arg restriction)."""
     if client is None:
         client = _get_client()
     sid = await _sandbox_id(sandbox_name, client)
-    script = f"cat > /sandbox/AGENTS.md << 'EOMD'\n{content}\nEOMD"
 
     def _do_write(s=sid):
-        client.exec(s, ["sh", "-c", script])
+        client.exec(s, ["sh", "-c", "cat > /sandbox/AGENTS.md"], stdin=content.encode())
 
     await asyncio.to_thread(_do_write)
 
 
 async def write_file(sandbox_name: str, path: str, content: str, client=None) -> None:
-    """Write arbitrary content to a file path inside the sandbox."""
+    """Write arbitrary content to a file inside the sandbox via stdin."""
     if client is None:
         client = _get_client()
     sid = await _sandbox_id(sandbox_name, client)
     parent = shlex.quote(str(pathlib.Path(path).parent))
     dest = shlex.quote(path)
-    script = f"mkdir -p {parent} && cat > {dest} << 'EOFILE'\n{content}\nEOFILE"
+    script = f"mkdir -p {parent} && cat > {dest}"
 
     def _do_write(s=sid):
-        client.exec(s, ["sh", "-c", script])
+        client.exec(s, ["sh", "-c", script], stdin=content.encode())
 
     await asyncio.to_thread(_do_write)
 

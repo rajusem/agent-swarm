@@ -20,7 +20,13 @@ _AsyncSessionLocal: async_sessionmaker | None = None
 
 def init_db(database_url: str) -> None:
     global _engine, _AsyncSessionLocal
-    _engine = create_async_engine(database_url, echo=False)
+    connect_args = {}
+    if database_url.startswith("sqlite"):
+        # SQLite allows only one writer at a time; wait up to 15 s rather than
+        # immediately raising "database is locked" when the scheduler and an
+        # HTTP handler both attempt concurrent writes.
+        connect_args["timeout"] = 15
+    _engine = create_async_engine(database_url, echo=False, connect_args=connect_args)
     _AsyncSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
 
 
