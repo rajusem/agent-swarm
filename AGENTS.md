@@ -35,6 +35,13 @@ make kind-load-crush     # Load crush agent image into kind
 make kind-deploy         # Full one-shot: create cluster + build + load + deploy
 make kind-delete         # Tear down kind cluster
 
+# OpenShell (sandbox runtime — replaces K8s pods)
+make openshell-setup     # Install OpenShell via Helm + extract mTLS certs
+make openshell-gen-token # Generate JWT bearer token → .env
+make openshell-status    # Show gateway pods, CRDs, cert status
+make openshell-delete    # Uninstall OpenShell from cluster
+# See docs/OPENSHELL_LOCAL_SETUP.md for full setup walkthrough
+
 # Production Kubernetes
 make k8s-deploy          # Deploy to current kubectl context
 make k8s-connect         # Port-forward localhost:8080 → swarmer service

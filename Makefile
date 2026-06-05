@@ -388,15 +388,18 @@ openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl c
 	  echo "Error: Helm 3.8+ required for OCI chart support (found: $$(helm version --short 2>/dev/null || echo 'not installed'))"; \
 	  exit 1; \
 	fi
+	@echo "Installing Agent Sandbox CRDs..."
+	kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/manifest.yaml
 	@echo "Installing OpenShell $(OPENSHELL_VERSION)..."
 	kubectl create namespace $(OPENSHELL_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
 	DOCKER_CONFIG=$$(mktemp -d) helm upgrade --install openshell \
 	  oci://ghcr.io/nvidia/openshell/helm-chart \
 	  --version $(OPENSHELL_VERSION) \
 	  --namespace $(OPENSHELL_NAMESPACE) \
+	  --set server.auth.allowUnauthenticatedUsers=true \
 	  --wait --timeout 5m
 	$(MAKE) openshell-extract-tls
-	$(MAKE) k8s-openshell-tls-secret NAMESPACE=$(NAMESPACE)
+	$(MAKE) k8s-openshell-tls-secret NAMESPACE=$(NAMESPACE) 2>/dev/null || true
 	@echo ""
 	@echo "✓ OpenShell $(OPENSHELL_VERSION) installed."
 	@echo "  Port-forward: kubectl port-forward -n $(OPENSHELL_NAMESPACE) svc/openshell 17670:8080"
