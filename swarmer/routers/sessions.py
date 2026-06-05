@@ -765,22 +765,28 @@ async def _do_launch_openshell(
         mcp_servers=mcp_servers or [],
     )
 
-    # 1b. Create/update gateway providers for each available AI credential
-    providers_to_attach: list[str] = []
+    # 1b. Create/update gateway providers for each available credential.
+    #     Providers must be set up BEFORE sandbox creation so that SandboxSpec.providers
+    #     can list them — the supervisor calls GetSandboxProviderEnvironment at startup
+    #     and receives injected reference tokens (not the real keys) for each provider.
+    provider_names: list[str] = []
     ws_id = session.workspace_id
     if oc_secret and oc_secret.anthropic_api_key:
         pname = f"swarmer-ws-{ws_id}-claude-code"
-        await openshell_client.ensure_provider(pname, "claude-code", {}, credentials={"api_key": oc_secret.anthropic_api_key})
-        providers_to_attach.append(pname)
+        await openshell_client.ensure_provider(pname, "claude-code", {}, credential_keys=["api_key"])
+        await openshell_client.configure_provider_credential(pname, "api_key", oc_secret.anthropic_api_key)
+        provider_names.append(pname)
     if oc_secret and oc_secret.google_api_key:
         pname = f"swarmer-ws-{ws_id}-google-ai-studio"
-        await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={"api_key": oc_secret.google_api_key})
-        providers_to_attach.append(pname)
+        await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credential_keys=["api_key"])
+        await openshell_client.configure_provider_credential(pname, "api_key", oc_secret.google_api_key)
+        provider_names.append(pname)
     if session.github_pat:
         pname = f"swarmer-ws-{ws_id}-github"
         pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
-        await openshell_client.ensure_provider(pname, "github", {}, credentials={"api_token": pat_token})
-        providers_to_attach.append(pname)
+        await openshell_client.ensure_provider(pname, "github", {}, credential_keys=["api_token"])
+        await openshell_client.configure_provider_credential(pname, "api_token", pat_token)
+        provider_names.append(pname)
 
     # 2. Build network/filesystem policy YAML
     policy_yaml = build_session_policy(
@@ -791,18 +797,15 @@ async def _do_launch_openshell(
         model=session.model or "",
     )
 
-    # 3. Create sandbox (image from tool strategy)
+    # 3. Create sandbox — providers listed in spec so supervisor sees them at startup
     image = tool.get_image()
     ref = await openshell_client.create_sandbox(
         image=image,
         env_vars=env_vars,
         policy_yaml=policy_yaml,
+        provider_names=provider_names,
     )
     session.sandbox_name = ref.name
-
-    # 3b. Attach providers so the supervisor injects credentials at sandbox startup
-    for pname in providers_to_attach:
-        await openshell_client.attach_sandbox_provider(ref.name, pname)
 
     # 4. Write agent config (includes MCP configuration)
     config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)

@@ -81,10 +81,16 @@ async def ensure_provider(
     name: str,
     profile_type: str,
     config: dict[str, str],
-    credentials: dict[str, str] | None = None,
+    credential_keys: list[str] | None = None,
     client=None,
 ) -> None:
-    """Create a named provider on the gateway (with credentials), or update it if it already exists."""
+    """Declare a named provider on the gateway.
+
+    credential_keys names the credential slots (e.g. ["api_key"]) without
+    values — the actual secret material is supplied separately via
+    configure_provider_credential() so the gateway can issue reference tokens
+    and proxy-rewrite outbound requests without exposing the real key.
+    """
     from openshell._proto import openshell_pb2
     import grpc
 
@@ -96,8 +102,8 @@ async def ensure_provider(
         req_provider.type = profile_type
         for k, v in (config or {}).items():
             req_provider.config[k] = v
-        for k, v in (credentials or {}).items():
-            req_provider.credentials[k] = v
+        for k in (credential_keys or []):
+            req_provider.credentials[k] = ""
 
     def _do_ensure():
         create_req = openshell_pb2.CreateProviderRequest()
@@ -206,9 +212,14 @@ async def create_sandbox(
     image: str,
     env_vars: dict[str, str] | None,
     policy_yaml: str,
+    provider_names: list[str] | None = None,
     client=None,
 ):
     """Create an OpenShell sandbox and wait for it to be ready.
+
+    provider_names lists pre-configured gateway providers to attach at creation
+    time so the supervisor can call GetSandboxProviderEnvironment at startup
+    and receive injected reference tokens before any exec commands run.
 
     Returns the SandboxRef; caller stores ref.name as session.sandbox_name.
     """
@@ -222,6 +233,8 @@ async def create_sandbox(
         spec.template.image = image
     for k, v in (env_vars or {}).items():
         spec.environment[k] = v
+    for pname in (provider_names or []):
+        spec.providers.append(pname)
 
     def _do_create():
         return client.create(spec=spec)
