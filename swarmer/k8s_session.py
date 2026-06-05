@@ -10,7 +10,7 @@ from swarmer.config import settings
 log = logging.getLogger(__name__)
 
 
-def _build_repo_context(repos) -> str:
+def _build_repo_context(repos, base_path: str = "/workspace") -> str:
     """Build a markdown section listing workspace repositories.
 
     Returns an empty string when *repos* is empty so callers can
@@ -30,7 +30,7 @@ def _build_repo_context(repos) -> str:
         org_repo = "/".join(org_repo.split("/")[-2:])
         lines.append(
             f"| `{org_repo}` | `{repo.branch}` "
-            f"| `/workspace/{repo.local_path}` |"
+            f"| `{base_path}/{repo.local_path}` |"
         )
     return "\n".join(lines) + "\n"
 
