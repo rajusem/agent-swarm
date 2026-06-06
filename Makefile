@@ -33,7 +33,7 @@ OPENSHIFT_OAUTH_URL  ?=
 SWARMER_HOST         ?=
 
 # OpenShell gateway
-OPENSHELL_VERSION   ?= 0.0.51
+OPENSHELL_VERSION   ?= 0.0.55
 OPENSHELL_NAMESPACE ?= openshell
 OPENSHELL_TLS_DIR   ?= auth/openshell
 

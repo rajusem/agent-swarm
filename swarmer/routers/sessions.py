@@ -815,6 +815,7 @@ async def _do_launch_openshell(
     #     so the supervisor can call GetSandboxProviderEnvironment at startup and receive
     #     the injected env vars (GOOGLE_API_KEY, ANTHROPIC_API_KEY, GH_TOKEN, etc.).
     provider_names: list[str] = []
+    inference_env: dict[str, str] = {}
     ws_id = session.workspace_id
     if oc_secret and oc_secret.anthropic_api_key:
         pname = f"swarmer-ws-{ws_id}-claude-code"
@@ -823,6 +824,36 @@ async def _do_launch_openshell(
     if oc_secret and oc_secret.google_api_key:
         pname = f"swarmer-ws-{ws_id}-google-ai-studio"
         await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={"GOOGLE_API_KEY": oc_secret.google_api_key})
+        provider_names.append(pname)
+    if oc_secret and oc_secret.has_adc and oc_secret.has_vertex:
+        pname = f"swarmer-ws-{ws_id}-google-vertex-ai"
+        _project = oc_secret.google_cloud_project or ""
+        _location = oc_secret.vertex_location or ""
+        # Provider passes credential, project, and location to the gateway.
+        # The gateway routes inference.local calls through this provider using
+        # ADC-based token refresh — no credentials enter the sandbox directly.
+        # In OpenShell 0.0.55, credential KEYS are injected as env var names.
+        # Include all env var names agents may check so the gateway injects them.
+        # gcloud_adc_token is the one configured for ADC refresh; the others get
+        # the same refreshed token value via profile env_var aliasing.
+        await openshell_client.ensure_provider(
+            pname, "google-vertex-ai",
+            config={"VERTEX_AI_PROJECT_ID": _project, "VERTEX_AI_REGION": _location},
+            credentials={
+                "gcloud_adc_token": "__placeholder__",
+                "GOOGLE_VERTEX_AI_TOKEN": "__placeholder__",
+                "GOOGLE_OAUTH_ACCESS_TOKEN": "__placeholder__",
+                "GOOGLE_CLOUD_PROJECT": _project,
+                "VERTEX_LOCATION": _location,
+                "ANTHROPIC_VERTEX_PROJECT_ID": _project,
+            },
+        )
+        await openshell_client.configure_vertex_provider(
+            pname,
+            adc_json=oc_secret.application_default_credentials,
+            project=_project,
+            location=_location,
+        )
         provider_names.append(pname)
     if session.github_pat:
         pname = f"swarmer-ws-{ws_id}-github"
@@ -903,6 +934,7 @@ async def _do_launch_openshell(
             mode=session.mode,
             main_cmd=main_cmd,
             resolved_prompt=resolved_prompt_safe,
+            inference_env=inference_env,
         ),
         name=f"openshell-setup-{session.id}",
     )
@@ -927,6 +959,7 @@ async def _setup_openshell_sandbox(
     mode: str,
     main_cmd: str,
     resolved_prompt: str = "",
+    inference_env: dict | None = None,
 ) -> None:
     """Background task: create sandbox and run all setup steps, then launch agent."""
     from swarmer import openshell_client
@@ -1052,7 +1085,8 @@ async def _setup_openshell_sandbox(
             # An empty prompt causes opencode to exit immediately without calling the API.
             _probe_prompt = shlex.quote("Reply with one word: ready")
             _probe_bin = {"opencode": "opencode run", "crush": "crush run"}.get(tool_name, "opencode run")
-            _probe_cmd = f"HOME=/sandbox {_probe_bin} --model {shlex.quote(model)} {_probe_prompt} 2>/dev/null; true"
+            _inf_prefix = (" ".join(f"{k}={shlex.quote(v)}" for k, v in (inference_env or {}).items()) + " ") if inference_env else ""
+            _probe_cmd = f"{_inf_prefix}HOME=/sandbox {_probe_bin} --model {shlex.quote(model)} {_probe_prompt} 2>/dev/null; true"
             try:
                 await openshell_client.exec_command(
                     ref.name, ["sh", "-c", _probe_cmd], client=None,
@@ -1082,6 +1116,11 @@ async def _setup_openshell_sandbox(
             agent_cmd = f"HOME=/sandbox {main_cmd}"
         else:
             agent_cmd = f"HOME=/sandbox {main_cmd}"
+
+        # Prepend inference proxy env vars when OpenShell routes VertexAI through inference.local.
+        if inference_env:
+            _env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in inference_env.items())
+            agent_cmd = f"{_env_prefix} {agent_cmd}"
 
         # Launch agent
         asyncio.create_task(
@@ -1801,6 +1840,43 @@ _COMMIT_MSG_PROMPT = (
     "then 1-3 bullet points summarizing the key changes. "
     "Output ONLY the commit message, nothing else.\n\n"
 )
+
+
+async def _get_vertex_access_token(oc_secret) -> str:
+    """Exchange ADC credentials for a short-lived GCP access token.
+
+    Returns the Bearer access token string, or "" on failure.
+    Called at session launch time so the token is fresh (~1 h TTL).
+    """
+    import json as _json
+    import google.auth.transport.requests
+
+    try:
+        adc_info = _json.loads(oc_secret.application_default_credentials)
+        adc_type = adc_info.get("type", "")
+
+        if adc_type == "service_account":
+            from google.oauth2 import service_account
+            creds = service_account.Credentials.from_service_account_info(
+                adc_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+        elif adc_type == "authorized_user":
+            from google.oauth2.credentials import Credentials as UserCredentials
+            creds = UserCredentials(
+                token=None,
+                refresh_token=adc_info["refresh_token"],
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=adc_info["client_id"],
+                client_secret=adc_info["client_secret"],
+            )
+        else:
+            return ""
+
+        await asyncio.to_thread(creds.refresh, google.auth.transport.requests.Request())
+        return creds.token or ""
+    except Exception:
+        log.warning("_get_vertex_access_token: failed to exchange ADC for access token", exc_info=True)
+        return ""
 
 
 async def _llm_commit_msg_vertex(patch: str, oc: OpencodeSecret) -> str:
