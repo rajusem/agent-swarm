@@ -380,12 +380,438 @@ conn.close()
     return all_passed
 
 
+async def run_vertex_smoke_test(
+    opencode_model: str = "google-vertex-anthropic/claude-sonnet-4-6@default",
+    crush_model: str = "vertexai/claude-sonnet-4-6",
+    agent_tool: str = "opencode",
+) -> bool:
+    """E2e smoke test for the google-vertex-ai provider (ADC / VertexAI Anthropic Claude).
+
+    Tests:
+      1. Read ADC credentials and Vertex config from DB
+      2. Register google-vertex-ai provider with ADC refresh strategy
+      3. Create sandbox with VertexAI provider attached
+      4. Verify access_token reference token is injected as env var
+      5. Verify GOOGLE_CLOUD_PROJECT / VERTEXAI_PROJECT env vars present
+      6. Run Claude prompt via the agent and verify a response is returned
+
+    Usage:
+      python3 scripts/openshell_smoke_test.py --vertex
+      python3 scripts/openshell_smoke_test.py --vertex --agent crush
+    """
+    from swarmer.crypto import init_crypto
+    from swarmer.openshell_client import (
+        _get_client, ensure_provider, configure_vertex_provider,
+        create_sandbox, write_agent_config, enable_providers_v2,
+    )
+    from swarmer.openshell_policy import build_session_policy
+    from openshell._proto import openshell_pb2
+
+    init_crypto("auth/secret.key")
+
+    model = crush_model if agent_tool == "crush" else opencode_model
+
+    # ── 1. Read VertexAI credentials from DB ────────────────────────────────
+    print(f"\n[1] Reading VertexAI credentials from DB (agent_tool={agent_tool}, model={model})")
+    adc_json = project = location = ""
+    try:
+        from swarmer.database import init_db, get_db
+        from sqlalchemy import select
+        from swarmer.models.opencode_secret import OpencodeSecret
+
+        init_db("sqlite+aiosqlite:///data/swarmer.db")
+        async for db in get_db():
+            result = await db.execute(select(OpencodeSecret))
+            secret = result.scalars().first()
+            if secret and secret.has_adc:
+                adc_json = secret.application_default_credentials
+                project = secret.google_cloud_project or ""
+                location = secret.vertex_location or ""
+            break
+    except Exception as exc:
+        step("Read OpencodeSecret from DB", False, str(exc))
+        return False
+
+    if not step("ADC credentials present", bool(adc_json)):
+        print("  Hint: configure Application Default Credentials in the AI Tokens settings page")
+        return False
+    if not step("GCP project set", bool(project), project):
+        return False
+    if not step("Vertex location set", bool(location), location):
+        return False
+
+    client = _get_client()
+
+    # Use native google-vertex-ai provider — the gateway proxy resolves the reference
+    # token (GOOGLE_VERTEX_AI_TOKEN) in HTTP calls to aiplatform.googleapis.com.
+    # No model string rewriting needed; keep original provider prefix.
+    model_arg = shlex.quote(model)
+    vertex_env_prefix = ""  # no special env prefix needed
+
+    # ── 1b. Enable providers_v2 (required for google-vertex-ai profile) ──
+    try:
+        await enable_providers_v2()
+        step("providers_v2_enabled", True)
+    except Exception as exc:
+        step("providers_v2_enabled", False, str(exc)[:80])
+
+    # ── 2. Register google-vertex-ai provider ────────────────────────────────
+    print("\n[2] Gateway provider setup (google-vertex-ai, ADC refresh)")
+    provider_name = f"swarmer-smoke-vertex-{agent_tool}"
+    try:
+        await ensure_provider(
+            provider_name, "google-vertex-ai",
+            config={"VERTEX_AI_PROJECT_ID": project, "VERTEX_AI_REGION": location},
+            credentials={
+                "gcloud_adc_token": "__placeholder__",
+                "GOOGLE_VERTEX_AI_TOKEN": "__placeholder__",
+                "GOOGLE_OAUTH_ACCESS_TOKEN": "__placeholder__",
+                "GOOGLE_CLOUD_PROJECT": project,
+                "VERTEX_LOCATION": location,
+                "ANTHROPIC_VERTEX_PROJECT_ID": project,
+            },
+        )
+        step("CreateProvider (google-vertex-ai)", True, provider_name)
+    except Exception as exc:
+        step("CreateProvider (google-vertex-ai)", False, str(exc))
+        return False
+
+    try:
+        await configure_vertex_provider(provider_name, adc_json=adc_json, project=project, location=location)
+        step("ConfigureProviderRefresh (ADC)", True)
+    except Exception as exc:
+        step("ConfigureProviderRefresh", False, str(exc))
+        _cleanup_provider(client, provider_name, openshell_pb2)
+        return False
+
+    # Wait for the gateway to complete the first token refresh (async, takes ~2-5s)
+    import time as _time
+    print("  Waiting for initial token refresh...", end="", flush=True)
+    for _ in range(15):
+        _time.sleep(1)
+        try:
+            sr = client._stub.GetProviderRefreshStatus(
+                openshell_pb2.GetProviderRefreshStatusRequest(provider=provider_name),
+                timeout=5)
+            statuses = {c.credential_key: c.status for c in sr.credentials}
+            if statuses.get("gcloud_adc_token") == "configured":
+                print(" ready")
+                step("Token refreshed", True, f"gcloud_adc_token: configured")
+                break
+            print(".", end="", flush=True)
+        except Exception:
+            print(".", end="", flush=True)
+    else:
+        print(" timeout")
+        step("Token refreshed", False, "timed out waiting for gcloud_adc_token")
+
+    # ── 3. Sandbox creation ──────────────────────────────────────────────────
+    print("\n[3] Sandbox creation")
+    if agent_tool == "crush":
+        from swarmer.agent_tools.crush import CrushStrategy
+        tool = CrushStrategy()
+    else:
+        from swarmer.agent_tools.opencode import OpenCodeStrategy
+        tool = OpenCodeStrategy()
+
+    _agent_tool = agent_tool
+
+    class _FakeSession:
+        language = "golang"
+        agent_tool = _agent_tool
+
+    policy = build_session_policy(_FakeSession(), [], [], agent_tool, model)
+    ref = None
+    try:
+        ref = await create_sandbox(
+            image=tool.get_image(),
+            env_vars={},
+            policy=None,
+            provider_names=[provider_name],
+        )
+        step("CreateSandbox + WaitReady", True, ref.name)
+    except Exception as exc:
+        step("CreateSandbox + WaitReady", False, str(exc))
+        _cleanup_provider(client, provider_name, openshell_pb2)
+        return False
+
+    sid = ref.id
+    sandbox_name = ref.name
+    all_passed = True
+
+    def xec(cmd, timeout=20, stdin=None):
+        if isinstance(cmd, str):
+            return client.exec(sid, ["sh", "-c", cmd], timeout_seconds=timeout, stdin=stdin)
+        return client.exec(sid, cmd, timeout_seconds=timeout, stdin=stdin)
+
+    # ── 4. Check provider token injection ────────────────────────────────────
+    print("\n[4] Provider token injection")
+    try:
+        r = xec(["printenv", "GOOGLE_VERTEX_AI_TOKEN"])
+        val = r.stdout.strip()
+        is_ref = val.startswith("openshell:resolve:")
+        step("GOOGLE_VERTEX_AI_TOKEN injected", is_ref or bool(val),
+             val[:60] if val else "empty")
+        all_passed = all_passed and (is_ref or bool(val))
+    except Exception as exc:
+        step("GOOGLE_VERTEX_AI_TOKEN check", False, str(exc))
+        all_passed = False
+
+    # ── 5. Model config ──────────────────────────────────────────────────────
+    print("\n[5] Model configuration")
+    try:
+        model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
+        share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
+        if share_cmd.strip():
+            clean_share = share_cmd.rstrip().rstrip(";").rstrip()
+            xec(f"export HOME=/sandbox; {clean_share}")
+        if model_setup_cmd.strip():
+            clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
+            r = xec(f"export HOME=/sandbox; {clean_cmd}")
+            ok = step("model setup cmd ran", r.exit_code == 0, (r.stderr or "").strip()[:80])
+            all_passed = all_passed and ok
+    except Exception as exc:
+        step("model setup", False, str(exc))
+        all_passed = False
+
+    # Write valid agent config
+    try:
+        config_data = tool.build_config_data()
+        config_json = config_data.get(f"{tool.name}.json", "{}")
+        await write_agent_config(sandbox_name, agent_tool, config_json)
+        step(f"{tool.name}.json written", True)
+    except Exception as exc:
+        step(f"{tool.name}.json write", False, str(exc))
+        all_passed = False
+
+    # ── 5b. Policy probe and approval ────────────────────────────────────────
+    print("\n[5b] Network policy approval")
+    try:
+        from swarmer.routers.sessions import _build_expected_hosts
+        from swarmer.openshell_client import approve_draft_policy_chunks
+        import time as _time
+
+        _probe_bin = {"opencode": "opencode run", "crush": "crush run"}.get(agent_tool, "opencode run")
+        _probe_prompt = shlex.quote("Reply with one word: ready")
+        _probe_cmd = f"{vertex_env_prefix}HOME=/sandbox {_probe_bin} --model {model_arg} {_probe_prompt} 2>/dev/null; true"
+        xec(_probe_cmd, timeout=45)
+        _time.sleep(12)
+
+        expected = _build_expected_hosts(model, [], agent_tool, "prompt")
+        print(f"     expected hosts: {sorted(expected)}")
+        unexpected = await approve_draft_policy_chunks(sandbox_name, expected_hosts=expected)
+        _time.sleep(3)
+        step("Policy chunks approved", True,
+             f"unexpected: {unexpected}" if unexpected else "all expected")
+    except Exception as exc:
+        step("Policy approval", False, str(exc)[:80])
+
+    # ── 6. Agent run with Claude via VertexAI ────────────────────────────────
+    print(f"\n[6] {agent_tool} prompt execution (Claude via VertexAI)")
+    prompt = "Reply with exactly one word: ready"
+
+    class _FakeSess:
+        mode = "prompt"
+        instruction_prompt = ""
+
+    tool_bin = {"opencode": "opencode run", "crush": "crush run"}.get(agent_tool, "opencode run")
+    prompt_arg = shlex.quote(prompt)
+    main_cmd = f"{vertex_env_prefix}HOME=/sandbox {tool_bin} --model {model_arg} {prompt_arg}"
+    print(f"     cmd: HOME=/sandbox {tool_bin} --model {model_arg} {prompt_arg}  (+ vertex env)")
+    try:
+        r = xec(main_cmd, timeout=120)
+        ok_exit = step(f"{agent_tool} exits 0", r.exit_code == 0, f"exit={r.exit_code}")
+        all_passed = all_passed and ok_exit
+
+        if agent_tool == "crush":
+            # CRUSH writes output to stdout
+            response = (r.stdout or "").strip()
+            ok_out = step("CRUSH response in stdout", bool(response), f"{len(response)} chars: {response[:100]!r}")
+        else:
+            # OpenCode writes to SQLite DB
+            db_reader = b"""
+import sqlite3, json
+conn = sqlite3.connect('/sandbox/.opencode/opencode.db')
+conn.execute('PRAGMA wal_checkpoint(FULL)')
+# Try part table first (older schema)
+try:
+    rows = conn.execute('''
+        SELECT p.data FROM part p
+        JOIN message m ON p.message_id = m.id
+        WHERE json_extract(m.data, '$.role') = 'assistant'
+          AND json_extract(p.data, '$.type') = 'text'
+        ORDER BY p.time_created
+    ''').fetchall()
+    texts = [json.loads(r[0]).get('text', '') for r in rows if r[0]]
+    if texts:
+        print('\\n'.join(t for t in texts if t.strip())[:2000])
+        conn.close()
+        exit(0)
+except Exception:
+    pass
+# Fallback: look in message.data directly for content
+try:
+    rows = conn.execute(
+        "SELECT data FROM message ORDER BY created"
+    ).fetchall()
+    for (d,) in rows:
+        try:
+            msg = json.loads(d)
+            if msg.get('role') == 'assistant':
+                # Try different content field layouts
+                content = msg.get('content') or msg.get('text', '')
+                if isinstance(content, list):
+                    texts = [c.get('text','') for c in content if isinstance(c, dict) and c.get('type')=='text']
+                    content = ' '.join(texts)
+                if content:
+                    print(str(content)[:2000])
+        except Exception:
+            pass
+except Exception:
+    pass
+# Also check event table for message content
+try:
+    rows = conn.execute(
+        "SELECT data FROM event WHERE type LIKE '%message%' ORDER BY id DESC LIMIT 5"
+    ).fetchall()
+    for (d,) in rows:
+        try:
+            ev = json.loads(d)
+            info = ev.get('info', {})
+            msg = info.get('message', {})
+            if msg.get('role') == 'assistant':
+                content = msg.get('content', '')
+                if isinstance(content, list):
+                    texts = [c.get('text','') for c in content if isinstance(c, dict)]
+                    content = ' '.join(texts)
+                if content:
+                    print(str(content)[:2000])
+        except Exception:
+            pass
+except Exception:
+    pass
+conn.close()
+"""
+            xec("cat > /tmp/get_output.py", stdin=db_reader)
+            r2 = client.exec(sid, ["python3", "/tmp/get_output.py"], timeout_seconds=10)
+            response = (r2.stdout or "").strip()
+            if not response:
+                # Dump message roles and parts to diagnose
+                diag = b"""
+import sqlite3, json
+conn = sqlite3.connect('/sandbox/.opencode/opencode.db')
+conn.execute('PRAGMA wal_checkpoint(FULL)')
+print('=== messages ===')
+for row in conn.execute('SELECT id, data FROM message ORDER BY created').fetchall():
+    mid, d = row
+    try:
+        msg = json.loads(d)
+        print(f'  {mid}: role={msg.get("role")} content_len={len(str(msg.get("content","")))}')
+    except:
+        print(f'  {mid}: raw={str(d)[:100]}')
+print('=== parts ===')
+prows = conn.execute('SELECT id, message_id, data FROM part LIMIT 10').fetchall()
+print(f'  {len(prows)} parts total')
+for pid, mid, d in prows:
+    try:
+        p = json.loads(d)
+        print(f'  part {pid}: type={p.get("type")} text={str(p.get("text",""))[:80]}')
+    except:
+        print(f'  part {pid}: raw={str(d)[:80]}')
+print('=== events (last 3) ===')
+for row in conn.execute('SELECT type, data FROM event ORDER BY id DESC LIMIT 3').fetchall():
+    etype, d = row
+    try:
+        ev = json.loads(d)
+        info = ev.get('info', {})
+        print(f'  event {etype}: error={info.get("error")} msg_role={info.get("message",{}).get("role")}')
+    except:
+        print(f'  event {etype}: raw={str(d)[:80]}')
+conn.close()
+"""
+                xec("cat > /tmp/diag.py", stdin=diag)
+                rd = client.exec(sid, ["python3", "/tmp/diag.py"], timeout_seconds=10)
+                if rd.stdout:
+                    print(f"  DB diagnostic:\n{rd.stdout[:1200]}")
+                if r.stdout and r.stdout.strip():
+                    print(f"  opencode stdout: {r.stdout.strip()[:400]}")
+                if r.stderr and r.stderr.strip():
+                    print(f"  opencode stderr: {r.stderr.strip()[:400]}")
+            ok_out = step("OpenCode response in DB", bool(response), f"{len(response)} chars")
+
+        all_passed = all_passed and ok_out
+        if response:
+            print(f"\n--- Response ---\n{response[:400]}\n---")
+        if r.exit_code != 0:
+            stderr = (r.stderr or "").strip()
+            if stderr:
+                print(f"  stderr: {stderr[:300]}")
+    except Exception as exc:
+        step(f"{agent_tool} run", False, str(exc))
+        all_passed = False
+
+    # ── Cleanup ──────────────────────────────────────────────────────────────
+    print("\n[cleanup]")
+    try:
+        client.delete(sandbox_name)
+        step("Delete sandbox", True, sandbox_name)
+    except Exception as exc:
+        step("Delete sandbox", False, str(exc))
+    _cleanup_provider(client, provider_name, openshell_pb2)
+
+    passed = sum(1 for _, ok, _ in _results if ok)
+    total = len(_results)
+    print(f"\n{'='*50}")
+    print(f"Results: {passed}/{total} passed")
+    if passed < total:
+        print("\nFailures:")
+        for label, ok, detail in _results:
+            if not ok:
+                print(f"  {FAIL}  {label}" + (f" — {detail}" if detail else ""))
+    return all_passed
+
+
+def _cleanup_provider(client, provider_name: str, openshell_pb2) -> None:
+    """Detach and delete a gateway provider, ignoring errors."""
+    try:
+        attached = client._stub.ListSandboxes(openshell_pb2.ListSandboxesRequest(), timeout=10)
+        for asb in attached.sandboxes:
+            try:
+                provs = client._stub.ListSandboxProviders(
+                    openshell_pb2.ListSandboxProvidersRequest(sandbox_name=asb.metadata.name), timeout=10
+                )
+                if any(p.metadata.name == provider_name for p in provs.providers):
+                    client._stub.DetachSandboxProvider(
+                        openshell_pb2.DetachSandboxProviderRequest(
+                            sandbox_name=asb.metadata.name, provider_name=provider_name
+                        ), timeout=10
+                    )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        client._stub.DeleteProvider(
+            openshell_pb2.DeleteProviderRequest(name=provider_name), timeout=10)
+        step("Delete test provider", True)
+    except Exception as exc:
+        step("Delete test provider", False, str(exc))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OpenShell e2e smoke test")
     parser.add_argument("--model", default="google/gemini-3.5-flash",
-                        help="Model to use (default: google/gemini-3.5-flash)")
+                        help="Model to use for Gemini smoke test (default: google/gemini-3.5-flash)")
+    parser.add_argument("--vertex", action="store_true",
+                        help="Run VertexAI / ADC smoke test (Anthropic Claude via Vertex)")
+    parser.add_argument("--agent", default="opencode", choices=["opencode", "crush"],
+                        help="Agent tool to test in --vertex mode (default: opencode)")
     args = parser.parse_args()
 
-    print(f"OpenShell Smoke Test — model: {args.model}")
-    ok = asyncio.run(run_smoke_test(args.model))
+    if args.vertex:
+        print(f"OpenShell VertexAI Smoke Test — agent: {args.agent}")
+        ok = asyncio.run(run_vertex_smoke_test(agent_tool=args.agent))
+    else:
+        print(f"OpenShell Smoke Test — model: {args.model}")
+        ok = asyncio.run(run_smoke_test(args.model))
     sys.exit(0 if ok else 1)

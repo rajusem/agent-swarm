@@ -25,7 +25,8 @@ from swarmer.routers import workspaces as workspaces_router
 
 log = logging.getLogger(__name__)
 
-# Custom provider profiles swarmer registers in the OpenShell gateway at startup
+# Custom provider profiles swarmer registers in the OpenShell gateway at startup.
+# google-vertex-ai is built-in since OpenShell 0.0.55 — no need to import it.
 _OPENSHELL_CUSTOM_PROFILES = [
     {
         "id": "google-ai-studio",
@@ -69,6 +70,12 @@ async def lifespan(app: FastAPI):
 async def _ensure_openshell_provider_profiles() -> None:
     """Import custom provider profiles into the OpenShell gateway (idempotent)."""
     from swarmer import openshell_client
+    try:
+        # Enable providers_v2 so google-vertex-ai type is supported for inference routing.
+        await openshell_client.enable_providers_v2()
+        log.info("OpenShell providers_v2_enabled set")
+    except Exception:
+        log.warning("Failed to enable OpenShell providers_v2 — VertexAI inference routing may not work", exc_info=True)
     try:
         await openshell_client.import_provider_profiles(_OPENSHELL_CUSTOM_PROFILES)
         log.info("OpenShell provider profiles registered: %s", [p["id"] for p in _OPENSHELL_CUSTOM_PROFILES])

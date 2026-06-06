@@ -30,10 +30,14 @@ def _get_client():
             cert_path=pathlib.Path(settings.openshell_tls_cert),
             key_path=pathlib.Path(settings.openshell_tls_key),
         )
+    # When mTLS is configured, use certificate auth for gateway admin operations
+    # (provider create/update, sandbox create). Bearer tokens in 0.0.55+ use a
+    # sandbox-scoped format that doesn't authorize admin RPCs.
+    bearer = None if tls else (settings.openshell_bearer_token or None)
     return SandboxClient(
         settings.openshell_gateway_url,
         tls=tls,
-        bearer_token=settings.openshell_bearer_token or None,
+        bearer_token=bearer,
     )
 
 
@@ -143,6 +147,113 @@ async def configure_provider_credential(
         client._stub.ConfigureProviderRefresh(req, timeout=client._timeout)
 
     await asyncio.to_thread(_do_configure)
+
+
+async def configure_vertex_provider(
+    provider_name: str,
+    adc_json: str,
+    project: str,
+    location: str,
+    client=None,
+) -> None:
+    """Configure a google-vertex-ai provider with auto-refreshing credentials.
+
+    Parses the ADC JSON to choose the appropriate gateway refresh strategy:
+    - service_account → GOOGLE_SERVICE_ACCOUNT_JWT (gateway signs JWTs from SA key)
+    - authorized_user → OAUTH2_REFRESH_TOKEN (gateway exchanges refresh token)
+
+    Also stores project/location as non-secret config on the provider so the
+    gateway injects them as env vars (GOOGLE_CLOUD_PROJECT, VERTEXAI_PROJECT,
+    VERTEX_LOCATION, VERTEXAI_LOCATION) alongside the access token.
+    """
+    import json as _json
+    from openshell._proto import openshell_pb2
+
+    if client is None:
+        client = _get_client()
+
+    adc = _json.loads(adc_json)
+    adc_type = adc.get("type", "")
+
+    def _do_configure():
+        req = openshell_pb2.ConfigureProviderRefreshRequest()
+        req.provider = provider_name
+
+        if adc_type == "service_account":
+            # Uses built-in 'service_account_token' credential from google-vertex-ai profile.
+            # Gateway refreshes via GOOGLE_SERVICE_ACCOUNT_JWT → injects as
+            # GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN env var in sandbox.
+            req.credential_key = "service_account_token"
+            req.strategy = openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT
+            req.material["client_email"] = adc.get("client_email", "")
+            req.material["private_key"] = adc.get("private_key", "")
+            req.secret_material_keys.append("private_key")
+        elif adc_type == "authorized_user":
+            # Uses built-in 'gcloud_adc_token' credential from google-vertex-ai profile.
+            # Gateway refreshes via OAUTH2_REFRESH_TOKEN → injects as GOOGLE_VERTEX_AI_TOKEN.
+            # token_url and scopes are defined in the profile (not material).
+            req.credential_key = "gcloud_adc_token"
+            req.strategy = openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN
+            req.material["client_id"] = adc.get("client_id", "")
+            req.material["client_secret"] = adc.get("client_secret", "")
+            req.material["refresh_token"] = adc.get("refresh_token", "")
+            req.secret_material_keys.extend(["client_secret", "refresh_token"])
+        else:
+            raise ValueError(f"Unsupported ADC type for VertexAI provider: {adc_type!r}")
+
+        client._stub.ConfigureProviderRefresh(req, timeout=client._timeout)
+
+    await asyncio.to_thread(_do_configure)
+
+
+async def set_cluster_inference(
+    provider_name: str,
+    model_id: str,
+    *,
+    no_verify: bool = False,
+    client=None,
+) -> None:
+    """Configure the cluster-level inference proxy (inference.local) to use a provider.
+
+    Required before agents can use ANTHROPIC_BASE_URL=https://inference.local/v1.
+    The gateway routes requests through the provider's credentials (VertexAI tokens).
+    Use no_verify=True when the 'global' region causes endpoint verification to fail.
+    """
+    from openshell._proto import inference_pb2, inference_pb2_grpc
+
+    if client is None:
+        client = _get_client()
+
+    def _do_set():
+        stub = inference_pb2_grpc.InferenceStub(client._channel)
+        req = inference_pb2.SetClusterInferenceRequest(
+            provider_name=provider_name,
+            model_id=model_id,
+            no_verify=no_verify,
+        )
+        stub.SetClusterInference(req, timeout=client._timeout)
+
+    await asyncio.to_thread(_do_set)
+
+
+async def enable_providers_v2(client=None) -> None:
+    """Enable the providers_v2 feature flag on the gateway (required for google-vertex-ai inference).
+
+    Equivalent to: openshell settings set --global --key providers_v2_enabled --value true
+    """
+    from openshell._proto import openshell_pb2
+
+    if client is None:
+        client = _get_client()
+
+    def _do_enable():
+        req = openshell_pb2.UpdateConfigRequest()
+        req.setting_key = "providers_v2_enabled"
+        req.setting_value.bool_value = True
+        setattr(req, "global", True)
+        client._stub.UpdateConfig(req, timeout=client._timeout)
+
+    await asyncio.to_thread(_do_enable)
 
 
 async def attach_sandbox_provider(sandbox_name: str, provider_name: str, client=None) -> None:
@@ -275,6 +386,16 @@ async def import_provider_profiles(profiles: list[dict], client=None) -> None:
                 )
                 for ev in cred.get("env_vars", []):
                     c.env_vars.append(ev)
+                refresh = cred.get("refresh")
+                if refresh:
+                    c.refresh.token_url = refresh.get("token_url", "")
+                    for sc in refresh.get("scopes", []):
+                        c.refresh.scopes.append(sc)
+                    for mat in refresh.get("material", []):
+                        m = c.refresh.material.add()
+                        m.name = mat["name"]
+                        m.required = mat.get("required", True)
+                        m.secret = mat.get("secret", False)
                 profile.credentials.append(c)
             req.profiles.append(openshell_pb2.ProviderProfileImportItem(profile=profile, source="swarmer"))
         client._stub.ImportProviderProfiles(req, timeout=client._timeout)

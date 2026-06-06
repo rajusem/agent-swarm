@@ -205,6 +205,14 @@ class TestDoLaunchOpenshell:
                 "swarmer.openshell_client.ensure_provider",
                 new=AsyncMock(),
             ),
+            "configure_vertex_provider": patch(
+                "swarmer.openshell_client.configure_vertex_provider",
+                new=AsyncMock(),
+            ),
+            "set_cluster_inference": patch(
+                "swarmer.openshell_client.set_cluster_inference",
+                new=AsyncMock(),
+            ),
             "configure_provider_credential": patch(
                 "swarmer.openshell_client.configure_provider_credential",
                 new=AsyncMock(),
@@ -258,6 +266,7 @@ class TestDoLaunchOpenshell:
         """Enter all patches in the standard set."""
         return (
             patches["create_provider"], patches["ensure_provider"],
+            patches["configure_vertex_provider"], patches["set_cluster_inference"],
             patches["configure_provider_credential"], patches["attach_sandbox_provider"],
             patches["create_sandbox"], patches["write_agent_config"],
             patches["write_agents_md"],
@@ -1474,3 +1483,352 @@ class TestCrushOpenshellSetup:
 
         assert sess.phase == "succeeded"
         assert "crush finished successfully" in (sess.last_output or "")
+
+
+# ===========================================================================
+# 9. VertexAI provider injection via OpenShell native provider API
+# ===========================================================================
+
+
+import json as _json
+
+
+def _fake_oc_secret(has_adc=False, has_vertex=False, google_api_key="", anthropic_api_key=""):
+    """Build a minimal OpencodeSecret-like fake."""
+    class _FakeSecret:
+        pass
+
+    s = _FakeSecret()
+    s.has_adc = has_adc
+    s.has_vertex = has_vertex
+    s.google_api_key = google_api_key
+    s.google_api_key_enc = google_api_key
+    s.anthropic_api_key = anthropic_api_key
+    s.anthropic_api_key_enc = anthropic_api_key
+    s.google_cloud_project = "my-project" if has_vertex else ""
+    s.vertex_location = "us-central1" if has_vertex else ""
+    # Minimal service_account ADC JSON
+    _adc = _json.dumps({
+        "type": "service_account",
+        "project_id": "my-project",
+        "private_key_id": "key-id",
+        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n",
+        "client_email": "sa@my-project.iam.gserviceaccount.com",
+        "client_id": "12345",
+    })
+    s.application_default_credentials = _adc if has_adc else ""
+    return s
+
+
+async def _launch_with_secret(client, ws_id, session_id, oc_secret):
+    """Call _do_launch_openshell directly with a fake session/workspace/db and given oc_secret.
+
+    Returns (mock_ensure, mock_vertex) so callers can assert provider calls.
+    """
+    from swarmer.routers.sessions import _do_launch_openshell
+    from swarmer.models.session import Session as _Session
+    from swarmer.models.workspace import Workspace as _Workspace
+
+    # Build minimal fake ORM objects so _do_launch_openshell doesn't need a real DB
+    fake_session = MagicMock(spec=_Session)
+    fake_session.id = session_id
+    fake_session.workspace_id = ws_id
+    fake_session.agent_tool = "opencode"
+    fake_session.model = None
+    fake_session.mode = "prompt"
+    fake_session.working_branch = None
+    fake_session.repos = []
+    fake_session.github_pat = None
+    fake_session.instruction_prompt = ""
+
+    fake_ws = MagicMock(spec=_Workspace)
+    fake_ws.id = ws_id
+
+    # Fake async DB — just needs commit() to not blow up
+    fake_db = AsyncMock()
+
+    mock_ensure = AsyncMock()
+    mock_vertex = AsyncMock()
+
+    with patch("swarmer.openshell_client.create_provider", new=AsyncMock(return_value={})), \
+         patch("swarmer.openshell_client.ensure_provider", mock_ensure), \
+         patch("swarmer.openshell_client.configure_vertex_provider", mock_vertex), \
+         patch("swarmer.openshell_client.set_cluster_inference", new=AsyncMock()), \
+         patch("swarmer.openshell_client.configure_provider_credential", new=AsyncMock()), \
+         patch("swarmer.openshell_client.attach_sandbox_provider", new=AsyncMock()), \
+         patch("swarmer.openshell_policy.build_session_policy", return_value="version: 1\n"), \
+         patch("swarmer.routers.sessions._setup_openshell_sandbox", new=AsyncMock()):
+        has_adc = oc_secret.has_adc if oc_secret else False
+        has_gemini = bool(oc_secret and oc_secret.google_api_key)
+        await _do_launch_openshell(
+            session=fake_session,
+            ws=fake_ws,
+            db=fake_db,
+            suffix="test",
+            oc_secret=oc_secret,
+            has_adc=has_adc,
+            has_gemini=has_gemini,
+            mcp_servers=None,
+            resolved_prompt="test prompt",
+        )
+
+    return mock_ensure, mock_vertex
+
+
+class TestVertexAIProviderInjection:
+    """Tests that VertexAI credentials flow through the OpenShell gateway Provider API."""
+
+    @pytest.mark.asyncio
+    async def test_vertex_provider_created_when_adc_present(self, client):
+        """ensure_provider is called with google-vertex-ai type when ADC + vertex config exist."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
+        mock_ensure, mock_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+
+        vertex_calls = [
+            c for c in mock_ensure.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "google-vertex-ai"
+        ]
+        assert len(vertex_calls) == 1, f"Expected 1 google-vertex-ai ensure_provider call, got: {mock_ensure.call_args_list}"
+
+    @pytest.mark.asyncio
+    async def test_vertex_provider_refresh_configured(self, client):
+        """configure_vertex_provider is called when ADC and vertex config are present."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
+        mock_ensure, mock_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+
+        mock_vertex.assert_called_once()
+        call_kwargs = mock_vertex.call_args.kwargs
+        assert call_kwargs.get("project") == "my-project"
+        assert call_kwargs.get("location") == "us-central1"
+
+    @pytest.mark.asyncio
+    async def test_vertex_provider_not_created_without_adc(self, client):
+        """No google-vertex-ai provider is created when ADC is absent."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=False, has_vertex=False)
+        mock_ensure, mock_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+
+        vertex_calls = [
+            c for c in mock_ensure.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "google-vertex-ai"
+        ]
+        assert vertex_calls == [], f"Expected no vertex provider calls, got: {mock_ensure.call_args_list}"
+        mock_vertex.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gemini_provider_unchanged_with_vertex(self, client):
+        """Both google-ai-studio and google-vertex-ai providers are created when both creds exist."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True, google_api_key="my-gemini-key")
+        mock_ensure, _ = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+
+        provider_types_called = [
+            c.args[1] for c in mock_ensure.call_args_list if len(c.args) >= 2
+        ]
+        assert "google-ai-studio" in provider_types_called, "Gemini provider must still be created"
+        assert "google-vertex-ai" in provider_types_called, "VertexAI provider must be created"
+
+
+class TestConfigureVertexProvider:
+    """Unit tests for configure_vertex_provider() in openshell_client."""
+
+    @pytest.mark.asyncio
+    async def test_service_account_uses_jwt_strategy(self):
+        """Service account ADC triggers GOOGLE_SERVICE_ACCOUNT_JWT strategy."""
+        from swarmer.openshell_client import configure_vertex_provider
+        from openshell._proto import openshell_pb2
+
+        adc = _json.dumps({
+            "type": "service_account",
+            "project_id": "proj",
+            "private_key": "fake",
+            "client_email": "sa@proj.iam.gserviceaccount.com",
+        })
+
+        captured_reqs = []
+
+        mock_client = MagicMock()
+        mock_client._timeout = 30
+
+        def _capture_configure(req, timeout=None):
+            captured_reqs.append(req)
+
+        def _capture_update(req, timeout=None):
+            pass
+
+        mock_client._stub.ConfigureProviderRefresh.side_effect = _capture_configure
+        mock_client._stub.UpdateProvider.side_effect = _capture_update
+
+        with patch("swarmer.openshell_client._get_client", return_value=mock_client):
+            await configure_vertex_provider("p1", adc, "proj", "us-central1")
+
+        assert len(captured_reqs) == 1
+        req = captured_reqs[0]
+        assert req.credential_key == "service_account_token"
+        assert req.strategy == openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT
+        assert "private_key" in req.secret_material_keys
+
+    @pytest.mark.asyncio
+    async def test_authorized_user_uses_oauth2_refresh_strategy(self):
+        """Authorized user ADC triggers OAUTH2_REFRESH_TOKEN strategy."""
+        from swarmer.openshell_client import configure_vertex_provider
+        from openshell._proto import openshell_pb2
+
+        adc = _json.dumps({
+            "type": "authorized_user",
+            "client_id": "cid",
+            "client_secret": "csecret",
+            "refresh_token": "rtoken",
+        })
+
+        captured_reqs = []
+
+        mock_client = MagicMock()
+        mock_client._timeout = 30
+        mock_client._stub.ConfigureProviderRefresh.side_effect = lambda req, timeout=None: captured_reqs.append(req)
+        mock_client._stub.UpdateProvider.side_effect = lambda req, timeout=None: None
+
+        with patch("swarmer.openshell_client._get_client", return_value=mock_client):
+            await configure_vertex_provider("p2", adc, "proj", "us-central1")
+
+        req = captured_reqs[0]
+        assert req.strategy == openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN
+        # token_url is in the profile definition, not material
+        assert "token_url" not in req.material
+        assert "client_secret" in req.secret_material_keys
+        assert "refresh_token" in req.secret_material_keys
+
+    @pytest.mark.asyncio
+    async def test_unknown_adc_type_raises(self):
+        """Unknown ADC type raises ValueError."""
+        from swarmer.openshell_client import configure_vertex_provider
+
+        adc = _json.dumps({"type": "external_account"})
+
+        mock_client = MagicMock()
+        mock_client._timeout = 30
+
+        with patch("swarmer.openshell_client._get_client", return_value=mock_client):
+            with pytest.raises(ValueError, match="Unsupported ADC type"):
+                await configure_vertex_provider("p3", adc, "proj", "us")
+
+    @pytest.mark.asyncio
+    async def test_configure_vertex_provider_only_calls_refresh(self):
+        """configure_vertex_provider only calls ConfigureProviderRefresh (not UpdateProvider).
+
+        Project/location are non-secret strings passed via SandboxSpec.environment
+        directly in the launch path, not stored as provider config.
+        """
+        from swarmer.openshell_client import configure_vertex_provider
+
+        adc = _json.dumps({
+            "type": "service_account",
+            "project_id": "proj",
+            "private_key": "fake",
+            "client_email": "sa@proj.iam.gserviceaccount.com",
+        })
+
+        mock_client = MagicMock()
+        mock_client._timeout = 30
+        mock_client._stub.ConfigureProviderRefresh.side_effect = lambda req, timeout=None: None
+
+        with patch("swarmer.openshell_client._get_client", return_value=mock_client):
+            await configure_vertex_provider("p4", adc, "my-project", "europe-west4")
+
+        mock_client._stub.ConfigureProviderRefresh.assert_called_once()
+        mock_client._stub.UpdateProvider.assert_not_called()
+
+
+class TestVertexEnvVarsInSandboxSpec:
+    """Verify that GOOGLE_CLOUD_PROJECT etc. are injected via provider credentials (not SandboxSpec.environment)."""
+
+    def _make_fake_session(self, session_id, ws_id, agent_tool="opencode"):
+        from swarmer.models.session import Session as _Session
+        from swarmer.models.workspace import Workspace as _Workspace
+        fake_sess = MagicMock(spec=_Session)
+        fake_sess.id = session_id
+        fake_sess.workspace_id = ws_id
+        fake_sess.agent_tool = agent_tool
+        fake_sess.model = None
+        fake_sess.mode = "prompt"
+        fake_sess.working_branch = None
+        fake_sess.repos = []
+        fake_sess.github_pat = None
+        fake_sess.instruction_prompt = ""
+        fake_ws = MagicMock(spec=_Workspace)
+        fake_ws.id = ws_id
+        return fake_sess, fake_ws
+
+    @pytest.mark.asyncio
+    async def test_vertex_project_location_in_provider_config(self, client):
+        """VERTEX_AI_PROJECT_ID and VERTEX_AI_REGION are passed as provider config (per OpenShell docs)."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
+
+        mock_ensure = AsyncMock()
+        with patch("swarmer.openshell_client.create_provider", new=AsyncMock(return_value={})), \
+             patch("swarmer.openshell_client.ensure_provider", mock_ensure), \
+             patch("swarmer.openshell_client.configure_vertex_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_client.set_cluster_inference", new=AsyncMock()), \
+             patch("swarmer.openshell_client.configure_provider_credential", new=AsyncMock()), \
+             patch("swarmer.openshell_client.attach_sandbox_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_policy.build_session_policy", return_value="version: 1\n"), \
+             patch("swarmer.routers.sessions._setup_openshell_sandbox", new=AsyncMock()):
+            fake_sess, fake_ws = self._make_fake_session(s["id"], ws["id"])
+            from swarmer.routers.sessions import _do_launch_openshell
+            await _do_launch_openshell(
+                session=fake_sess, ws=fake_ws, db=AsyncMock(), suffix="t",
+                oc_secret=fake_secret, has_adc=True, has_gemini=False,
+                mcp_servers=None, resolved_prompt="hi",
+            )
+
+        # Find the vertex ensure_provider call and check config kwarg
+        vertex_call = next(
+            (c for c in mock_ensure.call_args_list if len(c.args) >= 2 and c.args[1] == "google-vertex-ai"),
+            None,
+        )
+        assert vertex_call is not None, "No google-vertex-ai ensure_provider call found"
+        cfg = vertex_call.kwargs.get("config", {})
+        assert cfg.get("VERTEX_AI_PROJECT_ID") == "my-project"
+        assert cfg.get("VERTEX_AI_REGION") == "us-central1"
+
+    @pytest.mark.asyncio
+    async def test_no_vertex_env_vars_without_adc(self, client):
+        """GOOGLE_CLOUD_PROJECT is absent from env_vars when no ADC present."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=False, has_vertex=False)
+        mock_setup = AsyncMock()
+
+        with patch("swarmer.openshell_client.create_provider", new=AsyncMock(return_value={})), \
+             patch("swarmer.openshell_client.ensure_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_client.configure_vertex_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_client.set_cluster_inference", new=AsyncMock()), \
+             patch("swarmer.openshell_client.configure_provider_credential", new=AsyncMock()), \
+             patch("swarmer.openshell_client.attach_sandbox_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_policy.build_session_policy", return_value="version: 1\n"), \
+             patch("swarmer.routers.sessions._setup_openshell_sandbox", mock_setup):
+            fake_sess, fake_ws = self._make_fake_session(s["id"], ws["id"])
+            from swarmer.routers.sessions import _do_launch_openshell
+            await _do_launch_openshell(
+                session=fake_sess, ws=fake_ws, db=AsyncMock(), suffix="t",
+                oc_secret=fake_secret, has_adc=False, has_gemini=False,
+                mcp_servers=None, resolved_prompt="hi",
+            )
+
+        # No vertex provider → inference_env is empty → no ANTHROPIC_BASE_URL in env_vars
+        inference_env = mock_setup.call_args.kwargs.get("inference_env", {})
+        assert not inference_env
