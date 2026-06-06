@@ -221,10 +221,6 @@ class TestDoLaunchOpenshell:
                 "swarmer.openshell_client.write_agent_config",
                 new=AsyncMock(),
             ),
-            "clone_repos": patch(
-                "swarmer.openshell_client.clone_repos",
-                new=AsyncMock(),
-            ),
             "write_agents_md": patch(
                 "swarmer.openshell_client.write_agents_md",
                 new=AsyncMock(),
@@ -264,7 +260,7 @@ class TestDoLaunchOpenshell:
             patches["create_provider"], patches["ensure_provider"],
             patches["configure_provider_credential"], patches["attach_sandbox_provider"],
             patches["create_sandbox"], patches["write_agent_config"],
-            patches["clone_repos"], patches["write_agents_md"],
+            patches["write_agents_md"],
             patches["exec_command"], patches["start_agent"],
             patches["delete_sandbox"], patches["build_policy"],
             patches["run_agent"], patches["setup_sandbox"],
@@ -279,7 +275,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], \
@@ -304,7 +300,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -329,7 +325,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"] as mock_cfg, patches["clone_repos"], \
+             patches["write_agent_config"] as mock_cfg, \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -350,7 +346,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"] as mock_clone, \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -358,7 +354,10 @@ class TestDoLaunchOpenshell:
                 f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch"
             )
 
-        mock_clone.assert_not_called()
+        # No repos attached — exec_command should not be called for git clone
+        exec_mock = patches["exec_command"].new
+        git_clone_calls = [c for c in exec_mock.call_args_list if "git clone" in str(c)]
+        assert git_clone_calls == []
 
     @pytest.mark.asyncio
     async def test_does_not_write_agents_md_for_prompt_mode(self, client):
@@ -369,7 +368,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"] as mock_md, patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -388,7 +387,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -409,7 +408,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -429,7 +428,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -449,7 +448,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], \
@@ -473,7 +472,7 @@ class TestDoLaunchOpenshell:
              patches["configure_provider_credential"] as mock_cred, \
              patches["attach_sandbox_provider"] as mock_attach, \
              patches["create_sandbox"] as mock_sandbox, \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
@@ -501,7 +500,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"] as mock_sandbox, \
-             patches["write_agent_config"], patches["clone_repos"], \
+             patches["write_agent_config"], \
              patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], \
              patches["build_policy"] as mock_policy, patches["run_agent"]:
@@ -534,7 +533,7 @@ class TestDoLaunchOpenshell:
         with patches["create_provider"], patches["ensure_provider"], \
              patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
              patches["create_sandbox"], patches["write_agent_config"], \
-             patches["clone_repos"], patches["write_agents_md"], patches["exec_command"], \
+             patches["write_agents_md"], patches["exec_command"], \
              patches["start_agent"], patches["delete_sandbox"], patches["build_policy"], \
              patches["run_agent"], patches["setup_sandbox"]:
             await client.post(f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch")
@@ -1160,10 +1159,6 @@ def _make_crush_setup_patches(sandbox_name: str = "sandbox-crush-abc"):
             "swarmer.openshell_client.write_agents_md",
             new=AsyncMock(),
         ),
-        "clone_repos": patch(
-            "swarmer.openshell_client.clone_repos",
-            new=AsyncMock(),
-        ),
         "approve_chunks": patch(
             "swarmer.openshell_client.approve_draft_policy_chunks",
             new=AsyncMock(return_value=[]),
@@ -1209,7 +1204,6 @@ async def _call_crush_setup(
          patches["create_sandbox"], \
          patches["write_agent_config"], \
          patches["write_agents_md"], \
-         patches["clone_repos"], \
          patches["approve_chunks"], \
          patches["run_agent"], \
          patches["sleep"], \
@@ -1227,6 +1221,7 @@ async def _call_crush_setup(
             mcp_patch={},
             repos_data=[],
             git_username="",
+            pat_token="",
             working_branch="",
             agents_md="",
             mode=mode,
@@ -1415,7 +1410,7 @@ class TestCrushOpenshellSetup:
              patches["create_sandbox"], \
              patches["write_agent_config"], \
              patches["write_agents_md"], \
-             patches["clone_repos"], \
+ \
              patches["approve_chunks"], \
              patches["run_agent"], \
              patches["sleep"], \
@@ -1435,6 +1430,7 @@ class TestCrushOpenshellSetup:
                 mcp_patch={},
                 repos_data=[],
                 git_username="",
+                pat_token="",
                 working_branch="",
                 agents_md="",
                 mode="prompt",
