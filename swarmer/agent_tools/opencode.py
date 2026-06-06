@@ -29,8 +29,11 @@ class OpenCodeStrategy(AgentToolStrategy):
     def build_config_data(self, secret=None, mcp_servers=None) -> dict[str, str]:
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
-            "disabled_providers": ["opencode"],
-            "lsp": True,
+            "enabled_providers": ["google", "google-vertex-anthropic", "anthropic", "openai"],
+            "lsp": {
+                "go": {"command": ["gopls"], "extensions": []},
+                "python": {"command": ["pyright-langserver", "--stdio"], "extensions": []},
+            },
             "server": {
                 "hostname": "0.0.0.0",
                 "port": 4096,

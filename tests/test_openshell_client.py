@@ -12,7 +12,7 @@ import os
 import sys
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -111,7 +111,8 @@ def github_pat():
 
 
 @pytest.mark.asyncio
-async def test_create_provider_returns_env_vars(sdk_client, session, workspace_secret):
+async def test_create_provider_returns_empty_for_no_mcp(sdk_client, session, workspace_secret):
+    """AI credentials no longer go via env vars — create_provider returns only MCP vars."""
     env_vars = await oc.create_provider(
         session=session,
         workspace_secret=workspace_secret,
@@ -119,8 +120,9 @@ async def test_create_provider_returns_env_vars(sdk_client, session, workspace_s
         mcp_servers=[],
     )
     assert isinstance(env_vars, dict)
-    assert "GOOGLE_API_KEY" in env_vars
-    assert "ANTHROPIC_API_KEY" in env_vars
+    assert "GOOGLE_API_KEY" not in env_vars
+    assert "ANTHROPIC_API_KEY" not in env_vars
+    assert env_vars == {}
 
 
 @pytest.mark.asyncio
@@ -150,15 +152,16 @@ async def test_create_provider_does_not_create_k8s_pat_secret(session, workspace
 
 
 @pytest.mark.asyncio
-async def test_create_provider_includes_github_credentials(session, workspace_secret, github_pat):
+async def test_create_provider_no_github_pat_in_env(session, workspace_secret, github_pat):
+    """GitHub PAT is now injected via the github gateway provider, not env vars."""
     env_vars = await oc.create_provider(
         session=session,
         workspace_secret=workspace_secret,
         github_pat=github_pat,
         mcp_servers=[],
     )
-    assert "GITHUB_PAT" in env_vars
-    assert env_vars["GITHUB_PAT"] == github_pat.token
+    assert "GITHUB_PAT" not in env_vars
+    assert "GH_TOKEN" not in env_vars
 
 
 @pytest.mark.asyncio
@@ -187,38 +190,33 @@ async def test_create_provider_includes_jira_mcp_credentials(session, workspace_
 @pytest.mark.asyncio
 async def test_create_sandbox_passes_byoc_image(sdk_client):
     image = "quay.io/jpacker/opencode:latest"
-    with patch.object(oc, "_get_client", return_value=sdk_client):
-        await oc.create_sandbox(
-            image=image,
-            env_vars={},
-            policy_yaml="version: 1\n",
-        )
+    with patch.object(oc, "_get_client", return_value=sdk_client), \
+         patch.object(oc, "_wait_sandbox_ready", new=AsyncMock()):
+        await oc.create_sandbox(image=image, env_vars={}, policy=None)
     sdk_client.create.assert_called_once()
-    # The spec object is passed as a kwarg; check its template.image was set
     spec = sdk_client.create.call_args.kwargs["spec"]
     assert spec.template.image == image
 
 
 @pytest.mark.asyncio
 async def test_wait_ready_called_after_create(sdk_client):
-    with patch.object(oc, "_get_client", return_value=sdk_client):
+    """_wait_sandbox_ready (conditions-based) is called instead of sdk client.wait_ready."""
+    with patch.object(oc, "_get_client", return_value=sdk_client), \
+         patch.object(oc, "_wait_sandbox_ready", new=AsyncMock()) as mock_ready:
         await oc.create_sandbox(
-            image="quay.io/jpacker/opencode:latest",
-            env_vars={},
-            policy_yaml="version: 1\n",
+            image="quay.io/jpacker/opencode:latest", env_vars={}, policy=None
         )
-    sdk_client.wait_ready.assert_called_once()
+    mock_ready.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_create_sandbox_does_not_create_pvc(sdk_client):
     from swarmer import k8s_session as k8s_sess
-    with patch.object(oc, "_get_client", return_value=sdk_client):
+    with patch.object(oc, "_get_client", return_value=sdk_client), \
+         patch.object(oc, "_wait_sandbox_ready", new=AsyncMock()):
         with patch.object(k8s_sess, "ensure_session_pvc") as mock_pvc:
             await oc.create_sandbox(
-                image="quay.io/jpacker/opencode:latest",
-                env_vars={},
-                policy_yaml="version: 1\n",
+                image="quay.io/jpacker/opencode:latest", env_vars={}, policy=None
             )
             mock_pvc.assert_not_called()
 

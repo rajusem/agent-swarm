@@ -54,6 +54,33 @@ class CrushStrategy(AgentToolStrategy):
         return "crush-config"
 
     def build_config_data(self, secret=None, mcp_servers=None) -> dict[str, str]:
+        # Crush requires explicit provider entries in the config — it does not
+        # auto-detect from env vars alone.  The value is a map[string]ProviderConfig
+        # (keyed by provider ID), NOT an array.  Use $VAR references so values are
+        # resolved at runtime from whatever the sandbox environment provides
+        # (injected by the OpenShell provider mechanism or K8s secret env vars).
+        providers = {
+            "anthropic": {
+                "name": "Anthropic",
+                "type": "anthropic",
+                "api_key": "$ANTHROPIC_API_KEY",
+            },
+            "gemini": {
+                "name": "Google Gemini",
+                "type": "gemini",
+                "api_key": "$GOOGLE_API_KEY",
+            },
+            "openai": {
+                "name": "OpenAI",
+                "type": "openai",
+                "api_key": "$OPENAI_API_KEY",
+            },
+            "vertexai": {
+                "name": "Google Vertex AI",
+                "type": "vertexai",
+            },
+        }
+
         config = {
             "$schema": "https://charm.land/crush.json",
             "options": {
@@ -62,6 +89,7 @@ class CrushStrategy(AgentToolStrategy):
                 "data_directory": ".crush",
                 "auto_lsp": True,
             },
+            "providers": providers,
             "lsp": {
                 "go": {"command": "gopls"},
                 "python": {"command": "pyright-langserver", "args": ["--stdio"]},

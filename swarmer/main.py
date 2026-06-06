@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -22,6 +23,28 @@ from swarmer.routers import secrets as secrets_router
 from swarmer.routers import tui_ws as tui_router
 from swarmer.routers import workspaces as workspaces_router
 
+log = logging.getLogger(__name__)
+
+# Custom provider profiles swarmer registers in the OpenShell gateway at startup
+_OPENSHELL_CUSTOM_PROFILES = [
+    {
+        "id": "google-ai-studio",
+        "display_name": "Google AI Studio",
+        "inference_capable": True,
+        "credentials": [
+            {
+                # Credential name IS the env var injected into the sandbox.
+                # env_vars is used by the gateway proxy for HTTP request rewriting.
+                "name": "GOOGLE_API_KEY",
+                "env_vars": ["GOOGLE_API_KEY"],
+                "required": True,
+                "auth_style": "header",
+                "header_name": "x-goog-api-key",
+            }
+        ],
+    },
+]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,6 +54,8 @@ async def lifespan(app: FastAPI):
     await create_tables()
     await migrate_db()
     k8s.init_k8s(settings.k8s_in_cluster)
+    if settings.openshell_gateway_url:
+        await _ensure_openshell_provider_profiles()
     await _restart_prompt_pollers()
     from swarmer import scheduler
     scheduler.start_scheduler()
@@ -38,6 +63,16 @@ async def lifespan(app: FastAPI):
     await scheduler.shutdown()
     from swarmer import log_poller
     await log_poller.shutdown()
+
+
+async def _ensure_openshell_provider_profiles() -> None:
+    """Import custom provider profiles into the OpenShell gateway (idempotent)."""
+    from swarmer import openshell_client
+    try:
+        await openshell_client.import_provider_profiles(_OPENSHELL_CUSTOM_PROFILES)
+        log.info("OpenShell provider profiles registered: %s", [p["id"] for p in _OPENSHELL_CUSTOM_PROFILES])
+    except Exception:
+        log.warning("Failed to import OpenShell provider profiles — sessions may lack Google AI Studio support", exc_info=True)
 
 
 async def _restart_prompt_pollers() -> None:
@@ -67,7 +102,7 @@ async def _restart_prompt_pollers() -> None:
                 _model = s.model or _tool.get_default_model(False, False)
                 _main_cmd = _tool.build_main_cmd(s, _model)
                 asyncio.create_task(
-                    _run_openshell_agent(s.id, s.sandbox_name, ["sh", "-c", _main_cmd], s.mode),
+                    _run_openshell_agent(s.id, s.sandbox_name, ["sh", "-c", _main_cmd], s.mode, s.agent_tool),
                     name=f"openshell-agent-{s.id}",
                 )
             elif s.pod_name:
