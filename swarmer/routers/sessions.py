@@ -862,6 +862,7 @@ async def _do_launch_openshell(
         for r in (session.repos or [])
     ]
     git_username = (session.github_pat.github_username or "") if session.github_pat else ""
+    pat_token = (session.github_pat.pat or "") if session.github_pat else ""
     agents_md = ""
     if session.mode in ("tui", "server"):
         repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
@@ -896,6 +897,7 @@ async def _do_launch_openshell(
             mcp_patch=mcp_patch,
             repos_data=repos_data,
             git_username=git_username,
+            pat_token=pat_token,
             working_branch=session.working_branch or "",
             agents_md=agents_md,
             mode=session.mode,
@@ -919,6 +921,7 @@ async def _setup_openshell_sandbox(
     mcp_patch: dict,
     repos_data: list[dict],
     git_username: str,
+    pat_token: str,
     working_branch: str,
     agents_md: str,
     mode: str,
@@ -929,7 +932,6 @@ async def _setup_openshell_sandbox(
     from swarmer import openshell_client
     from swarmer.database import get_db as _get_db
     from swarmer.models.session import Session as _Session
-    import json as _json
 
     async def _update_db(**fields) -> None:
         async for _db in _get_db():
@@ -985,26 +987,28 @@ async def _setup_openshell_sandbox(
             config_json=_config_json,
         )
 
-        # Git credentials before cloning (uses $GH_TOKEN injected by github provider)
-        if repos_data and git_username:
-            git_setup_cmd = (
-                "git config --global credential.helper store && "
-                f"printf 'https://{git_username}:%s@github.com\\n' \"$GH_TOKEN\" "
-                "> /root/.git-credentials && "
-                f'git config --global user.name "{git_username}" && '
-                f'git config --global user.email "{git_username}@users.noreply.github.com"'
-            )
-            await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
-
-        # Clone repos
+        # Clone repos via exec_command (one call per repo, exit code checked).
+        # PAT is embedded directly in the clone URL so auth is self-contained
+        # and does not depend on $GH_TOKEN gateway injection.
         if repos_data:
-            class _Repo:
-                def __init__(self, d):
-                    self.repo_url = d["url"]
-                    self.local_path = d["local_path"]
-                    self.branch = d["branch"]
-            fake_repos = [_Repo(d) for d in repos_data]
-            await openshell_client.clone_repos(sandbox_name=ref.name, repos=fake_repos)
+            for rd in repos_data:
+                local_path = rd["local_path"]
+                repo_url = rd["url"]
+                if pat_token and git_username and "github.com" in repo_url:
+                    auth_url = repo_url.replace("https://", f"https://{git_username}:{pat_token}@")
+                else:
+                    auth_url = repo_url
+                clone_cmd = f"cd /sandbox && git clone {shlex.quote(auth_url)} {shlex.quote(local_path)}"
+                result = await openshell_client.exec_command(
+                    ref.name, ["sh", "-c", clone_cmd], client=None
+                )
+                if getattr(result, "exit_code", 0) != 0:
+                    log.warning(
+                        "sandbox setup: git clone failed for %s (exit %s): %s",
+                        local_path,
+                        getattr(result, "exit_code", "?"),
+                        getattr(result, "stderr", ""),
+                    )
             await openshell_client.exec_command(
                 ref.name, ["sh", "-c", "git config --global --add safe.directory '*'"], client=None
             )

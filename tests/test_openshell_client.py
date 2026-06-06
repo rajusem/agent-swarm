@@ -222,32 +222,9 @@ async def test_create_sandbox_does_not_create_pvc(sdk_client):
 
 
 # ---------------------------------------------------------------------------
-# 3. Exec operations: git clone, config, AGENTS.md, agent startup
+# 3. Exec operations: config, AGENTS.md, agent startup
+# (git clone now uses exec_command inline in _setup_openshell_sandbox)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_git_clone_exec_targets_sandbox_path(sdk_client, session):
-    sandbox_name = "sandbox-s42-abc1"
-    with patch.object(oc, "_get_client", return_value=sdk_client):
-        await oc.clone_repos(sandbox_name=sandbox_name, repos=session.repos)
-    assert sdk_client.exec.called
-    calls_repr = str(sdk_client.exec.call_args_list)
-    assert "/sandbox/" in calls_repr
-    assert "/workspace/" not in calls_repr
-
-
-@pytest.mark.asyncio
-async def test_git_clone_exec_called_per_repo(sdk_client, session):
-    repo2 = MagicMock()
-    repo2.url = "https://github.com/stolostron/other-repo"
-    repo2.branch = "main"
-    repo2.local_path = "other-repo"
-    session.repos = [session.repos[0], repo2]
-    sandbox_name = "sandbox-s42-abc1"
-    with patch.object(oc, "_get_client", return_value=sdk_client):
-        await oc.clone_repos(sandbox_name=sandbox_name, repos=session.repos)
-    assert sdk_client.exec.call_count == 2
 
 
 @pytest.mark.asyncio
