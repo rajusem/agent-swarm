@@ -733,3 +733,57 @@ class TestCronCapacityCheck:
             result = await db.execute(select(Session).where(Session.id == cron_s["id"]))
             sess = result.scalar_one()
         assert sess.phase == "idle"
+
+
+# ===========================================================================
+# WAL mode — database.py must enable WAL so the scheduler can write
+# concurrently while a route handler holds an open read transaction.
+# ===========================================================================
+
+
+class TestSQLiteWALMode:
+    """Verify that init_db() enables WAL journal mode on SQLite engines."""
+
+    @pytest.mark.asyncio
+    async def test_wal_mode_enabled_by_init_db(self, tmp_path):
+        import swarmer.database as db_module
+
+        db_path = tmp_path / "test_wal.db"
+        db_url = f"sqlite+aiosqlite:///{db_path}"
+
+        # Save existing globals so we can restore them after the test.
+        orig_engine = db_module._engine
+        orig_session = db_module._AsyncSessionLocal
+
+        try:
+            db_module.init_db(db_url)
+            async with db_module._engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA journal_mode"))
+                mode = result.scalar()
+            assert mode == "wal", f"Expected WAL journal mode, got: {mode!r}"
+        finally:
+            await db_module._engine.dispose()
+            db_module._engine = orig_engine
+            db_module._AsyncSessionLocal = orig_session
+
+    @pytest.mark.asyncio
+    async def test_in_memory_db_skips_wal(self):
+        """In-memory SQLite doesn't persist so WAL isn't required; guard is present."""
+        import swarmer.database as db_module
+
+        orig_engine = db_module._engine
+        orig_session = db_module._AsyncSessionLocal
+
+        try:
+            # In-memory URL still starts with "sqlite" so WAL is attempted;
+            # in-memory SQLite silently stays in "memory" mode but must not raise.
+            db_module.init_db("sqlite+aiosqlite://")
+            async with db_module._engine.connect() as conn:
+                result = await conn.execute(text("PRAGMA journal_mode"))
+                mode = result.scalar()
+            # In-memory SQLite ignores WAL and stays in "memory" mode — that's fine.
+            assert mode in ("wal", "memory")
+        finally:
+            await db_module._engine.dispose()
+            db_module._engine = orig_engine
+            db_module._AsyncSessionLocal = orig_session

@@ -1,5 +1,6 @@
 import logging
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -21,6 +22,18 @@ _AsyncSessionLocal: async_sessionmaker | None = None
 def init_db(database_url: str) -> None:
     global _engine, _AsyncSessionLocal
     _engine = create_async_engine(database_url, echo=False)
+
+    # Enable WAL mode so the scheduler can write while a route handler reads.
+    # SQLite's default journal mode serializes all access; WAL allows one writer
+    # + concurrent readers without blocking, preventing "database is locked" errors
+    # when _do_launch_openshell holds a session open during long gRPC operations.
+    if database_url.startswith("sqlite"):
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _set_wal(dbapi_conn, _):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
     _AsyncSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
 
 
