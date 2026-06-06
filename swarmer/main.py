@@ -9,7 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from swarmer import k8s
 from swarmer.config import settings
 from swarmer.crypto import derive_session_secret, init_crypto
-from swarmer.database import create_tables, migrate_db, init_db
+from swarmer.database import checkpoint_db, create_tables, migrate_db, init_db
 from swarmer.deps import NotAuthenticated
 from swarmer.api.v1 import router as api_v1_router
 from swarmer.routers import auth as auth_router
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
     # Crypto must be initialised before any DB access (model properties call decrypt)
     init_crypto(settings.secret_key_file)
     init_db(settings.database_url)
+    await checkpoint_db()
     await create_tables()
     await migrate_db()
     k8s.init_k8s(settings.k8s_in_cluster)

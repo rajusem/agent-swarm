@@ -96,6 +96,34 @@ async def migrate_db() -> None:
                 raise
 
 
+async def checkpoint_db() -> None:
+    """Force a WAL TRUNCATE checkpoint at startup.
+
+    Consolidates any stale .db-wal data left by an unclean shutdown into the
+    main database file, then truncates the WAL so subsequent connections start
+    clean. Must be called after init_db() and before the server starts serving
+    requests. No-op for non-SQLite engines.
+    """
+    if _engine is None:
+        return
+    url = str(_engine.url)
+    if not url.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+    try:
+        async with _engine.connect() as conn:
+            result = await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            row = result.fetchone()
+            # row = (busy, log_pages, checkpointed_pages)
+            if row and row[0]:
+                log.warning("db: WAL checkpoint incomplete — %d page(s) still busy", row[0])
+            else:
+                log.info("db: WAL checkpoint complete, WAL truncated")
+            await conn.commit()
+    except Exception:
+        log.warning("db: WAL checkpoint failed (DB may be held by another process)", exc_info=True)
+
+
 async def get_db() -> AsyncSession:
     async with _AsyncSessionLocal() as session:
         yield session
