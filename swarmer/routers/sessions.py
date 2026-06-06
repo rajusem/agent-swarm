@@ -662,6 +662,45 @@ async def _get_capacity_summary(workspace_id: int, db: AsyncSession) -> dict:
     }
 
 
+def _build_expected_hosts(model: str, repos_data: list[dict], tool_name: str, mode: str) -> set[str]:
+    """Return the set of hostnames this session is expected to reach.
+
+    Only draft policy chunks matching these hosts will be auto-approved.
+    Anything outside this set is left pending for human review.
+    """
+    hosts: set[str] = set()
+
+    # AI provider endpoints based on model prefix
+    provider = model.split("/")[0] if "/" in model else ""
+    if provider in ("google", "google-vertex-anthropic"):
+        hosts.add("generativelanguage.googleapis.com")
+        hosts.add("*.aiplatform.googleapis.com")
+        hosts.add("oauth2.googleapis.com")
+    if provider in ("google-vertex-anthropic", "vertexai"):
+        hosts.add("*.aiplatform.googleapis.com")
+    if provider == "anthropic":
+        hosts.add("api.anthropic.com")
+    if provider in ("gemini",):
+        hosts.add("generativelanguage.googleapis.com")
+    if provider == "openai":
+        hosts.add("api.openai.com")
+
+    # OpenCode fetches model metadata from models.dev
+    if tool_name == "opencode":
+        hosts.add("models.dev")
+        hosts.add("opencode.ai")
+
+    # GitHub access for each attached repo
+    if repos_data:
+        hosts.add("github.com")
+        hosts.add("api.github.com")
+        # Raw content for public repos
+        hosts.add("raw.githubusercontent.com")
+        hosts.add("objects.githubusercontent.com")
+
+    return hosts
+
+
 async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id: str = "") -> None:
     """Core launch logic shared by the HTTP endpoint and the background scheduler."""
     if user_id == "unknown":
@@ -676,7 +715,6 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
             return
 
     import secrets as _secrets
-    session.last_output = ""
     suffix = _secrets.token_hex(4)
 
     from swarmer.models.opencode_secret import OpencodeSecret
@@ -764,7 +802,7 @@ async def _do_launch_openshell(
     # session attributes remain valid because expire_on_commit=False.
     await db.commit()
 
-    # 1. Collect credentials into env-var dict
+    # 1. Collect MCP env vars (non-credential; AI creds go through provider API)
     env_vars = await openshell_client.create_provider(
         session=session,
         workspace_secret=oc_secret,
@@ -772,8 +810,28 @@ async def _do_launch_openshell(
         mcp_servers=mcp_servers or [],
     )
 
-    # 2. Build network/filesystem policy YAML
-    policy_yaml = build_session_policy(
+    # 1b. Create/update gateway providers for each available credential.
+    #     Must happen BEFORE sandbox creation: provider names go into SandboxSpec.providers
+    #     so the supervisor can call GetSandboxProviderEnvironment at startup and receive
+    #     the injected env vars (GOOGLE_API_KEY, ANTHROPIC_API_KEY, GH_TOKEN, etc.).
+    provider_names: list[str] = []
+    ws_id = session.workspace_id
+    if oc_secret and oc_secret.anthropic_api_key:
+        pname = f"swarmer-ws-{ws_id}-claude-code"
+        await openshell_client.ensure_provider(pname, "claude-code", {}, credentials={"api_key": oc_secret.anthropic_api_key})
+        provider_names.append(pname)
+    if oc_secret and oc_secret.google_api_key:
+        pname = f"swarmer-ws-{ws_id}-google-ai-studio"
+        await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={"GOOGLE_API_KEY": oc_secret.google_api_key})
+        provider_names.append(pname)
+    if session.github_pat:
+        pname = f"swarmer-ws-{ws_id}-github"
+        pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
+        await openshell_client.ensure_provider(pname, "github", {}, credentials={"api_token": pat_token})
+        provider_names.append(pname)
+
+    # 2. Build policy YAML (pure computation, no I/O)
+    policy = build_session_policy(
         session=session,
         repos=list(session.repos or []),
         mcp_servers=list(mcp_servers or []),
@@ -781,93 +839,263 @@ async def _do_launch_openshell(
         model=session.model or "",
     )
 
-    # 3. Create sandbox (image from tool strategy)
-    image = tool.get_image()
-    ref = await openshell_client.create_sandbox(
-        image=image,
-        env_vars=env_vars,
-        policy_yaml=policy_yaml,
-    )
-    session.sandbox_name = ref.name
-
-    # 4. Write agent config (includes MCP configuration)
-    config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
-    config_json = config_data.get(f"{tool.name}.json", "{}")
-    await openshell_client.write_agent_config(
-        sandbox_name=ref.name,
-        tool_name=tool.name,
-        config_json=config_json,
-    )
-
-    # 5. Clone repos and configure git inside the sandbox
-    if session.repos:
-        await openshell_client.clone_repos(sandbox_name=ref.name, repos=list(session.repos))
-        safe_dir_cmd = "git config --global --add safe.directory '*'"
-        await openshell_client.exec_command(ref.name, ["sh", "-c", safe_dir_cmd], client=None)
-        if session.github_pat:
-            pat = session.github_pat
-            username = pat.github_username or ""
-            git_setup_cmd = (
-                "git config --global credential.helper store && "
-                f"printf 'https://{username}:%s@github.com\\n' \"$GITHUB_PAT\" "
-                "> /root/.git-credentials && "
-                f'git config --global user.name "{username}" && '
-                f'git config --global user.email "{username}@users.noreply.github.com"'
-            )
-            await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
-        if session.working_branch:
-            for repo in session.repos:
-                branch_cmd = (
-                    f"cd /sandbox/{repo.local_path} && "
-                    f"git checkout -b {shlex.quote(session.working_branch)} 2>/dev/null "
-                    f"|| git checkout {shlex.quote(session.working_branch)}"
-                )
-                await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
-
-    # 6. Resolve model
+    # Resolve model before committing so main_cmd can be built later
     if session.model and tool.is_valid_model(session.model):
         model = session.model
     else:
         model = tool.get_default_model(has_adc, has_gemini)
 
-    # 7. Write model config (strip trailing " && " from the shell fragment)
-    model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
-    if model_setup_cmd.strip():
-        clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
-        await openshell_client.exec_command(ref.name, ["sh", "-c", clean_cmd], client=None)
+    # Capture serialisable data for the background task before committing.
+    # ORM objects cannot be used across DB sessions.
+    import json as _json
+    mcp_patch: dict = {}
+    if mcp_servers:
+        config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
+        config_json = config_data.get(f"{tool.name}.json", "{}")
+        try:
+            mcp_patch = _json.loads(config_json).get("mcp", {})
+        except Exception:
+            pass
 
-    # 8. Share/state dir setup (symlinks, auth.json)
-    share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
-    if share_cmd.strip():
-        clean_share = share_cmd.rstrip().rstrip(";").rstrip()
-        await openshell_client.exec_command(ref.name, ["sh", "-c", clean_share], client=None)
-
-    # 9. Write AGENTS.md for tui/server modes
+    repos_data = [
+        {"url": r.repo_url, "local_path": r.local_path, "branch": r.branch}
+        for r in (session.repos or [])
+    ]
+    git_username = (session.github_pat.github_username or "") if session.github_pat else ""
+    agents_md = ""
     if session.mode in ("tui", "server"):
         repo_context = k8s_sess._build_repo_context(list(session.repos or []), base_path="/sandbox")
-        agents_md_content = (resolved_prompt or "") + repo_context
-        if agents_md_content:
-            await openshell_client.write_agents_md(
-                sandbox_name=ref.name,
-                content=agents_md_content,
-            )
+        agents_md = (resolved_prompt or "") + repo_context
+    # main_cmd is used for tui/server modes. For prompt mode, _setup_openshell_sandbox
+    # builds the command from scratch to write the prompt via stdin (no newlines in args).
+    main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+    resolved_prompt_safe = resolved_prompt or ""
+    model_setup_cmd = tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/")
+    share_cmd = tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/")
 
-    # 10. Commit state and start background agent task
+    # Mark pending and commit — HTTP handler returns immediately; browser unblocks.
     session.phase = "pending"
+    session.last_output = ""
+    session.status_detail = ""   # clear stale status from any previous run
     session.run_started_at = datetime.utcnow()
     session.run_completed_at = None
     await db.commit()
 
-    main_cmd = tool.build_main_cmd(session, model, resolved_prompt=resolved_prompt)
+    # All slow gRPC work (create_sandbox wait_ready, exec setup) runs in the background.
     asyncio.create_task(
-        _run_openshell_agent(
+        _setup_openshell_sandbox(
             session_id=session.id,
-            sandbox_name=ref.name,
-            cmd=["sh", "-c", main_cmd],
+            provider_names=provider_names,
+            env_vars=env_vars,
+            policy=policy,
+            image=tool.get_image(),
+            tool_name=tool.name,
+            model=model,
+            model_setup_cmd=model_setup_cmd,
+            share_cmd=share_cmd,
+            mcp_patch=mcp_patch,
+            repos_data=repos_data,
+            git_username=git_username,
+            working_branch=session.working_branch or "",
+            agents_md=agents_md,
             mode=session.mode,
+            main_cmd=main_cmd,
+            resolved_prompt=resolved_prompt_safe,
         ),
-        name=f"openshell-agent-{session.id}",
+        name=f"openshell-setup-{session.id}",
     )
+
+
+async def _setup_openshell_sandbox(
+    session_id: int,
+    provider_names: list[str],
+    env_vars: dict,
+    policy,
+    image: str,
+    tool_name: str,
+    model: str,
+    model_setup_cmd: str,
+    share_cmd: str,
+    mcp_patch: dict,
+    repos_data: list[dict],
+    git_username: str,
+    working_branch: str,
+    agents_md: str,
+    mode: str,
+    main_cmd: str,
+    resolved_prompt: str = "",
+) -> None:
+    """Background task: create sandbox and run all setup steps, then launch agent."""
+    from swarmer import openshell_client
+    from swarmer.database import get_db as _get_db
+    from swarmer.models.session import Session as _Session
+    import json as _json
+
+    async def _update_db(**fields) -> None:
+        async for _db in _get_db():
+            _s = await _db.get(_Session, session_id)
+            if _s:
+                for k, v in fields.items():
+                    setattr(_s, k, v)
+                await _db.commit()
+            break
+
+    try:
+        # Create sandbox (slow — wait_ready can take 30-120 s)
+        ref = await openshell_client.create_sandbox(
+            image=image,
+            env_vars=env_vars,
+            policy=policy,
+            provider_names=provider_names,
+        )
+        await _update_db(sandbox_name=ref.name)
+
+        # Check if the session was stopped while sandbox was being created (race condition).
+        # If so, delete the sandbox and exit cleanly rather than starting the agent.
+        async def _session_phase() -> str:
+            async for _db in _get_db():
+                _s = await _db.get(_Session, session_id)
+                return _s.phase if _s else "unknown"
+            return "unknown"
+
+        current_phase = await _session_phase()
+        if current_phase != "pending":
+            log.info("_setup_openshell_sandbox: session %d no longer pending (phase=%s), cleaning up sandbox %s",
+                     session_id, current_phase, ref.name)
+            try:
+                await openshell_client.delete_sandbox(ref.name)
+            except Exception:
+                pass
+            return
+
+        # Write a schema-valid tool config to /sandbox/{tool}.json.
+        # The container image ships an opencode.json with an outdated LSP schema
+        # (missing required 'extensions' field). Always overwrite it with a valid
+        # config that includes enabled_providers and any MCP config.
+        from swarmer.agent_tools.registry import get as _get_tool
+        _tool = _get_tool(tool_name)
+        _config_data = _tool.build_config_data(mcp_servers=[
+            type("_MCP", (), {"slug": k, **v})()
+            for k, v in (mcp_patch.get("mcp", {}) or {}).items()
+        ] if mcp_patch else [])
+        _config_json = _config_data.get(f"{tool_name}.json", "{}")
+        await openshell_client.write_agent_config(
+            sandbox_name=ref.name,
+            tool_name=tool_name,
+            config_json=_config_json,
+        )
+
+        # Git credentials before cloning (uses $GH_TOKEN injected by github provider)
+        if repos_data and git_username:
+            git_setup_cmd = (
+                "git config --global credential.helper store && "
+                f"printf 'https://{git_username}:%s@github.com\\n' \"$GH_TOKEN\" "
+                "> /root/.git-credentials && "
+                f'git config --global user.name "{git_username}" && '
+                f'git config --global user.email "{git_username}@users.noreply.github.com"'
+            )
+            await openshell_client.exec_command(ref.name, ["sh", "-c", git_setup_cmd], client=None)
+
+        # Clone repos
+        if repos_data:
+            class _Repo:
+                def __init__(self, d):
+                    self.repo_url = d["url"]
+                    self.local_path = d["local_path"]
+                    self.branch = d["branch"]
+            fake_repos = [_Repo(d) for d in repos_data]
+            await openshell_client.clone_repos(sandbox_name=ref.name, repos=fake_repos)
+            await openshell_client.exec_command(
+                ref.name, ["sh", "-c", "git config --global --add safe.directory '*'"], client=None
+            )
+            if working_branch:
+                for rd in repos_data:
+                    branch_cmd = (
+                        f"cd /sandbox/{rd['local_path']} && "
+                        f"git checkout -b {shlex.quote(working_branch)} 2>/dev/null "
+                        f"|| git checkout {shlex.quote(working_branch)}"
+                    )
+                    await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
+
+        # Share/state dir setup runs FIRST so the $HOME/.local/share/<tool> symlink
+        # is in place before model_setup_cmd writes the model config through it.
+        # Both commands need HOME=/sandbox to match the agent's runtime environment.
+        if share_cmd.strip():
+            clean_share = share_cmd.rstrip().rstrip(";").rstrip()
+            await openshell_client.exec_command(
+                ref.name, ["sh", "-c", f"export HOME=/sandbox; {clean_share}"], client=None
+            )
+
+        # Model selection config
+        if model_setup_cmd.strip():
+            clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
+            await openshell_client.exec_command(
+                ref.name, ["sh", "-c", f"export HOME=/sandbox; {clean_cmd}"], client=None
+            )
+
+        # AGENTS.md for tui/server modes
+        if agents_md:
+            await openshell_client.write_agents_md(sandbox_name=ref.name, content=agents_md)
+
+        # Pre-flight probe: run a quick opencode command so the supervisor observes
+        # the denied AI API connections and generates draft policy chunks.
+        # Then approve expected chunks so the actual agent run can reach the API.
+        # Without this probe, approval runs before any chunks exist.
+        if mode == "prompt":
+            import asyncio as _asyncio
+            await _update_db(status_detail="Configuring network policy…")
+            # Use a real prompt so the agent makes an API call and generates policy denials.
+            # An empty prompt causes opencode to exit immediately without calling the API.
+            _probe_prompt = shlex.quote("Reply with one word: ready")
+            _probe_bin = {"opencode": "opencode run", "crush": "crush run"}.get(tool_name, "opencode run")
+            _probe_cmd = f"HOME=/sandbox {_probe_bin} --model {shlex.quote(model)} {_probe_prompt} 2>/dev/null; true"
+            try:
+                await openshell_client.exec_command(
+                    ref.name, ["sh", "-c", _probe_cmd], client=None,
+                    timeout_seconds=30,
+                )
+            except Exception:
+                pass  # probe failure is non-fatal; approval may still find existing chunks
+            await _asyncio.sleep(12)  # supervisor needs ~10s to submit denial analysis
+
+        expected = _build_expected_hosts(model, repos_data, tool_name, mode)
+        await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=expected)
+
+        # For prompt mode, write the prompt to /sandbox/.prompt.txt via stdin
+        # so we avoid newline-in-arg gateway rejection. Build the agent command
+        # from scratch (not from pre-built main_cmd which may embed newlines).
+        if mode == "prompt" and resolved_prompt:
+            await openshell_client.exec_command(
+                ref.name, ["sh", "-c", "cat > /sandbox/.prompt.txt"],
+                client=None, stdin=resolved_prompt.encode(),
+            )
+            # Base command without any embedded prompt — shell reads from file
+            _tool_bin = {"opencode": "opencode run", "crush": "crush run"}.get(tool_name, "opencode run")
+            _model_arg = shlex.quote(model) if model else ""
+            agent_cmd = f"HOME=/sandbox {_tool_bin} --model {_model_arg} \"$(</sandbox/.prompt.txt)\""
+        elif mode == "prompt" and not resolved_prompt:
+            # No prompt at all — just launch without message
+            agent_cmd = f"HOME=/sandbox {main_cmd}"
+        else:
+            agent_cmd = f"HOME=/sandbox {main_cmd}"
+
+        # Launch agent
+        asyncio.create_task(
+            _run_openshell_agent(
+                session_id=session_id,
+                sandbox_name=ref.name,
+                cmd=["sh", "-c", agent_cmd],
+                mode=mode,
+                agent_tool=tool_name,
+            ),
+            name=f"openshell-agent-{session_id}",
+        )
+
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("_setup_openshell_sandbox failed for session %d", session_id)
+        await _update_db(phase="failed", run_completed_at=datetime.utcnow())
 
 
 async def _run_openshell_agent(
@@ -875,6 +1103,7 @@ async def _run_openshell_agent(
     sandbox_name: str,
     cmd: list[str],
     mode: str,
+    agent_tool: str,
 ) -> None:
     """Background task: starts the agent in the sandbox and tracks completion."""
     from swarmer import openshell_client
@@ -894,12 +1123,19 @@ async def _run_openshell_agent(
         await _update_db(phase="running")
 
         if mode == "prompt":
-            result = await openshell_client.exec_command(sandbox_name, cmd, client=None)
+            result = await openshell_client.exec_command(sandbox_name, cmd, client=None,
+                                                         timeout_seconds=300)
             exit_code = getattr(result, "exit_code", None)
             stdout = getattr(result, "stdout", "") or ""
             stderr = getattr(result, "stderr", "") or ""
-            output = stdout or stderr
             phase = "succeeded" if exit_code == 0 else "failed"
+
+            # OpenCode stores the response in its SQLite DB, not stdout.
+            # Extract the last assistant message after the run completes.
+            if agent_tool == "opencode":
+                output = await openshell_client.read_opencode_response(sandbox_name) or stdout or stderr
+            else:
+                output = stdout or stderr
 
             new_sandbox_name: str | None = sandbox_name
             if phase == "succeeded":
@@ -912,6 +1148,7 @@ async def _run_openshell_agent(
             await _update_db(
                 phase=phase,
                 last_output=output,
+                status_detail="",  # clear any stale status from previous runs
                 run_completed_at=datetime.utcnow(),
                 sandbox_name=new_sandbox_name,
             )
@@ -1254,17 +1491,26 @@ async def session_delete(
         flash(request, "Stop the session before deleting it.", "danger")
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}", status_code=302)
 
-    if session.pvc_name:
+    if session.sandbox_name:
+        # OpenShell session — delete sandbox; skip K8s PVC/Secret cleanup
+        from swarmer import openshell_client
         try:
-            k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
+            await openshell_client.delete_sandbox(session.sandbox_name)
         except Exception as exc:
-            flash(request, f"PVC deletion failed: {exc}", "warning")
+            flash(request, f"Sandbox deletion failed: {exc}", "warning")
+    else:
+        # K8s session — clean up PVC and Secrets if present
+        if session.pvc_name:
+            try:
+                k8s_sess.delete_session_pvc(ws.k8s_namespace, session.pvc_name)
+            except Exception as exc:
+                flash(request, f"PVC deletion failed: {exc}", "warning")
 
-    # Clean up any remaining session-scoped K8s Secrets
-    try:
-        k8s.cleanup_session_secrets(ws.k8s_namespace, session)
-    except Exception as exc:
-        flash(request, f"Secret cleanup failed: {exc}", "warning")
+        if session.k8s_secret_names:
+            try:
+                k8s.cleanup_session_secrets(ws.k8s_namespace, session)
+            except Exception as exc:
+                flash(request, f"Secret cleanup failed: {exc}", "warning")
 
     await db.delete(session)
     await db.commit()

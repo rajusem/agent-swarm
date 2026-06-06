@@ -10,33 +10,163 @@ log = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 30.0
 _scheduler_task: asyncio.Task | None = None
+_gc_task: asyncio.Task | None = None
 _queue_next_check: datetime | None = None
 
 
 def start_scheduler() -> None:
-    global _scheduler_task
+    global _scheduler_task, _gc_task
     stop_scheduler()
     _scheduler_task = asyncio.create_task(
         _scheduler_loop(),
         name="cron-scheduler",
     )
+    from swarmer.config import settings
+    if settings.openshell_gateway_url and settings.sandbox_gc_interval != 0:
+        _gc_task = asyncio.create_task(
+            _sandbox_gc_loop(),
+            name="sandbox-gc",
+        )
 
 
 def stop_scheduler() -> None:
-    global _scheduler_task
+    global _scheduler_task, _gc_task
     if _scheduler_task and not _scheduler_task.done():
         _scheduler_task.cancel()
     _scheduler_task = None
+    if _gc_task and not _gc_task.done():
+        _gc_task.cancel()
+    _gc_task = None
 
 
 async def shutdown() -> None:
+    gc = _gc_task
     task = _scheduler_task
     stop_scheduler()
-    if task:
+    for t in (task, gc):
+        if t:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+
+async def _sandbox_gc_loop() -> None:
+    from swarmer.config import settings
+    from swarmer.database import get_db
+
+    interval = max(60, settings.sandbox_gc_interval)  # floor at 60s; 0 is handled by start_scheduler (not started)
+    log.info("sandbox-gc: started, interval=%ds", interval)
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                async for _db in get_db():
+                    await _collect_orphaned_sandboxes(_db)
+                    break
+            except Exception:
+                log.exception("sandbox-gc: error in collect cycle")
+    except asyncio.CancelledError:
+        raise
+
+
+async def _collect_orphaned_sandboxes(db) -> None:
+    """Delete live sandboxes that have no matching active session in the DB.
+
+    Sandboxes are considered orphaned only if:
+    - No session has sandbox_name matching them (sandbox was never registered), AND
+    - No session is in 'pending' state (which might be mid-setup, sandbox_name not yet saved)
+
+    When a session's sandbox is deleted by GC, the session is moved to 'stopped'.
+    """
+    from swarmer import openshell_client
+    from swarmer.models.session import Session
+    from datetime import datetime
+
+    try:
+        live_names = await openshell_client.list_sandboxes()
+    except Exception:
+        log.exception("sandbox-gc: failed to list sandboxes")
+        return
+
+    if not live_names:
+        return
+
+    # Skip GC entirely if any session is pending (mid-setup: sandbox may exist but
+    # sandbox_name not yet committed to DB — deleting it would corrupt the setup).
+    pending_result = await db.execute(
+        select(Session.id).where(Session.phase == "pending").limit(1)
+    )
+    if pending_result.scalar_one_or_none() is not None:
+        log.debug("sandbox-gc: skipping — pending session in progress")
+        return
+
+    # Collect known sandbox names from active and recently-active sessions
+    result = await db.execute(
+        select(Session.id, Session.sandbox_name).where(Session.sandbox_name.is_not(None))
+    )
+    rows = result.all()
+    known: dict[str, int] = {row[1]: row[0] for row in rows}  # sandbox_name → session_id
+
+    orphaned = [name for name in live_names if name not in known]
+    if not orphaned:
+        return
+
+    # Only delete sandboxes that have been orphaned long enough — newly created
+    # sandboxes may not yet have their sandbox_name committed to the DB (race window
+    # during _setup_openshell_sandbox). Grace period: 5 minutes from creation.
+    import time as _time
+    from openshell._proto import openshell_pb2 as _pb
+    now_ms = int(_time.time() * 1000)
+    _grace_ms = 5 * 60 * 1000  # 5 minutes
+
+    def _get_client_local():
+        from swarmer import openshell_client as _oc
+        return _oc._get_client()
+
+    def _sandbox_age_ok(name: str) -> bool:
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            client = _get_client_local()
+            resp = client._stub.GetSandbox(
+                _pb.GetSandboxRequest(name=name), timeout=10
+            )
+            created_ms = resp.sandbox.metadata.created_at_ms if resp.sandbox.metadata else 0
+            age_ms = now_ms - created_ms
+            return age_ms >= _grace_ms
+        except Exception:
+            return True  # if we can't check, assume old enough
+
+    stale = [name for name in orphaned if await asyncio.to_thread(_sandbox_age_ok, name)]
+    young = [name for name in orphaned if name not in stale]
+    if young:
+        log.debug("sandbox-gc: skipping %d young sandbox(es) (< 5min): %s", len(young), young)
+    if not stale:
+        return
+
+    log.warning("sandbox-gc: found %d orphaned sandbox(es): %s", len(stale), stale)
+    for name in stale:
+        try:
+            await openshell_client.delete_sandbox(name)
+            log.info("sandbox-gc: deleted orphaned sandbox %s", name)
+        except Exception:
+            log.warning("sandbox-gc: failed to delete %s", name, exc_info=True)
+
+    # Update any session whose sandbox was deleted externally (sandbox_name set but
+    # sandbox no longer alive) — move them to 'stopped' so the dashboard reflects reality.
+    deleted_externally = [name for name in known if name not in live_names and name not in orphaned]
+    if deleted_externally:
+        for sandbox_name in deleted_externally:
+            session_id = known[sandbox_name]
+            session = await db.get(Session, session_id)
+            if session and session.phase in ("pending", "running"):
+                log.warning(
+                    "sandbox-gc: sandbox %s deleted externally — moving session %d to stopped",
+                    sandbox_name, session_id,
+                )
+                session.phase = "stopped"
+                session.sandbox_name = None
+                session.run_completed_at = datetime.utcnow()
+        await db.commit()
 
 
 async def _scheduler_loop() -> None:

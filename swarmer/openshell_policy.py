@@ -1,21 +1,21 @@
 """
-OpenShell policy YAML generator for AgentSwarm sessions.
+OpenShell policy proto builder for AgentSwarm sessions.
 
-build_session_policy() assembles a complete OpenShell sandbox policy from
+build_session_policy() assembles a complete OpenShell SandboxPolicy proto from
 composable blocks based on: repos attached, agent tool, model provider,
 Jira MCP enablement, and session language (golang/python).
 
+Returns a SandboxPolicy proto object that is set directly on SandboxSpec.policy.
 All filesystem paths use /sandbox/ — /workspace/ is never referenced.
 """
-import yaml
 
 
 # ── Static base policy sections ───────────────────────────────────────────────
 
-_BASE_FILESYSTEM_POLICY = {
+_BASE_FILESYSTEM = {
     "include_workdir": True,
     "read_only": ["/usr", "/lib", "/proc", "/dev/urandom", "/app", "/etc", "/var/log"],
-    "read_write": ["/sandbox", "/tmp", "/dev/null", "/home"],
+    "read_write": ["/sandbox", "/tmp", "/dev/null", "/home/sandbox"],
 }
 
 _GO_DEVELOPMENT_BLOCK = {
@@ -138,15 +138,25 @@ def _build_github_api_block(org: str, name: str) -> dict:
 
 # ── Agent API block (tool and model-dependent) ────────────────────────────────
 
+def _endpoint(host: str) -> dict:
+    return {
+        "host": host,
+        "port": 443,
+        "protocol": "rest",
+        "enforcement": "enforce",
+        "access": "full",
+    }
+
+
 def _build_agent_api_block(agent_tool: str, model: str) -> dict:
     if agent_tool == "crush":
         block = {
             "name": "agent-api",
             "endpoints": [
-                {"host": "*.aiplatform.googleapis.com", "port": 443},
-                {"host": "generativelanguage.googleapis.com", "port": 443},
-                {"host": "api.anthropic.com", "port": 443},
-                {"host": "api.openai.com", "port": 443},
+                _endpoint("*.aiplatform.googleapis.com"),
+                _endpoint("generativelanguage.googleapis.com"),
+                _endpoint("api.anthropic.com"),
+                _endpoint("api.openai.com"),
             ],
             "binaries": [
                 {"path": "/usr/local/bin/crush"},
@@ -156,16 +166,13 @@ def _build_agent_api_block(agent_tool: str, model: str) -> dict:
         block = {
             "name": "agent-api",
             "endpoints": [
-                {"host": "*.aiplatform.googleapis.com", "port": 443},
-                {"host": "generativelanguage.googleapis.com", "port": 443},
-                {"host": "oauth2.googleapis.com", "port": 443},
-                {"host": "api.anthropic.com", "port": 443},
-                {"host": "opencode.ai", "port": 443},
+                _endpoint("*.aiplatform.googleapis.com"),
+                _endpoint("generativelanguage.googleapis.com"),
+                _endpoint("oauth2.googleapis.com"),
+                _endpoint("api.anthropic.com"),
+                _endpoint("opencode.ai"),
             ],
-            "binaries": [
-                {"path": "/usr/local/bin/opencode"},
-                {"path": "/usr/bin/node"},
-            ],
+            # No binaries restriction — opencode runs via node (npm-global path varies)
         }
     return {"agent_api": block}
 
@@ -178,34 +185,79 @@ def build_session_policy(
     mcp_servers: list,
     agent_tool: str,
     model: str,
-) -> str:
-    """Assemble a complete OpenShell sandbox policy YAML for this session."""
-    network_policies: dict = {}
+):
+    """Assemble a complete OpenShell SandboxPolicy proto for this session.
 
-    network_policies.update(_build_agent_api_block(agent_tool, model))
+    Returns a SandboxPolicy proto object to be set on SandboxSpec.policy.
+    """
+    from google.protobuf.json_format import ParseDict
+    from openshell._proto import openshell_pb2
+
+    network_policies_dict: dict = {}
+    network_policies_dict.update(_build_agent_api_block(agent_tool, model))
 
     for repo in repos:
         slug = _repo_slug(repo)
         org, name = _repo_org_name(repo)
-        network_policies[f"github_git_{slug}"] = _build_github_git_block(org, name)
-        network_policies[f"github_api_{slug}"] = _build_github_api_block(org, name)
+        network_policies_dict[f"github_git_{slug}"] = _build_github_git_block(org, name)
+        network_policies_dict[f"github_api_{slug}"] = _build_github_api_block(org, name)
 
     if any(getattr(mcp, "slug", None) == "jira" for mcp in (mcp_servers or [])):
-        network_policies["jira_mcp"] = _JIRA_MCP_BLOCK
+        network_policies_dict["jira_mcp"] = _JIRA_MCP_BLOCK
 
     lang = getattr(session, "language", "golang")
     if lang == "golang":
-        network_policies["golang"] = _GO_DEVELOPMENT_BLOCK
-        network_policies["govulncheck"] = _GOVULNCHECK_BLOCK
+        network_policies_dict["golang"] = _GO_DEVELOPMENT_BLOCK
+        network_policies_dict["govulncheck"] = _GOVULNCHECK_BLOCK
     elif lang == "python":
-        network_policies["pypi"] = _PYTHON_DEVELOPMENT_BLOCK
+        network_policies_dict["pypi"] = _PYTHON_DEVELOPMENT_BLOCK
 
-    policy = {
+    # Network policies are intentionally NOT included in spec.policy.
+    # The OpenShell supervisor uses a draft-approval workflow: when the sandbox
+    # makes a connection that is denied, the supervisor proposes draft chunks.
+    # swarmer approves expected chunks via approve_draft_policy_chunks() after
+    # creation. Pre-setting network_policies in spec.policy suppresses draft
+    # chunk generation, breaking the approval flow.
+    policy_dict = {
         "version": 1,
-        "filesystem_policy": _BASE_FILESYSTEM_POLICY,
+        "filesystem": _BASE_FILESYSTEM,
         "landlock": {"compatibility": "best_effort"},
         "process": {"run_as_group": "sandbox", "run_as_user": "sandbox"},
-        "network_policies": network_policies,
     }
+    # Get SandboxPolicy class from a SandboxSpec instance
+    policy_instance = openshell_pb2.SandboxSpec().policy.__class__()
+    return ParseDict(policy_dict, policy_instance, ignore_unknown_fields=True)
 
-    return yaml.dump(policy, default_flow_style=False, allow_unicode=True)
+
+def build_session_network_policies(
+    session,
+    repos: list,
+    mcp_servers: list,
+    agent_tool: str,
+    model: str,
+) -> dict:
+    """Return the computed network_policies dict for this session.
+
+    This is NOT set on spec.policy (the draft-approval workflow handles network
+    access). This function is exposed for reference, logging, and testing.
+    """
+    network_policies_dict: dict = {}
+    network_policies_dict.update(_build_agent_api_block(agent_tool, model))
+
+    for repo in repos:
+        slug = _repo_slug(repo)
+        org, name = _repo_org_name(repo)
+        network_policies_dict[f"github_git_{slug}"] = _build_github_git_block(org, name)
+        network_policies_dict[f"github_api_{slug}"] = _build_github_api_block(org, name)
+
+    if any(getattr(mcp, "slug", None) == "jira" for mcp in (mcp_servers or [])):
+        network_policies_dict["jira_mcp"] = _JIRA_MCP_BLOCK
+
+    lang = getattr(session, "language", "golang")
+    if lang == "golang":
+        network_policies_dict["golang"] = _GO_DEVELOPMENT_BLOCK
+        network_policies_dict["govulncheck"] = _GOVULNCHECK_BLOCK
+    elif lang == "python":
+        network_policies_dict["pypi"] = _PYTHON_DEVELOPMENT_BLOCK
+
+    return network_policies_dict
