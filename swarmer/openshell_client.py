@@ -407,21 +407,6 @@ async def _sandbox_id(sandbox_name: str, client) -> str:
     return ref.id
 
 
-async def clone_repos(sandbox_name: str, repos: list, client=None) -> None:
-    """Clone git repos into /sandbox/ via exec (one call per repo)."""
-    if client is None:
-        client = _get_client()
-    sid = await _sandbox_id(sandbox_name, client)
-    for repo in repos:
-        target = f"/sandbox/{repo.local_path}"
-        # SessionRepo uses repo_url; _Repo dataclasses also use repo_url
-        url = getattr(repo, "repo_url", None) or getattr(repo, "url", "")
-
-        def _do_clone(s=sid, t=target, u=url):
-            client.exec(s, ["git", "clone", u, t])
-
-        await asyncio.to_thread(_do_clone)
-
 
 async def write_agent_config(
     sandbox_name: str,
@@ -497,7 +482,6 @@ async def read_opencode_response(sandbox_name: str, client=None) -> str:
     OpenCode stores conversation history in /sandbox/.opencode/opencode.db rather
     than writing to stdout. This extracts the most recent assistant text parts.
     """
-    import base64
 
     if client is None:
         client = _get_client()
