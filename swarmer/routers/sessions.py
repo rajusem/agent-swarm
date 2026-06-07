@@ -897,11 +897,14 @@ async def _do_launch_openshell(
     _has_github_repos = any("github.com" in (r.repo_url or "") for r in (session.repos or []))
     if session.github_pat or _has_github_repos:
         pname = f"swarmer-ws-{ws_id}-github"
-        _creds: dict[str, str] = {}
         if session.github_pat:
             pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
-            _creds = {"api_token": pat_token}
-        await openshell_client.ensure_provider(pname, "github", {}, credentials=_creds or None)
+            _creds: dict[str, str] = {"api_token": pat_token}
+        else:
+            # Gateway requires non-empty credentials; use a placeholder so the provider
+            # is registered and the sandbox gets network access to github.com for public clones.
+            _creds = {"api_token": "public-repo-access"}
+        await openshell_client.ensure_provider(pname, "github", {}, credentials=_creds)
         provider_names.append(pname)
 
     # 2. Build policy YAML (pure computation, no I/O)
@@ -918,6 +921,7 @@ async def _do_launch_openshell(
         model = session.model
     else:
         model = tool.get_default_model(has_adc, has_gemini)
+    model = model.strip("\r\n")  # strip any stray line endings before embedding in shell commands
 
     # When routing through inference.local, rewrite the model to use the plain
     # anthropic/ provider. OpenCode's google-vertex-anthropic provider invokes

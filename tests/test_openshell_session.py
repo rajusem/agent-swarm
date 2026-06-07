@@ -501,6 +501,44 @@ class TestDoLaunchOpenshell:
         assert mock_attach.call_count == 0
 
     @pytest.mark.asyncio
+    async def test_github_provider_registered_for_public_repo_without_pat(self, client):
+        """ensure_provider must be called for github.com repos even when no PAT is set."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+        await client.post(
+            f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/repos",
+            json={"repo_url": "https://github.com/org/public-repo.git", "branch": "main"},
+        )
+
+        patches = self._patch_openshell()
+        with patches["create_provider"], \
+             patches["ensure_provider"] as mock_ensure, \
+             patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
+             patches["create_sandbox"], patches["write_agent_config"], \
+             patches["write_agents_md"], patches["exec_command"], \
+             patches["start_agent"], patches["delete_sandbox"], \
+             patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
+            await client.post(
+                f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch"
+            )
+
+        # A github provider must be registered even without a PAT so the proxy
+        # allows HTTPS CONNECT tunnels to github.com during git clone.
+        github_calls = [
+            c for c in mock_ensure.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "github"
+        ]
+        assert len(github_calls) == 1, (
+            f"Expected 1 github provider call, got {len(github_calls)}: {mock_ensure.call_args_list}"
+        )
+        # No PAT — credentials must use the public-repo placeholder (gateway rejects empty creds).
+        call_kwargs = github_calls[0].kwargs
+        creds = call_kwargs.get("credentials", {})
+        assert creds.get("api_token") == "public-repo-access", (
+            f"Expected placeholder credential for public repo, got: {creds}"
+        )
+
+    @pytest.mark.asyncio
     async def test_passes_policy_yaml_from_builder(self, client):
         ws = await _create_workspace(client)
         s = await _create_session(client, ws["id"])
