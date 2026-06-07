@@ -1075,6 +1075,32 @@ async def _setup_openshell_sandbox(
             config_json=_config_json,
         )
 
+        # For github.com repos, probe connectivity first so the supervisor generates
+        # a draft network policy for github.com, which we immediately approve.
+        # This must happen BEFORE the real clone — the sandbox starts with no
+        # outbound policy (draft-approval workflow) and the probe forces a deny-event
+        # that the supervisor converts into an approvable chunk.
+        _github_repos = [rd for rd in repos_data if "github.com" in rd["url"]]
+        if _github_repos:
+            await _update_db(status_detail="Probing GitHub connectivity…")
+            try:
+                await openshell_client.exec_command(
+                    ref.name,
+                    ["sh", "-c", "curl -s -o /dev/null -m 10 https://github.com; true"],
+                    client=None,
+                    timeout_seconds=15,
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(12)  # supervisor needs ~10s to analyze the denied connection
+            _git_hosts: set[str] = {
+                "github.com",
+                "api.github.com",
+                "raw.githubusercontent.com",
+                "objects.githubusercontent.com",
+            }
+            await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=_git_hosts)
+
         # Clone repos via exec_command (one call per repo, exit code checked).
         # PAT is embedded directly in the clone URL so auth is self-contained
         # and does not depend on $GH_TOKEN gateway injection.

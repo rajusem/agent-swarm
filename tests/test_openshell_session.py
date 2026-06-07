@@ -1525,7 +1525,188 @@ class TestCrushOpenshellSetup:
 
 
 # ===========================================================================
-# 9. VertexAI provider injection via OpenShell native provider API
+# 9. GitHub connectivity probe: probe → approve → clone sequence (smoke test)
+# ===========================================================================
+
+
+def _make_git_probe_patches(sandbox_name: str = "sandbox-git-probe-abc"):
+    """Patches for _setup_openshell_sandbox focused on capturing exec / approve order."""
+    ref = _fake_sandbox_ref(sandbox_name)
+    return {
+        "create_sandbox": patch(
+            "swarmer.openshell_client.create_sandbox",
+            new=AsyncMock(return_value=ref),
+        ),
+        "write_agent_config": patch("swarmer.openshell_client.write_agent_config", new=AsyncMock()),
+        "write_agents_md": patch("swarmer.openshell_client.write_agents_md", new=AsyncMock()),
+        "run_agent": patch("swarmer.routers.sessions._run_openshell_agent", new=AsyncMock()),
+        "sleep": patch("asyncio.sleep", new=AsyncMock()),
+    }
+
+
+class TestGitProbeBeforeClone:
+    """Smoke test: verifies that the github.com probe and draft policy approval
+    happen BEFORE git clone when a session has github.com repos.
+
+    This guards against the regression where clone failed with
+    'CONNECT tunnel failed, response 403' because the network policy was
+    approved only after the clone attempt.
+    """
+
+    @pytest.mark.asyncio
+    async def test_probe_approve_clone_order_for_public_repo(self, client):
+        """probe(github.com) → approve_draft_policy_chunks → git clone — in that order."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+        await client.post(
+            f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/repos",
+            json={"repo_url": "https://github.com/org/public-repo.git", "branch": "main"},
+        )
+
+        call_log: list[tuple] = []  # ("exec", cmd_list) or ("approve", hosts_set)
+
+        async def _capture_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None):
+            call_log.append(("exec", list(cmd)))
+            return MagicMock(exit_code=0, stdout="", stderr="")
+
+        async def _capture_approve(sandbox_name, expected_hosts=None):
+            call_log.append(("approve", frozenset(expected_hosts or [])))
+            return []
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET phase='pending' WHERE id=:id"), {"id": s["id"]}
+            )
+            await db.commit()
+
+        from swarmer.agent_tools.opencode import OpenCodeStrategy as OpencodeStrategy
+        from swarmer.routers.sessions import _setup_openshell_sandbox
+
+        tool = OpencodeStrategy()
+        model = "google/gemini-3.5-flash"
+        repos = [{"url": "https://github.com/org/public-repo.git", "local_path": "public-repo", "branch": "main"}]
+
+        patches = _make_git_probe_patches()
+        with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
+             patches["create_sandbox"], \
+             patches["write_agent_config"], \
+             patches["write_agents_md"], \
+             patches["run_agent"], \
+             patches["sleep"], \
+             patch("swarmer.openshell_client.exec_command", new=_capture_exec), \
+             patch("swarmer.openshell_client.approve_draft_policy_chunks", new=_capture_approve):
+            await _setup_openshell_sandbox(
+                session_id=s["id"],
+                provider_names=[],
+                env_vars={},
+                policy=None,
+                image="quay.io/opencode:latest",
+                tool_name="opencode",
+                model=model,
+                model_setup_cmd=tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/"),
+                share_cmd=tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/"),
+                mcp_patch={},
+                repos_data=repos,
+                git_username="",
+                pat_token="",
+                working_branch="",
+                agents_md="",
+                mode="prompt",
+                main_cmd=f"opencode run --model {model}",
+                resolved_prompt="",
+            )
+
+        # Find positions of the three key events in the ordered call log
+        github_probe_idx = next(
+            (i for i, (kind, cmd) in enumerate(call_log)
+             if kind == "exec" and "github.com" in " ".join(cmd) and "curl" in " ".join(cmd)),
+            None,
+        )
+        first_approve_idx = next(
+            (i for i, (kind, hosts) in enumerate(call_log)
+             if kind == "approve" and "github.com" in hosts),
+            None,
+        )
+        clone_idx = next(
+            (i for i, (kind, cmd) in enumerate(call_log)
+             if kind == "exec" and "git clone" in " ".join(cmd)),
+            None,
+        )
+
+        assert github_probe_idx is not None, (
+            "Expected a github.com curl probe before clone — "
+            f"call log: {[(k, c if k=='approve' else ' '.join(c)) for k,c in call_log]}"
+        )
+        assert first_approve_idx is not None, (
+            "Expected approve_draft_policy_chunks call covering github.com"
+        )
+        assert clone_idx is not None, "Expected git clone exec_command call"
+        assert github_probe_idx < first_approve_idx < clone_idx, (
+            f"Required order: probe({github_probe_idx}) < approve({first_approve_idx}) < clone({clone_idx}). "
+            f"Call log: {[(k, c if k=='approve' else ' '.join(c)) for k,c in call_log]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_probe_when_no_repos(self, client):
+        """When there are no repos, no github probe or approve should be issued."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        call_log: list[tuple] = []
+
+        async def _capture_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None):
+            call_log.append(("exec", list(cmd)))
+            return MagicMock(exit_code=0, stdout="", stderr="")
+
+        async def _capture_approve(sandbox_name, expected_hosts=None):
+            call_log.append(("approve", frozenset(expected_hosts or [])))
+            return []
+
+        from swarmer.agent_tools.opencode import OpenCodeStrategy as OpencodeStrategy
+        from swarmer.routers.sessions import _setup_openshell_sandbox
+
+        tool = OpencodeStrategy()
+        model = "google/gemini-3.5-flash"
+
+        patches = _make_git_probe_patches()
+        with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
+             patches["create_sandbox"], \
+             patches["write_agent_config"], \
+             patches["write_agents_md"], \
+             patches["run_agent"], \
+             patches["sleep"], \
+             patch("swarmer.openshell_client.exec_command", new=_capture_exec), \
+             patch("swarmer.openshell_client.approve_draft_policy_chunks", new=_capture_approve):
+            await _setup_openshell_sandbox(
+                session_id=s["id"],
+                provider_names=[],
+                env_vars={},
+                policy=None,
+                image="quay.io/opencode:latest",
+                tool_name="opencode",
+                model=model,
+                model_setup_cmd=tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/"),
+                share_cmd=tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/"),
+                mcp_patch={},
+                repos_data=[],
+                git_username="",
+                pat_token="",
+                working_branch="",
+                agents_md="",
+                mode="prompt",
+                main_cmd=f"opencode run --model {model}",
+                resolved_prompt="",
+            )
+
+        github_probes = [
+            (k, c) for k, c in call_log
+            if k == "exec" and "github.com" in " ".join(c) and "curl" in " ".join(c)
+        ]
+        assert github_probes == [], f"No github probe expected when no repos: {github_probes}"
+
+
+# ===========================================================================
+# 10. VertexAI provider injection via OpenShell native provider API
 # ===========================================================================
 
 
