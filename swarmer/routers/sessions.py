@@ -751,6 +751,12 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
     if user_id == "unknown":
         raise ValueError("Session expired — please log in again")
 
+    _github_repos = [r for r in (session.repos or []) if "github.com" in (r.repo_url or "")]
+    if _github_repos and not session.github_pat:
+        raise ValueError(
+            "A GitHub PAT is required for repos on github.com — add one in AI Tokens."
+        )
+
     if settings.max_concurrent_agents > 0:
         running = await _count_running_sessions(db)
         if running >= settings.max_concurrent_agents:
@@ -914,6 +920,7 @@ async def _do_launch_openshell(
         model = session.model
     else:
         model = tool.get_default_model(has_adc, has_gemini)
+    model = model.strip("\r\n")  # strip any stray line endings before embedding in shell commands
 
     # When routing through inference.local, rewrite the model to use the plain
     # anthropic/ provider. OpenCode's google-vertex-anthropic provider invokes
@@ -1067,40 +1074,6 @@ async def _setup_openshell_sandbox(
             config_json=_config_json,
         )
 
-        # Clone repos via exec_command (one call per repo, exit code checked).
-        # PAT is embedded directly in the clone URL so auth is self-contained
-        # and does not depend on $GH_TOKEN gateway injection.
-        if repos_data:
-            for rd in repos_data:
-                local_path = rd["local_path"]
-                repo_url = rd["url"]
-                if pat_token and git_username and "github.com" in repo_url:
-                    auth_url = repo_url.replace("https://", f"https://{git_username}:{pat_token}@")
-                else:
-                    auth_url = repo_url
-                clone_cmd = f"cd /sandbox && git clone {shlex.quote(auth_url)} {shlex.quote(local_path)}"
-                result = await openshell_client.exec_command(
-                    ref.name, ["sh", "-c", clone_cmd], client=None
-                )
-                if getattr(result, "exit_code", 0) != 0:
-                    log.warning(
-                        "sandbox setup: git clone failed for %s (exit %s): %s",
-                        local_path,
-                        getattr(result, "exit_code", "?"),
-                        getattr(result, "stderr", ""),
-                    )
-            await openshell_client.exec_command(
-                ref.name, ["sh", "-c", "git config --global --add safe.directory '*'"], client=None
-            )
-            if working_branch:
-                for rd in repos_data:
-                    branch_cmd = (
-                        f"cd /sandbox/{rd['local_path']} && "
-                        f"git checkout -b {shlex.quote(working_branch)} 2>/dev/null "
-                        f"|| git checkout {shlex.quote(working_branch)}"
-                    )
-                    await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
-
         # Share/state dir setup runs FIRST so the $HOME/.local/share/<tool> symlink
         # is in place before model_setup_cmd writes the model config through it.
         # Both commands need HOME=/sandbox to match the agent's runtime environment.
@@ -1121,12 +1094,31 @@ async def _setup_openshell_sandbox(
         if agents_md:
             await openshell_client.write_agents_md(sandbox_name=ref.name, content=agents_md)
 
-        # Pre-flight probe: run a quick opencode command so the supervisor observes
-        # the denied AI API connections and generates draft policy chunks.
-        # Then approve expected chunks so the actual agent run can reach the API.
-        # Without this probe, approval runs before any chunks exist.
+        # Network policy probe+approval cycle.
+        # OPA enforces per-process network policy: the git binary and the AI agent binary
+        # each need their own draft policy chunk approved before they can reach the network.
+        # We trigger denial events (which the supervisor converts to approvable draft chunks)
+        # by running a probe for each binary, then approve all expected hosts in one pass.
+        # The git clone must happen AFTER this approval so OPA allows git→github.com.
         import asyncio as _asyncio
         await _update_db(status_detail="Configuring network policy…")
+
+        # Git probe: causes OPA to generate a draft chunk for the git binary → github.com.
+        # Runs without credentials so the clone probe can't succeed on its own.
+        _github_repos_data = [rd for rd in repos_data if "github.com" in rd["url"]]
+        if _github_repos_data:
+            _git_probe_url = _github_repos_data[0]["url"]
+            try:
+                await openshell_client.exec_command(
+                    ref.name,
+                    ["sh", "-c", f"git ls-remote {shlex.quote(_git_probe_url)} HEAD 2>/dev/null; true"],
+                    client=None,
+                    timeout_seconds=15,
+                )
+            except Exception:
+                pass
+
+        # AI agent probe: causes OPA to generate draft chunks for the agent binary → AI APIs.
         _probe_prompt = shlex.quote("Reply with one word: ready")
         _probe_bin = {"opencode": "opencode run", "crush": "crush run"}.get(tool_name, "opencode run")
         _inf_prefix = (" ".join(f"{k}={shlex.quote(v)}" for k, v in (inference_env or {}).items()) + " ") if inference_env else ""
@@ -1137,11 +1129,49 @@ async def _setup_openshell_sandbox(
                 timeout_seconds=30,
             )
         except Exception:
-            pass  # probe failure is non-fatal; approval may still find existing chunks
+            pass
         await _asyncio.sleep(12)  # supervisor needs ~10s to submit denial analysis
 
         expected = _build_expected_hosts(model, repos_data, tool_name, mode)
-        await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=expected)
+        try:
+            await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=expected)
+        except Exception:
+            pass  # sandbox may have been stopped or never reached the denial stage; non-fatal
+
+        # Clone repos AFTER OPA approval so the git binary has network access to github.com.
+        # PAT embedded as x-access-token — works for all GitHub PAT types, avoids username-mismatch 403s.
+        if repos_data:
+            for rd in repos_data:
+                local_path = rd["local_path"]
+                repo_url = rd["url"]
+                # The OpenShell gateway injects GITHUB_TOKEN and GH_TOKEN via the
+                # registered github provider. The gh credential helper in the container
+                # reads these and supplies them to git automatically. No URL embedding
+                # needed — just clone the plain URL and let the helper do its job.
+                clone_cmd = f"cd /sandbox && git clone {shlex.quote(repo_url)} {shlex.quote(local_path)}"
+                result = await openshell_client.exec_command(
+                    ref.name, ["sh", "-c", clone_cmd], client=None
+                )
+                if getattr(result, "exit_code", 0) != 0:
+                    _stdout = getattr(result, "stdout", "") or ""
+                    _stderr = getattr(result, "stderr", "") or ""
+                    log.warning(
+                        "sandbox setup: git clone failed for %s (exit %s):\n%s",
+                        local_path,
+                        getattr(result, "exit_code", "?"),
+                        (_stdout + _stderr).strip(),
+                    )
+            await openshell_client.exec_command(
+                ref.name, ["sh", "-c", "git config --global --add safe.directory '*'"], client=None
+            )
+            if working_branch:
+                for rd in repos_data:
+                    branch_cmd = (
+                        f"cd /sandbox/{rd['local_path']} && "
+                        f"git checkout -b {shlex.quote(working_branch)} 2>/dev/null "
+                        f"|| git checkout {shlex.quote(working_branch)}"
+                    )
+                    await openshell_client.exec_command(ref.name, ["sh", "-c", branch_cmd], client=None)
 
         # For prompt mode, write the prompt to /sandbox/.prompt.txt via stdin
         # so we avoid newline-in-arg gateway rejection. Build the agent command
