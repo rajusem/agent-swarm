@@ -29,7 +29,7 @@ class OpenCodeStrategy(AgentToolStrategy):
     def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False) -> dict[str, str]:
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
-            "enabled_providers": ["google", "google-vertex-anthropic", "anthropic", "openai"],
+            "enabled_providers": ["google", "google-vertex-anthropic", "anthropic"],
             "lsp": {
                 "go": {"command": ["gopls"], "extensions": []},
                 "python": {"command": ["pyright-langserver", "--stdio"], "extensions": []},
@@ -48,8 +48,22 @@ class OpenCodeStrategy(AgentToolStrategy):
             config["enabled_providers"] = [
                 p for p in config["enabled_providers"] if p != "google-vertex-anthropic"
             ]
+            # Declare the Vertex-hosted Claude models explicitly so OpenCode recognises
+            # them under the anthropic provider (they are not in OpenCode's built-in
+            # anthropic model catalogue).  The model IDs here must match what
+            # _extract_vertex_model() returns (bare name, no @version suffix).
             config["provider"] = {
-                "anthropic": {"options": {"apiKey": "sk-ant-api03-inference-local-proxy"}}
+                "anthropic": {
+                    "options": {
+                        "apiKey": "sk-ant-api03-inference-local-proxy",
+                        "baseURL": "https://inference.local/v1",
+                    },
+                    "models": {
+                        "claude-haiku-4-5": {"name": "Claude Haiku 4.5"},
+                        "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"},
+                        "claude-opus-4-6": {"name": "Claude Opus 4.6"},
+                    },
+                }
             }
 
         if mcp_servers:

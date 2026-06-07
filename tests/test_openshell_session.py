@@ -259,6 +259,10 @@ class TestDoLaunchOpenshell:
                 "swarmer.routers.sessions._setup_openshell_sandbox",
                 new=AsyncMock(),
             ),
+            "wait_vertex_ready": patch(
+                "swarmer.routers.sessions._wait_vertex_provider_ready",
+                new=AsyncMock(),
+            ),
         }
         return patches
 
@@ -273,6 +277,7 @@ class TestDoLaunchOpenshell:
             patches["exec_command"], patches["start_agent"],
             patches["delete_sandbox"], patches["build_policy"],
             patches["run_agent"], patches["setup_sandbox"],
+            patches["wait_vertex_ready"],
         )
 
     @pytest.mark.asyncio
@@ -1437,7 +1442,7 @@ class TestCrushOpenshellSetup:
 
     @pytest.mark.asyncio
     async def test_write_agent_config_opencode_path_unchanged(self):
-        """write_agent_config for opencode still writes to /sandbox/opencode.json (no regression)."""
+        """write_agent_config for opencode writes to /sandbox/opencode.json (no regression)."""
         from swarmer.openshell_client import write_agent_config
 
         captured: list[list] = []
@@ -1621,11 +1626,14 @@ async def _launch_with_secret(client, ws_id, session_id, oc_secret):
 
     mock_ensure = AsyncMock()
     mock_vertex = AsyncMock()
+    mock_create_vertex = AsyncMock()
 
     with patch("swarmer.openshell_client.create_provider", new=AsyncMock(return_value={})), \
          patch("swarmer.openshell_client.ensure_provider", mock_ensure), \
+         patch("swarmer.openshell_client.create_vertex_provider", mock_create_vertex), \
          patch("swarmer.openshell_client.configure_vertex_provider", mock_vertex), \
          patch("swarmer.openshell_client.set_cluster_inference", new=AsyncMock()), \
+         patch("swarmer.routers.sessions._wait_vertex_provider_ready", new=AsyncMock()), \
          patch("swarmer.openshell_client.configure_provider_credential", new=AsyncMock()), \
          patch("swarmer.openshell_client.attach_sandbox_provider", new=AsyncMock()), \
          patch("swarmer.openshell_policy.build_session_policy", return_value="version: 1\n"), \
@@ -1644,7 +1652,7 @@ async def _launch_with_secret(client, ws_id, session_id, oc_secret):
             resolved_prompt="test prompt",
         )
 
-    return mock_ensure, mock_vertex
+    return mock_ensure, mock_vertex, mock_create_vertex
 
 
 class TestVertexAIProviderInjection:
@@ -1652,18 +1660,14 @@ class TestVertexAIProviderInjection:
 
     @pytest.mark.asyncio
     async def test_vertex_provider_created_when_adc_present(self, client):
-        """ensure_provider is called with google-vertex-ai type when ADC + vertex config exist."""
+        """create_vertex_provider is called when ADC + vertex config exist."""
         ws = await _create_workspace(client)
         s = await _create_session(client, ws["id"])
 
         fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
-        mock_ensure, mock_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+        _, _, mock_create_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
 
-        vertex_calls = [
-            c for c in mock_ensure.call_args_list
-            if len(c.args) >= 2 and c.args[1] == "google-vertex-ai"
-        ]
-        assert len(vertex_calls) == 1, f"Expected 1 google-vertex-ai ensure_provider call, got: {mock_ensure.call_args_list}"
+        mock_create_vertex.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_vertex_provider_refresh_configured(self, client):
@@ -1672,7 +1676,7 @@ class TestVertexAIProviderInjection:
         s = await _create_session(client, ws["id"])
 
         fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
-        mock_ensure, mock_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+        _, mock_vertex, _ = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
 
         mock_vertex.assert_called_once()
         call_kwargs = mock_vertex.call_args.kwargs
@@ -1686,13 +1690,9 @@ class TestVertexAIProviderInjection:
         s = await _create_session(client, ws["id"])
 
         fake_secret = _fake_oc_secret(has_adc=False, has_vertex=False)
-        mock_ensure, mock_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+        _, mock_vertex, mock_create_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
 
-        vertex_calls = [
-            c for c in mock_ensure.call_args_list
-            if len(c.args) >= 2 and c.args[1] == "google-vertex-ai"
-        ]
-        assert vertex_calls == [], f"Expected no vertex provider calls, got: {mock_ensure.call_args_list}"
+        mock_create_vertex.assert_not_called()
         mock_vertex.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1702,13 +1702,13 @@ class TestVertexAIProviderInjection:
         s = await _create_session(client, ws["id"])
 
         fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True, google_api_key="my-gemini-key")
-        mock_ensure, _ = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
+        mock_ensure, _, mock_create_vertex = await _launch_with_secret(client, ws["id"], s["id"], fake_secret)
 
         provider_types_called = [
             c.args[1] for c in mock_ensure.call_args_list if len(c.args) >= 2
         ]
         assert "google-ai-studio" in provider_types_called, "Gemini provider must still be created"
-        assert "google-vertex-ai" in provider_types_called, "VertexAI provider must be created"
+        mock_create_vertex.assert_called_once()  # vertex provider created via create_vertex_provider
 
 
 class TestConfigureVertexProvider:
@@ -1746,7 +1746,7 @@ class TestConfigureVertexProvider:
 
         assert len(captured_reqs) == 1
         req = captured_reqs[0]
-        assert req.credential_key == "service_account_token"
+        assert req.credential_key == "GOOGLE_VERTEX_AI_TOKEN"
         assert req.strategy == openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT
         assert "private_key" in req.secret_material_keys
 
@@ -1849,9 +1849,10 @@ class TestVertexEnvVarsInSandboxSpec:
 
         fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
 
-        mock_ensure = AsyncMock()
+        mock_create_vertex = AsyncMock()
         with patch("swarmer.openshell_client.create_provider", new=AsyncMock(return_value={})), \
-             patch("swarmer.openshell_client.ensure_provider", mock_ensure), \
+             patch("swarmer.openshell_client.ensure_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_client.create_vertex_provider", mock_create_vertex), \
              patch("swarmer.openshell_client.configure_vertex_provider", new=AsyncMock()), \
              patch("swarmer.openshell_client.set_cluster_inference", new=AsyncMock()), \
              patch("swarmer.openshell_client.configure_provider_credential", new=AsyncMock()), \
@@ -1866,15 +1867,11 @@ class TestVertexEnvVarsInSandboxSpec:
                 mcp_servers=None, resolved_prompt="hi",
             )
 
-        # Find the vertex ensure_provider call and check config kwarg
-        vertex_call = next(
-            (c for c in mock_ensure.call_args_list if len(c.args) >= 2 and c.args[1] == "google-vertex-ai"),
-            None,
-        )
-        assert vertex_call is not None, "No google-vertex-ai ensure_provider call found"
-        cfg = vertex_call.kwargs.get("config", {})
-        assert cfg.get("VERTEX_AI_PROJECT_ID") == "my-project"
-        assert cfg.get("VERTEX_AI_REGION") == "us-central1"
+        # create_vertex_provider receives the project and location
+        mock_create_vertex.assert_called_once()
+        call_kwargs = mock_create_vertex.call_args.kwargs
+        assert call_kwargs.get("project") == "my-project"
+        assert call_kwargs.get("location") == "us-central1"
 
     @pytest.mark.asyncio
     async def test_no_vertex_env_vars_without_adc(self, client):
@@ -1904,3 +1901,95 @@ class TestVertexEnvVarsInSandboxSpec:
         # No vertex provider → inference_env is empty → no ANTHROPIC_BASE_URL in env_vars
         inference_env = mock_setup.call_args.kwargs.get("inference_env", {})
         assert not inference_env
+
+    @pytest.mark.asyncio
+    async def test_vertex_env_vars_with_adc(self, client):
+        """ANTHROPIC_BASE_URL is present in inference_env and set_cluster_inference is called when ADC present."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        fake_secret = _fake_oc_secret(has_adc=True, has_vertex=True)
+        mock_setup = AsyncMock()
+        mock_set_inf = AsyncMock()
+
+        with patch("swarmer.openshell_client.create_provider", new=AsyncMock(return_value={})), \
+             patch("swarmer.openshell_client.create_vertex_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_client.configure_vertex_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_client.set_cluster_inference", mock_set_inf), \
+             patch("swarmer.routers.sessions._wait_vertex_provider_ready", new=AsyncMock()), \
+             patch("swarmer.openshell_client.configure_provider_credential", new=AsyncMock()), \
+             patch("swarmer.openshell_client.attach_sandbox_provider", new=AsyncMock()), \
+             patch("swarmer.openshell_policy.build_session_policy", return_value="version: 1\n"), \
+             patch("swarmer.routers.sessions._setup_openshell_sandbox", mock_setup):
+            fake_sess, fake_ws = self._make_fake_session(s["id"], ws["id"])
+            from swarmer.routers.sessions import _do_launch_openshell
+            await _do_launch_openshell(
+                session=fake_sess, ws=fake_ws, db=AsyncMock(), suffix="t",
+                oc_secret=fake_secret, has_adc=True, has_gemini=False,
+                mcp_servers=None, resolved_prompt="hi",
+            )
+
+        # set_cluster_inference is called once per Claude model (haiku, sonnet, opus)
+        assert mock_set_inf.call_count == 3
+        registered_models = {c.kwargs["model_id"] for c in mock_set_inf.call_args_list}
+        assert registered_models == {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"}
+        # inference_env contains ANTHROPIC_BASE_URL
+        inference_env = mock_setup.call_args.kwargs.get("inference_env", {})
+        assert inference_env.get("ANTHROPIC_BASE_URL") == "https://inference.local/v1"
+
+
+class TestVertexOpenshellSetup:
+    """Verify that _setup_openshell_sandbox merges inference_env into env_vars before creating sandbox."""
+
+    @pytest.mark.asyncio
+    async def test_setup_sandbox_merges_inference_env_into_env_vars(self, client):
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET phase='pending' WHERE id=:id"), {"id": s["idblock"]} if False else {"id": s["id"]}
+            )
+            await db.commit()
+
+        mock_create_sandbox = AsyncMock(return_value=MagicMock(name="sandbox-name", id="test-sid"))
+
+        from swarmer.routers.sessions import _setup_openshell_sandbox
+
+        with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
+             patch("swarmer.openshell_client.create_sandbox", mock_create_sandbox), \
+             patch("swarmer.openshell_client.write_agent_config", new=AsyncMock()), \
+             patch("swarmer.openshell_client.write_agents_md", new=AsyncMock()), \
+             patch("swarmer.openshell_client.approve_draft_policy_chunks", new=AsyncMock()), \
+             patch("swarmer.openshell_client.exec_command", new=AsyncMock(
+                 return_value=MagicMock(exit_code=0, stdout="", stderr="")
+             )), \
+             patch("swarmer.routers.sessions._run_openshell_agent", new=AsyncMock()), \
+             patch("asyncio.sleep", new=AsyncMock()):
+            
+            await _setup_openshell_sandbox(
+                session_id=s["id"],
+                provider_names=[],
+                env_vars={"EXISTING_ENV": "123"},
+                policy=None,
+                image="quay.io/opencode:latest",
+                tool_name="opencode",
+                model="anthropic/claude-sonnet-4-6",
+                model_setup_cmd="",
+                share_cmd="",
+                mcp_patch={},
+                repos_data=[],
+                git_username="",
+                pat_token="",
+                working_branch="",
+                agents_md="",
+                mode="prompt",
+                main_cmd="opencode run",
+                resolved_prompt="hello",
+                inference_env={"ANTHROPIC_BASE_URL": "https://inference.local/v1"},
+            )
+
+        mock_create_sandbox.assert_called_once()
+        passed_env_vars = mock_create_sandbox.call_args.kwargs.get("env_vars", {})
+        assert passed_env_vars.get("EXISTING_ENV") == "123"
+        assert passed_env_vars.get("ANTHROPIC_BASE_URL") == "https://inference.local/v1"
