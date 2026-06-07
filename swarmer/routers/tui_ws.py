@@ -77,10 +77,17 @@ async def session_tui(
     tool = get_tool(session.agent_tool)
 
     tui_cmd_parts = [tool.get_tui_binary()]
-    if session.model and hasattr(tool, 'get_tui_model_args'):
-        tui_cmd_parts.extend(tool.get_tui_model_args(session.model))
-    elif session.model and tool.name != "crush":
-        tui_cmd_parts.extend(["--model", session.model])
+    # Rewrite google-vertex-anthropic models to anthropic/ format so OpenCode
+    # uses the anthropic provider (routed via inference.local) instead of trying
+    # to load the google-vertex-anthropic provider which is not in enabled_providers.
+    _tui_model = session.model or ""
+    if _tui_model.startswith("google-vertex-anthropic/"):
+        from swarmer.routers.sessions import _extract_vertex_model
+        _tui_model = f"anthropic/{_extract_vertex_model(_tui_model)}"
+    if _tui_model and hasattr(tool, 'get_tui_model_args'):
+        tui_cmd_parts.extend(tool.get_tui_model_args(_tui_model))
+    elif _tui_model and tool.name != "crush":
+        tui_cmd_parts.extend(["--model", _tui_model])
     cmd_base = " ".join(shlex.quote(p) for p in tui_cmd_parts)
     tui_shell = (
         f"export PATH=\"$HOME/.local/bin:$PATH\" && "

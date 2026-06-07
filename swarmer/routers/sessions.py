@@ -678,8 +678,10 @@ def _build_expected_hosts(model: str, repos_data: list[dict], tool_name: str, mo
         hosts.add("oauth2.googleapis.com")
     if provider in ("google-vertex-anthropic", "vertexai"):
         hosts.add("*.aiplatform.googleapis.com")
+        hosts.add("inference.local")
     if provider == "anthropic":
         hosts.add("api.anthropic.com")
+        hosts.add("inference.local")
     if provider in ("gemini",):
         hosts.add("generativelanguage.googleapis.com")
     if provider == "openai":
@@ -736,7 +738,7 @@ async def _wait_vertex_provider_ready(provider_name: str, timeout: float = 30.0)
                     timeout=5,
                 )
                 statuses = {c.credential_key: c.status for c in sr.credentials}
-                if statuses.get("gcloud_adc_token") == "configured":
+                if statuses.get("GOOGLE_VERTEX_AI_TOKEN") == "configured":
                     return
             except Exception:
                 pass
@@ -846,6 +848,13 @@ async def _do_launch_openshell(
 
     tool = get_tool(session.agent_tool)
 
+    # Resolve model first so it is available for provider registration and policy building
+    if session.model and tool.is_valid_model(session.model):
+        model = session.model
+    else:
+        model = tool.get_default_model(has_adc, has_gemini)
+    model = model.strip("\r\n")  # strip any stray line endings before embedding in shell commands
+
     # Release the DB connection before long-running gRPC operations. The route
     # handler's session holds an autobegin transaction from earlier SELECTs in
     # _do_launch(); committing here ends that transaction and returns the
@@ -879,17 +888,19 @@ async def _do_launch_openshell(
                 "GOOGLE_GENERATIVE_AI_API_KEY": oc_secret.google_api_key,
             })
         provider_names.append(pname)
-    # Vertex AI (ADC) provider registration kept for future inference.local support.
-    # inference.local routing is not active; Vertex AI sessions are not supported yet.
-    if oc_secret and oc_secret.has_adc and oc_secret.has_vertex:
+    # Configure google-vertex-ai provider with ADC and setup inference.local proxy routing
+    # ONLY when a Vertex-hosted Claude model is actually selected.  Gemini sessions
+    # (model starts with "google/") must not trigger this block — doing so rewrites
+    # the model to "anthropic/..." and injects ANTHROPIC_BASE_URL, which strips the
+    # Google provider from opencode.json and blocks generativelanguage.googleapis.com
+    # in the Landlock network policy.
+    if oc_secret and oc_secret.has_adc and oc_secret.has_vertex and model.startswith("google-vertex-anthropic/"):
         pname = f"swarmer-ws-{ws_id}-google-vertex-ai"
         _project = oc_secret.google_cloud_project or ""
         _location = oc_secret.vertex_location or ""
         try:
-            await openshell_client.ensure_provider(
-                pname, "google-vertex-ai",
-                config={"VERTEX_AI_PROJECT_ID": _project, "VERTEX_AI_REGION": _location},
-                credentials={"gcloud_adc_token": "__placeholder__"},
+            await openshell_client.create_vertex_provider(
+                pname, project=_project, location=_location,
             )
             await openshell_client.configure_vertex_provider(
                 pname,
@@ -897,7 +908,33 @@ async def _do_launch_openshell(
                 project=_project,
                 location=_location,
             )
-            provider_names.append(pname)
+            # Do NOT append to provider_names: the vertex provider is only needed
+            # by the gateway for inference.local routing.  Attaching it to the
+            # sandbox would inject GOOGLE_VERTEX_AI_TOKEN into the sandbox env,
+            # which OpenCode doesn't use when routing through inference.local.
+
+            # Wait for gateway asynchronously to do its first ADC token exchange
+            await _wait_vertex_provider_ready(pname)
+
+            # Register all Vertex-hosted Claude models as inference routes so the
+            # user can freely switch models inside the TUI without hitting unrouted
+            # model errors.  All routes point at the same workspace provider.
+            _bare_model = _extract_vertex_model(model)
+            _all_claude_models = {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"}
+            for _mid in _all_claude_models:
+                await openshell_client.set_cluster_inference(
+                    provider_name=pname,
+                    model_id=_mid,
+                    no_verify=True,
+                )
+
+            # Inject the proxy endpoint as an environment variable in the sandbox
+            inference_env["ANTHROPIC_BASE_URL"] = "https://inference.local/v1"
+
+            # Rewrite model to standard Anthropic format so the agent doesn't try
+            # to run google auth inside the sandbox
+            model = f"anthropic/{_bare_model}"
+
         except Exception:
             log.warning("Vertex AI provider setup failed (non-fatal)", exc_info=True)
     if session.github_pat:
@@ -912,18 +949,9 @@ async def _do_launch_openshell(
         repos=list(session.repos or []),
         mcp_servers=list(mcp_servers or []),
         agent_tool=session.agent_tool,
-        model=session.model or "",
+        model=model,
     )
 
-    # Resolve model before committing so main_cmd can be built later
-    if session.model and tool.is_valid_model(session.model):
-        model = session.model
-    else:
-        model = tool.get_default_model(has_adc, has_gemini)
-    model = model.strip("\r\n")  # strip any stray line endings before embedding in shell commands
-
-    # When routing through inference.local, rewrite the model to use the plain
-    # anthropic/ provider. OpenCode's google-vertex-anthropic provider invokes
 
     # Capture serialisable data for the background task before committing.
     # ORM objects cannot be used across DB sessions.
@@ -1026,6 +1054,9 @@ async def _setup_openshell_sandbox(
 
     try:
         # Create sandbox (slow — wait_ready can take 30-120 s)
+        if inference_env:
+            env_vars.update(inference_env)
+
         ref = await openshell_client.create_sandbox(
             image=image,
             env_vars=env_vars,

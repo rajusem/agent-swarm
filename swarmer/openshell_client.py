@@ -126,6 +126,47 @@ async def ensure_provider(
     await asyncio.to_thread(_do_ensure)
 
 
+async def delete_provider(name: str, client=None) -> None:
+    """Delete a named provider from the gateway, ignoring NOT_FOUND errors."""
+    from openshell._proto import openshell_pb2
+    import grpc
+
+    if client is None:
+        client = _get_client()
+
+    def _do_delete():
+        req = openshell_pb2.DeleteProviderRequest()
+        req.name = name
+        try:
+            client._stub.DeleteProvider(req, timeout=client._timeout)
+        except grpc.RpcError as exc:
+            if isinstance(exc, grpc.Call) and exc.code() == grpc.StatusCode.NOT_FOUND:
+                return
+            raise
+
+    await asyncio.to_thread(_do_delete)
+
+
+async def create_vertex_provider(
+    name: str,
+    project: str,
+    location: str,
+    client=None,
+) -> None:
+    """Delete any existing provider with this name and create a fresh one with
+    exactly the structure the google-vertex-ai profile requires:
+      config:      VERTEX_AI_PROJECT_ID, VERTEX_AI_REGION
+      credentials: GOOGLE_VERTEX_AI_TOKEN  (placeholder; refreshed by gateway)
+    """
+    await delete_provider(name, client=client)
+    await ensure_provider(
+        name, "google-vertex-ai",
+        config={"VERTEX_AI_PROJECT_ID": project, "VERTEX_AI_REGION": location},
+        credentials={"GOOGLE_VERTEX_AI_TOKEN": "__placeholder__"},
+        client=client,
+    )
+
+
 async def configure_provider_credential(
     provider_name: str,
     credential_key: str,
@@ -181,19 +222,19 @@ async def configure_vertex_provider(
         req.provider = provider_name
 
         if adc_type == "service_account":
-            # Uses built-in 'service_account_token' credential from google-vertex-ai profile.
-            # Gateway refreshes via GOOGLE_SERVICE_ACCOUNT_JWT → injects as
-            # GOOGLE_VERTEX_AI_SERVICE_ACCOUNT_TOKEN env var in sandbox.
-            req.credential_key = "service_account_token"
+            # The google-vertex-ai profile's credential key is GOOGLE_VERTEX_AI_TOKEN.
+            # Gateway refreshes via GOOGLE_SERVICE_ACCOUNT_JWT and injects the resulting
+            # token as the GOOGLE_VERTEX_AI_TOKEN env var inside the sandbox.
+            req.credential_key = "GOOGLE_VERTEX_AI_TOKEN"
             req.strategy = openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT
             req.material["client_email"] = adc.get("client_email", "")
             req.material["private_key"] = adc.get("private_key", "")
             req.secret_material_keys.append("private_key")
         elif adc_type == "authorized_user":
-            # Uses built-in 'gcloud_adc_token' credential from google-vertex-ai profile.
-            # Gateway refreshes via OAUTH2_REFRESH_TOKEN → injects as GOOGLE_VERTEX_AI_TOKEN.
-            # token_url and scopes are defined in the profile (not material).
-            req.credential_key = "gcloud_adc_token"
+            # The google-vertex-ai profile's credential key is GOOGLE_VERTEX_AI_TOKEN.
+            # Gateway refreshes via OAUTH2_REFRESH_TOKEN (token_url and scopes are
+            # defined in the built-in profile, not in the material).
+            req.credential_key = "GOOGLE_VERTEX_AI_TOKEN"
             req.strategy = openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN
             req.material["client_id"] = adc.get("client_id", "")
             req.material["client_secret"] = adc.get("client_secret", "")
@@ -549,7 +590,9 @@ async def write_agent_config(
         dest = shlex.quote("/sandbox/.config/crush/crush.json")
         script = f"mkdir -p /sandbox/.config/crush && cat > {dest}"
     else:
-        # Write directly to /sandbox/<tool>.json — OpenCode reads config from CWD.
+        # Write directly to /sandbox/<tool>.json — OpenCode reads config from CWD,
+        # and also overwrites the broken LSP config shipped in the container image
+        # (missing required 'extensions' field).
         dest = shlex.quote(f"/sandbox/{tool_name}.json")
         script = f"cat > {dest}"
 
