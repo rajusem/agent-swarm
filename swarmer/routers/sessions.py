@@ -894,10 +894,14 @@ async def _do_launch_openshell(
             provider_names.append(pname)
         except Exception:
             log.warning("Vertex AI provider setup failed (non-fatal)", exc_info=True)
-    if session.github_pat:
+    _has_github_repos = any("github.com" in (r.repo_url or "") for r in (session.repos or []))
+    if session.github_pat or _has_github_repos:
         pname = f"swarmer-ws-{ws_id}-github"
-        pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
-        await openshell_client.ensure_provider(pname, "github", {}, credentials={"api_token": pat_token})
+        _creds: dict[str, str] = {}
+        if session.github_pat:
+            pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
+            _creds = {"api_token": pat_token}
+        await openshell_client.ensure_provider(pname, "github", {}, credentials=_creds or None)
         provider_names.append(pname)
 
     # 2. Build policy YAML (pure computation, no I/O)
