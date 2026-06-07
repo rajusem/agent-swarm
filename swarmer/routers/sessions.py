@@ -1082,8 +1082,10 @@ async def _setup_openshell_sandbox(
             for rd in repos_data:
                 local_path = rd["local_path"]
                 repo_url = rd["url"]
-                if pat_token and git_username and "github.com" in repo_url:
-                    auth_url = repo_url.replace("https://", f"https://{git_username}:{pat_token}@")
+                if pat_token and "github.com" in repo_url:
+                    # Use x-access-token as the username — GitHub accepts this for all
+                    # PAT types (classic and fine-grained) and avoids username-mismatch 403s.
+                    auth_url = repo_url.replace("https://", f"https://x-access-token:{pat_token}@")
                 else:
                     auth_url = repo_url
                 clone_cmd = f"cd /sandbox && git clone {shlex.quote(auth_url)} {shlex.quote(local_path)}"
@@ -1149,7 +1151,10 @@ async def _setup_openshell_sandbox(
         await _asyncio.sleep(12)  # supervisor needs ~10s to submit denial analysis
 
         expected = _build_expected_hosts(model, repos_data, tool_name, mode)
-        await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=expected)
+        try:
+            await openshell_client.approve_draft_policy_chunks(ref.name, expected_hosts=expected)
+        except Exception:
+            pass  # sandbox may have been stopped or never reached the denial stage; non-fatal
 
         # For prompt mode, write the prompt to /sandbox/.prompt.txt via stdin
         # so we avoid newline-in-arg gateway rejection. Build the agent command
