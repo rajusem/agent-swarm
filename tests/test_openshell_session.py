@@ -501,6 +501,77 @@ class TestDoLaunchOpenshell:
         assert mock_attach.call_count == 0
 
     @pytest.mark.asyncio
+    async def test_launch_blocked_when_github_repo_without_pat(self, client):
+        """Launch must be rejected with a clear message when github.com repos have no PAT.
+
+        The OpenShell gateway requires a valid GitHub provider credential to allow
+        CONNECT tunnels to github.com. Rather than failing silently mid-sandbox-setup,
+        _do_launch raises early so the user sees an actionable error.
+        """
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+        await client.post(
+            f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/repos",
+            json={"repo_url": "https://github.com/org/public-repo.git", "branch": "main"},
+        )
+
+        patches = self._patch_openshell()
+        with patches["create_provider"], patches["ensure_provider"], \
+             patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
+             patches["create_sandbox"] as mock_sandbox, patches["write_agent_config"], \
+             patches["write_agents_md"], patches["exec_command"], \
+             patches["start_agent"], patches["delete_sandbox"], \
+             patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
+            await client.post(
+                f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch"
+            )
+
+        # No sandbox should have been created — launch was blocked before reaching OpenShell
+        mock_sandbox.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_github_provider_registered_when_pat_present(self, client):
+        """When a PAT is configured, ensure_provider is called with the real token."""
+        ws = await _create_workspace(client)
+        # Create a PAT
+        pat_resp = await client.post(
+            f"/api/v1/workspaces/{ws['id']}/secrets/pats",
+            json={"name": "test-pat", "github_username": "octocat", "pat_value": "ghp_testtoken123"},
+        )
+        pat = pat_resp.json()
+        # Create session with that PAT
+        s_resp = await client.post(
+            f"/api/v1/workspaces/{ws['id']}/sessions",
+            json={"name": "s-with-pat", "mode": "prompt", "agent_tool": "opencode",
+                  "github_pat_id": pat["id"]},
+        )
+        s = s_resp.json()
+
+        patches = self._patch_openshell()
+        with patches["create_provider"], \
+             patches["ensure_provider"] as mock_ensure, \
+             patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
+             patches["create_sandbox"], patches["write_agent_config"], \
+             patches["write_agents_md"], patches["exec_command"], \
+             patches["start_agent"], patches["delete_sandbox"], \
+             patches["build_policy"], patches["run_agent"], patches["setup_sandbox"]:
+            await client.post(
+                f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch"
+            )
+
+        github_calls = [
+            c for c in mock_ensure.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "github"
+        ]
+        assert len(github_calls) == 1, (
+            f"Expected 1 github provider call when PAT is set, got {len(github_calls)}"
+        )
+        creds = github_calls[0].kwargs.get("credentials", {})
+        assert "api_token" in creds and creds["api_token"], (
+            f"Expected non-empty api_token credential in github provider call, got: {creds}"
+        )
+
+    @pytest.mark.asyncio
     async def test_passes_policy_yaml_from_builder(self, client):
         ws = await _create_workspace(client)
         s = await _create_session(client, ws["id"])
