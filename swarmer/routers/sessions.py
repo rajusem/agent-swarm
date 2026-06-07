@@ -1144,14 +1144,11 @@ async def _setup_openshell_sandbox(
             for rd in repos_data:
                 local_path = rd["local_path"]
                 repo_url = rd["url"]
-                if pat_token and git_username and "github.com" in repo_url:
-                    auth_url = repo_url.replace("https://", f"https://{git_username}:{pat_token}@")
-                else:
-                    auth_url = repo_url
-                # Disable credential helpers so only the URL-embedded PAT is used —
-                # the gh credential helper (injected via GITHUB_TOKEN/GH_TOKEN) may
-                # interfere or send a different token than the one in the URL.
-                clone_cmd = f"cd /sandbox && git -c credential.helper= clone {shlex.quote(auth_url)} {shlex.quote(local_path)}"
+                # The OpenShell gateway injects GITHUB_TOKEN and GH_TOKEN via the
+                # registered github provider. The gh credential helper in the container
+                # reads these and supplies them to git automatically. No URL embedding
+                # needed — just clone the plain URL and let the helper do its job.
+                clone_cmd = f"cd /sandbox && git clone {shlex.quote(repo_url)} {shlex.quote(local_path)}"
                 result = await openshell_client.exec_command(
                     ref.name, ["sh", "-c", clone_cmd], client=None
                 )
