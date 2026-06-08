@@ -307,11 +307,11 @@ def test_minimal_session_no_jira_or_extra_github_blocks():
 # 6. Agent API block
 # ---------------------------------------------------------------------------
 
-def test_agent_api_block_opencode_includes_vertex_endpoints():
+def test_agent_api_block_opencode_includes_gemini_endpoint():
     net = _bnet()
     assert any("agent_api" in k.lower() for k in net)
     hosts = _bhosts()
-    assert any("aiplatform.googleapis.com" in h or "api.anthropic.com" in h for h in hosts)
+    assert any("generativelanguage.googleapis.com" in h for h in hosts)
 
 
 def test_agent_api_block_crush_includes_crush_binary():

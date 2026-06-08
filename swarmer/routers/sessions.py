@@ -672,17 +672,11 @@ def _build_expected_hosts(model: str, repos_data: list[dict], tool_name: str, mo
 
     # AI provider endpoints based on model prefix
     provider = model.split("/")[0] if "/" in model else ""
-    if provider in ("google", "google-vertex-anthropic"):
+    if provider in ("google", "vertexai"):
         hosts.add("generativelanguage.googleapis.com")
         hosts.add("*.aiplatform.googleapis.com")
         hosts.add("oauth2.googleapis.com")
-    if provider in ("google-vertex-anthropic", "vertexai"):
-        hosts.add("*.aiplatform.googleapis.com")
-        hosts.add("inference.local")
-    if provider == "anthropic":
-        hosts.add("api.anthropic.com")
-        hosts.add("inference.local")
-    if provider in ("gemini",):
+    if provider == "gemini":
         hosts.add("generativelanguage.googleapis.com")
     if provider == "openai":
         hosts.add("api.openai.com")
@@ -703,51 +697,6 @@ def _build_expected_hosts(model: str, repos_data: list[dict], tool_name: str, mo
         hosts.add("raw.githubusercontent.com")
 
     return hosts
-
-
-def _extract_vertex_model(model: str) -> str:
-    """Extract the bare model ID from a google-vertex-anthropic model string.
-
-    "google-vertex-anthropic/claude-sonnet-4-6@default" → "claude-sonnet-4-6"
-    Falls back to the raw model string if it doesn't match the expected format.
-    """
-    if "/" in model:
-        model = model.split("/", 1)[1]
-    if "@" in model:
-        model = model.split("@", 1)[0]
-    return model
-
-
-async def _wait_vertex_provider_ready(provider_name: str, timeout: float = 30.0) -> None:
-    """Wait for the gateway to complete the initial ADC token refresh for a Vertex AI provider.
-
-    The gateway refreshes the token asynchronously after configure_vertex_provider.
-    Creating the sandbox before the first refresh means the provider may not be able
-    to intercept aiplatform.googleapis.com calls with a valid token yet.
-    """
-    from swarmer import openshell_client
-    from openshell._proto import openshell_pb2
-    import time as _time
-
-    client = openshell_client._get_client()
-
-    def _poll():
-        deadline = _time.time() + timeout
-        while _time.time() < deadline:
-            try:
-                sr = client._stub.GetProviderRefreshStatus(
-                    openshell_pb2.GetProviderRefreshStatusRequest(provider=provider_name),
-                    timeout=5,
-                )
-                statuses = {c.credential_key: c.status for c in sr.credentials}
-                if statuses.get("GOOGLE_VERTEX_AI_TOKEN") == "configured":
-                    return
-            except Exception:
-                pass
-            _time.sleep(1)
-        log.warning("_wait_vertex_provider_ready: timed out after %.0fs for %s", timeout, provider_name)
-
-    await asyncio.to_thread(_poll)
 
 
 async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id: str = "") -> None:
@@ -877,12 +826,7 @@ async def _do_launch_openshell(
     #     so the supervisor can call GetSandboxProviderEnvironment at startup and receive
     #     the injected env vars (GOOGLE_API_KEY, ANTHROPIC_API_KEY, GH_TOKEN, etc.).
     provider_names: list[str] = []
-    inference_env: dict[str, str] = {}
     ws_id = session.workspace_id
-    if oc_secret and oc_secret.anthropic_api_key:
-        pname = f"swarmer-ws-{ws_id}-claude-code"
-        await openshell_client.ensure_provider(pname, "claude-code", {}, credentials={"api_key": oc_secret.anthropic_api_key})
-        provider_names.append(pname)
     if oc_secret and oc_secret.google_api_key:
         pname = f"swarmer-ws-{ws_id}-google-ai-studio"
         await openshell_client.ensure_provider(pname, "google-ai-studio", {}, credentials={
@@ -890,55 +834,6 @@ async def _do_launch_openshell(
                 "GOOGLE_GENERATIVE_AI_API_KEY": oc_secret.google_api_key,
             })
         provider_names.append(pname)
-    # Configure google-vertex-ai provider with ADC and setup inference.local proxy routing
-    # ONLY when a Vertex-hosted Claude model is actually selected.  Gemini sessions
-    # (model starts with "google/") must not trigger this block — doing so rewrites
-    # the model to "anthropic/..." and injects ANTHROPIC_BASE_URL, which strips the
-    # Google provider from opencode.json and blocks generativelanguage.googleapis.com
-    # in the Landlock network policy.
-    if oc_secret and oc_secret.has_adc and oc_secret.has_vertex and model.startswith("google-vertex-anthropic/"):
-        pname = f"swarmer-ws-{ws_id}-google-vertex-ai"
-        _project = oc_secret.google_cloud_project or ""
-        _location = oc_secret.vertex_location or ""
-        try:
-            await openshell_client.create_vertex_provider(
-                pname, project=_project, location=_location,
-            )
-            await openshell_client.configure_vertex_provider(
-                pname,
-                adc_json=oc_secret.application_default_credentials,
-                project=_project,
-                location=_location,
-            )
-            # Do NOT append to provider_names: the vertex provider is only needed
-            # by the gateway for inference.local routing.  Attaching it to the
-            # sandbox would inject GOOGLE_VERTEX_AI_TOKEN into the sandbox env,
-            # which OpenCode doesn't use when routing through inference.local.
-
-            # Wait for gateway asynchronously to do its first ADC token exchange
-            await _wait_vertex_provider_ready(pname)
-
-            # Register all Vertex-hosted Claude models as inference routes so the
-            # user can freely switch models inside the TUI without hitting unrouted
-            # model errors.  All routes point at the same workspace provider.
-            _bare_model = _extract_vertex_model(model)
-            _all_claude_models = {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"}
-            for _mid in _all_claude_models:
-                await openshell_client.set_cluster_inference(
-                    provider_name=pname,
-                    model_id=_mid,
-                    no_verify=True,
-                )
-
-            # Inject the proxy endpoint as an environment variable in the sandbox
-            inference_env["ANTHROPIC_BASE_URL"] = "https://inference.local/v1"
-
-            # Rewrite model to standard Anthropic format so the agent doesn't try
-            # to run google auth inside the sandbox
-            model = f"anthropic/{_bare_model}"
-
-        except Exception:
-            log.warning("Vertex AI provider setup failed (non-fatal)", exc_info=True)
     if session.github_pat:
         pname = f"swarmer-ws-{ws_id}-github"
         pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
@@ -960,7 +855,7 @@ async def _do_launch_openshell(
     import json as _json
     mcp_patch: dict = {}
     if mcp_servers:
-        config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers)
+        config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers, model=model)
         config_json = config_data.get(f"{tool.name}.json", "{}")
         try:
             mcp_patch = _json.loads(config_json).get("mcp", {})
@@ -1013,7 +908,6 @@ async def _do_launch_openshell(
             mode=session.mode,
             main_cmd=main_cmd,
             resolved_prompt=resolved_prompt_safe,
-            inference_env=inference_env,
         ),
         name=f"openshell-setup-{session.id}",
     )
@@ -1038,7 +932,6 @@ async def _setup_openshell_sandbox(
     mode: str,
     main_cmd: str,
     resolved_prompt: str = "",
-    inference_env: dict | None = None,
 ) -> None:
     """Background task: create sandbox and run all setup steps, then launch agent."""
     from swarmer import openshell_client
@@ -1055,17 +948,14 @@ async def _setup_openshell_sandbox(
             break
 
     try:
-        # Create sandbox (slow — wait_ready can take 30-120 s)
-        if inference_env:
-            env_vars.update(inference_env)
-
+        await _update_db(status_detail="Creating sandbox…")
         ref = await openshell_client.create_sandbox(
             image=image,
             env_vars=env_vars,
             policy=policy,
             provider_names=provider_names,
         )
-        await _update_db(sandbox_name=ref.name)
+        await _update_db(sandbox_name=ref.name, status_detail="Applying network policies…")
 
         # Check if the session was stopped while sandbox was being created (race condition).
         # If so, delete the sandbox and exit cleanly rather than starting the agent.
@@ -1091,14 +981,13 @@ async def _setup_openshell_sandbox(
         # config that includes enabled_providers and any MCP config.
         from swarmer.agent_tools.registry import get as _get_tool
         _tool = _get_tool(tool_name)
-        _is_inference_local = bool(inference_env and inference_env.get("ANTHROPIC_BASE_URL"))
         _mcp_list = [
             type("_MCP", (), {"slug": k, **v})()
             for k, v in (mcp_patch.get("mcp", {}) or {}).items()
         ] if mcp_patch else []
         _config_data = _tool.build_config_data(
             mcp_servers=_mcp_list,
-            use_inference_local=_is_inference_local,
+            model=model,
         )
         _config_json = _config_data.get(f"{tool_name}.json", "{}")
         await openshell_client.write_agent_config(
@@ -1126,6 +1015,8 @@ async def _setup_openshell_sandbox(
         # AGENTS.md for tui/server modes
         if agents_md:
             await openshell_client.write_agents_md(sandbox_name=ref.name, content=agents_md)
+
+        await _update_db(status_detail="")
 
         # Clone repos — network policies are pre-applied via SandboxSpec.policy so the
         # git binary has Landlock network access to github.com immediately at sandbox
@@ -1172,20 +1063,20 @@ async def _setup_openshell_sandbox(
                 ref.name, ["sh", "-c", "cat > /sandbox/.prompt.txt"],
                 client=None, stdin=resolved_prompt.encode(),
             )
-            # Base command without any embedded prompt — shell reads from file
+            # Base command without any embedded prompt — shell reads from file.
+            # Crush validates --model against its built-in catalogue so we omit it;
+            # the model is set via crush.json written by build_model_setup_cmd.
             _tool_bin = {"opencode": "opencode run", "crush": "crush run"}.get(tool_name, "opencode run")
-            _model_arg = shlex.quote(model) if model else ""
-            agent_cmd = f"HOME=/sandbox {_tool_bin} --model {_model_arg} \"$(</sandbox/.prompt.txt)\""
+            if tool_name == "crush":
+                agent_cmd = f"HOME=/sandbox {_tool_bin} \"$(</sandbox/.prompt.txt)\""
+            else:
+                _model_arg = shlex.quote(model) if model else ""
+                agent_cmd = f"HOME=/sandbox {_tool_bin} --model {_model_arg} \"$(</sandbox/.prompt.txt)\""
         elif mode == "prompt" and not resolved_prompt:
             # No prompt at all — just launch without message
             agent_cmd = f"HOME=/sandbox {main_cmd}"
         else:
             agent_cmd = f"HOME=/sandbox {main_cmd}"
-
-        # Prepend inference proxy env vars when OpenShell routes VertexAI through inference.local.
-        if inference_env:
-            _env_prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in inference_env.items())
-            agent_cmd = f"{_env_prefix} {agent_cmd}"
 
         # Launch agent
         asyncio.create_task(
@@ -1930,11 +1821,7 @@ async def _build_commit_msg(patch: str, workspace_id: int, db: AsyncSession) -> 
         return _fallback_commit_msg(patch)
 
     try:
-        if oc.has_adc and oc.google_cloud_project:
-            return await _llm_commit_msg_vertex(truncated, oc)
-        elif oc.anthropic_api_key:
-            return await _llm_commit_msg_anthropic(truncated, oc.anthropic_api_key)
-        elif oc.google_api_key:
+        if oc.google_api_key:
             return await _llm_commit_msg_gemini(truncated, oc.google_api_key)
     except Exception as exc:
         log.warning("LLM commit msg generation failed: %s", exc)
@@ -1949,122 +1836,6 @@ _COMMIT_MSG_PROMPT = (
     "then 1-3 bullet points summarizing the key changes. "
     "Output ONLY the commit message, nothing else.\n\n"
 )
-
-
-async def _get_vertex_access_token(oc_secret) -> str:
-    """Exchange ADC credentials for a short-lived GCP access token.
-
-    Returns the Bearer access token string, or "" on failure.
-    Called at session launch time so the token is fresh (~1 h TTL).
-    """
-    import json as _json
-    import google.auth.transport.requests
-
-    try:
-        adc_info = _json.loads(oc_secret.application_default_credentials)
-        adc_type = adc_info.get("type", "")
-
-        if adc_type == "service_account":
-            from google.oauth2 import service_account
-            creds = service_account.Credentials.from_service_account_info(
-                adc_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-        elif adc_type == "authorized_user":
-            from google.oauth2.credentials import Credentials as UserCredentials
-            creds = UserCredentials(
-                token=None,
-                refresh_token=adc_info["refresh_token"],
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=adc_info["client_id"],
-                client_secret=adc_info["client_secret"],
-            )
-        else:
-            return ""
-
-        await asyncio.to_thread(creds.refresh, google.auth.transport.requests.Request())
-        return creds.token or ""
-    except Exception:
-        log.warning("_get_vertex_access_token: failed to exchange ADC for access token", exc_info=True)
-        return ""
-
-
-async def _llm_commit_msg_vertex(patch: str, oc: OpencodeSecret) -> str:
-    """Call Vertex AI Anthropic Claude to generate a commit message."""
-    import json
-    import google.auth.transport.requests
-
-    adc_info = json.loads(oc.application_default_credentials)
-    adc_type = adc_info.get("type", "")
-
-    if adc_type == "service_account":
-        from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_info(
-            adc_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-    elif adc_type == "authorized_user":
-        from google.oauth2.credentials import Credentials as UserCredentials
-        creds = UserCredentials(
-            token=None,
-            refresh_token=adc_info["refresh_token"],
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=adc_info["client_id"],
-            client_secret=adc_info["client_secret"],
-        )
-    else:
-        raise ValueError(f"Unsupported ADC type: {adc_type}")
-
-    creds.refresh(google.auth.transport.requests.Request())
-    token = creds.token
-
-    project = oc.google_cloud_project
-    location = oc.vertex_location or "global"
-    model = "claude-haiku-4-5@20251001"
-
-    if location == "global":
-        host = "aiplatform.googleapis.com"
-    else:
-        host = f"{location}-aiplatform.googleapis.com"
-    url = (
-        f"https://{host}/v1/"
-        f"projects/{project}/locations/{location}/publishers/anthropic/models/{model}:rawPredict"
-    )
-
-    body = {
-        "anthropic_version": "vertex-2023-10-16",
-        "max_tokens": 300,
-        "messages": [{"role": "user", "content": _COMMIT_MSG_PROMPT + patch}],
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json=body, headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        })
-        resp.raise_for_status()
-        data = resp.json()
-        return data["content"][0]["text"].strip()
-
-
-async def _llm_commit_msg_anthropic(patch: str, api_key: str) -> str:
-    """Call Anthropic API directly."""
-    body = {
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 300,
-        "messages": [{"role": "user", "content": _COMMIT_MSG_PROMPT + patch}],
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            json=body,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["content"][0]["text"].strip()
 
 
 async def _llm_commit_msg_gemini(patch: str, api_key: str) -> str:

@@ -10,25 +10,14 @@ def _b64(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
-_HAIKU_BY_PROVIDER = {
-    "vertexai": "claude-haiku-4-5-20251001",
-    "anthropic": "claude-haiku-3.5",
-}
+_SMALL_MODEL = "gemini/gemini-3.5-flash"
 
 
 def _derive_small_model(model: str) -> str | None:
-    if "/" not in model:
-        return None
-    provider_id, model_id = model.split("/", 1)
-
-    if provider_id in {"vertexai", "anthropic"} and "opus" in model_id:
-        return f"{provider_id}/claude-sonnet-4-6"
-    if provider_id in {"vertexai", "anthropic"} and "sonnet" in model_id:
-        haiku_id = _HAIKU_BY_PROVIDER.get(provider_id)
-        return f"{provider_id}/{haiku_id}" if haiku_id else None
-    if provider_id in {"vertexai", "gemini"} and "gemini" in model_id and "pro" in model_id:
-        return f"{provider_id}/{model_id.replace('pro', 'flash')}"
-    return None
+    """Return the small model paired with the given large model, or None if same."""
+    if model == _SMALL_MODEL:
+        return None  # already the small model — no separate small needed
+    return _SMALL_MODEL
 
 
 class CrushStrategy(AgentToolStrategy):
@@ -53,31 +42,17 @@ class CrushStrategy(AgentToolStrategy):
     def get_config_map_name(self) -> str:
         return "crush-config"
 
-    def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False) -> dict[str, str]:
+    def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False, model: str = "") -> dict[str, str]:
         # Crush requires explicit provider entries in the config — it does not
         # auto-detect from env vars alone.  The value is a map[string]ProviderConfig
         # (keyed by provider ID), NOT an array.  Use $VAR references so values are
         # resolved at runtime from whatever the sandbox environment provides
         # (injected by the OpenShell provider mechanism or K8s secret env vars).
         providers = {
-            "anthropic": {
-                "name": "Anthropic",
-                "type": "anthropic",
-                "api_key": "$ANTHROPIC_API_KEY",
-            },
             "gemini": {
                 "name": "Google Gemini",
                 "type": "gemini",
                 "api_key": "$GOOGLE_API_KEY",
-            },
-            "openai": {
-                "name": "OpenAI",
-                "type": "openai",
-                "api_key": "$OPENAI_API_KEY",
-            },
-            "vertexai": {
-                "name": "Google Vertex AI",
-                "type": "vertexai",
             },
         }
 
@@ -168,8 +143,9 @@ class CrushStrategy(AgentToolStrategy):
             return "sleep infinity"
         else:
             base_parts = ["crush", "run"]
-            if model:
-                base_parts.extend(["--model", model])
+            # Do not pass --model on the CLI — Crush validates it against its
+            # built-in catalogue and rejects unknown IDs like gemini-3.1-pro-preview.
+            # The model is already written to crush.json by build_model_setup_cmd.
             prompt_text = resolved_prompt or session.instruction_prompt
             prompt_parts = [prompt_text] if prompt_text else []
             return " ".join(shlex.quote(p) for p in base_parts + prompt_parts)
@@ -180,50 +156,19 @@ class CrushStrategy(AgentToolStrategy):
         return [client.V1ContainerPort(container_port=port, name="crush")]
 
     def is_valid_model(self, model: str) -> bool:
-        return model.startswith(("vertexai/", "anthropic/", "gemini/", "openai/"))
+        return model.startswith("gemini/")
 
     def get_model_options(self, secret=None) -> list[dict]:
         options = []
-        if secret and secret.has_adc:
-            options.extend([
-                {"value": "vertexai/claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (balanced)", "group": "Vertex AI — Claude"},
-                {"value": "vertexai/claude-opus-4-6", "label": "Claude Opus 4.6 (most capable)", "group": "Vertex AI — Claude"},
-                {"value": "vertexai/claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fast)", "group": "Vertex AI — Claude"},
-                {"value": "vertexai/gemini-3.5-pro", "label": "Gemini 3.5 Pro", "group": "Vertex AI — Gemini"},
-                {"value": "vertexai/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Vertex AI — Gemini"},
-            ])
-        elif secret and getattr(secret, "has_vertex", False):
-            options.extend([
-                {"value": "vertexai/claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (balanced)", "group": "Vertex AI — Claude"},
-                {"value": "vertexai/claude-opus-4-6", "label": "Claude Opus 4.6 (most capable)", "group": "Vertex AI — Claude"},
-                {"value": "vertexai/claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fast)", "group": "Vertex AI — Claude"},
-                {"value": "vertexai/gemini-3.5-pro", "label": "Gemini 3.5 Pro", "group": "Vertex AI — Gemini"},
-                {"value": "vertexai/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Vertex AI — Gemini"},
-            ])
-        if secret and getattr(secret, "anthropic_api_key_enc", ""):
-            options.extend([
-                {"value": "anthropic/claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "group": "Anthropic (direct)"},
-                {"value": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6 (most capable)", "group": "Anthropic (direct)"},
-                {"value": "anthropic/claude-haiku-3.5", "label": "Claude Haiku 3.5 (fast)", "group": "Anthropic (direct)"},
-            ])
-        if secret and getattr(secret, "openai_api_key_enc", ""):
-            options.extend([
-                {"value": "openai/gpt-4o", "label": "GPT-4o", "group": "OpenAI"},
-                {"value": "openai/o3", "label": "o3 (reasoning)", "group": "OpenAI"},
-            ])
         if secret and getattr(secret, "google_api_key_enc", ""):
             options.extend([
-                {"value": "gemini/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Gemini (AI Studio)"},
-                {"value": "gemini/gemini-3-pro-preview", "label": "Gemini 3 Pro", "group": "Gemini (AI Studio)"},
+                {"value": "gemini/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Gemini"},
+                {"value": "gemini/gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "group": "Gemini"},
             ])
         return options
 
     def get_default_model(self, has_adc: bool, has_gemini: bool) -> str:
-        if has_adc:
-            return "vertexai/claude-sonnet-4-6"
-        if has_gemini:
-            return "gemini/gemini-3.5-flash"
-        return ""
+        return "gemini/gemini-3.1-pro-preview"
 
     def exec_model_update(self, pod_name: str, namespace: str, model: str) -> None:
         pass
@@ -285,18 +230,6 @@ class CrushStrategy(AgentToolStrategy):
         data = {}
         if secret.google_api_key_enc:
             data["GEMINI_API_KEY"] = _b64(secret.google_api_key)
-        if getattr(secret, "anthropic_api_key_enc", "") and secret.anthropic_api_key_enc:
-            data["ANTHROPIC_API_KEY"] = _b64(secret.anthropic_api_key)
-        if getattr(secret, "openai_api_key_enc", "") and secret.openai_api_key_enc:
-            data["OPENAI_API_KEY"] = _b64(secret.openai_api_key)
-        if secret.google_cloud_project:
-            data["VERTEXAI_PROJECT"] = _b64(secret.google_cloud_project)
-        if secret.vertex_location:
-            data["VERTEXAI_LOCATION"] = _b64(secret.vertex_location)
-        if secret.has_adc:
-            data["application_default_credentials.json"] = _b64(
-                secret.application_default_credentials
-            )
         return data
 
     def build_mcp_config_cmd(self, mcp_servers) -> str:

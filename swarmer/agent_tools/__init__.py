@@ -22,7 +22,7 @@ class AgentToolStrategy(ABC):
         ...
 
     @abstractmethod
-    def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False) -> dict[str, str]:
+    def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False, model: str = "") -> dict[str, str]:
         ...
 
     @abstractmethod

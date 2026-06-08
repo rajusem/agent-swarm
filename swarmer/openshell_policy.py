@@ -207,10 +207,7 @@ def _build_agent_api_block(agent_tool: str, model: str) -> dict:
         block = {
             "name": "agent-api",
             "endpoints": [
-                _endpoint("*.aiplatform.googleapis.com"),
                 _endpoint("generativelanguage.googleapis.com"),
-                _endpoint("api.anthropic.com"),
-                _endpoint("api.openai.com"),
             ],
             "binaries": [
                 _bin("/usr/local/bin/crush"),
@@ -220,14 +217,21 @@ def _build_agent_api_block(agent_tool: str, model: str) -> dict:
         block = {
             "name": "agent-api",
             "endpoints": [
-                _endpoint("*.aiplatform.googleapis.com"),
                 _endpoint("generativelanguage.googleapis.com"),
                 _endpoint("oauth2.googleapis.com"),
-                _endpoint("api.anthropic.com"),
                 _endpoint("opencode.ai"),
+                _endpoint("models.dev"),
             ],
-            # No binaries restriction — opencode runs via node (npm-global path varies);
-            # empty binaries list means all processes can reach these endpoints.
+            # opencode ships as a native binary installed via npm.
+            # The npm wrapper at /usr/local/share/npm-global/bin/opencode invokes
+            # the actual native binary at .../opencode-linux-x64/bin/opencode
+            # (copied to opencode.exe by the Containerfile).  OPA sees the native
+            # binary path, so both paths must be listed with harness=True.
+            "binaries": [
+                _bin("/usr/local/share/npm-global/lib/node_modules/opencode-linux-x64/bin/opencode"),
+                _bin("/usr/local/share/npm-global/bin/opencode"),
+                _bin("/usr/local/share/npm-global/lib/node_modules/opencode-ai/bin/opencode.exe"),
+            ],
         }
     return {"agent_api": block}
 

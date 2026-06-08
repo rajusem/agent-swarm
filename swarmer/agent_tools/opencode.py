@@ -26,10 +26,22 @@ class OpenCodeStrategy(AgentToolStrategy):
     def get_config_map_name(self) -> str:
         return "opencode-config"
 
-    def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False) -> dict[str, str]:
+    def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False, model: str = "") -> dict[str, str]:  # noqa: ARG002 (use_inference_local retained for interface compat)
+        # Derive small_model from the chosen model: swap pro→flash within same provider.
+        # Fall back to fixed defaults if the model is unrecognised.
+        _model = model or "google/gemini-3.1-pro-preview"
+        _small_model = "google/gemini-3.5-flash"
+        if "/" in _model:
+            _provider, _mid = _model.split("/", 1)
+            if "pro" in _mid:
+                _small_model = f"{_provider}/{_mid.replace('pro', 'flash')}"
+            elif "flash" in _mid:
+                _small_model = _model  # already the small model
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
-            "enabled_providers": ["google", "google-vertex-anthropic", "anthropic"],
+            "enabled_providers": ["google"],
+            "model": _model,
+            "small_model": _small_model,
             "lsp": {
                 "go": {"command": ["gopls"], "extensions": []},
                 "python": {"command": ["pyright-langserver", "--stdio"], "extensions": []},
@@ -39,32 +51,6 @@ class OpenCodeStrategy(AgentToolStrategy):
                 "port": 4096,
             },
         }
-
-        if use_inference_local:
-            # Remove google-vertex-anthropic: its loader invokes google-auth-library
-            # which fails without ADC in the sandbox. Instead, configure the anthropic
-            # provider explicitly with a placeholder key so OpenCode shows Claude models.
-            # inference.local strips the key and substitutes the real Vertex AI token.
-            config["enabled_providers"] = [
-                p for p in config["enabled_providers"] if p != "google-vertex-anthropic"
-            ]
-            # Declare the Vertex-hosted Claude models explicitly so OpenCode recognises
-            # them under the anthropic provider (they are not in OpenCode's built-in
-            # anthropic model catalogue).  The model IDs here must match what
-            # _extract_vertex_model() returns (bare name, no @version suffix).
-            config["provider"] = {
-                "anthropic": {
-                    "options": {
-                        "apiKey": "sk-ant-api03-inference-local-proxy",
-                        "baseURL": "https://inference.local/v1",
-                    },
-                    "models": {
-                        "claude-haiku-4-5": {"name": "Claude Haiku 4.5"},
-                        "claude-sonnet-4-6": {"name": "Claude Sonnet 4.6"},
-                        "claude-opus-4-6": {"name": "Claude Opus 4.6"},
-                    },
-                }
-            }
 
         if mcp_servers:
             mcp_config = {}
@@ -147,34 +133,19 @@ class OpenCodeStrategy(AgentToolStrategy):
         return [client.V1ContainerPort(container_port=4096, name="opencode")]
 
     def is_valid_model(self, model: str) -> bool:
-        return model.startswith("google-vertex-anthropic/") or model.startswith("google/")
+        return model.startswith("google/")
 
     def get_model_options(self, secret=None) -> list[dict]:
-        _GEMINI_MODELS = [
-            ("google/gemini-3.5-flash", "Gemini 3.5 Flash (fast)"),
-            ("google/gemini-3-pro-preview", "Gemini 3 Pro"),
-        ]
-        _CLAUDE_MODELS = [
-            ("google-vertex-anthropic/claude-haiku-4-5@20251001", "Claude Haiku 4.5 (fast)"),
-            ("google-vertex-anthropic/claude-sonnet-4-6@default", "Claude Sonnet 4.6 (balanced)"),
-            ("google-vertex-anthropic/claude-opus-4-6@default", "Claude Opus 4.6 (most capable)"),
-        ]
         options = []
         if secret and getattr(secret, "google_api_key_enc", ""):
-            for value, label in _GEMINI_MODELS:
-                options.append({"value": value, "label": label, "group": "Gemini"})
-        if secret and getattr(secret, "has_adc", False):
-            for value, label in _CLAUDE_MODELS:
-                options.append({"value": value, "label": label, "group": "Claude (Vertex)"})
+            options.extend([
+                {"value": "google/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Gemini"},
+                {"value": "google/gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro", "group": "Gemini"},
+            ])
         return options
 
     def get_default_model(self, has_adc: bool, has_gemini: bool) -> str:
-        if has_adc:
-            return "google-vertex-anthropic/claude-sonnet-4-6@default"
-        elif has_gemini:
-            return "google/gemini-3.5-flash"
-        else:
-            return "google/gemini-3.5-flash"
+        return "google/gemini-3.1-pro-preview"
 
     def exec_model_update(self, pod_name: str, namespace: str, model: str) -> None:
         if "/" not in model:
