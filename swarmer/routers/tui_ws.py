@@ -90,7 +90,7 @@ async def session_tui(
         tui_cmd_parts.extend(["--model", _tui_model])
     cmd_base = " ".join(shlex.quote(p) for p in tui_cmd_parts)
     tui_shell = (
-        f"export PATH=\"$HOME/.local/bin:$PATH\" && "
+        f"export HOME=/sandbox PATH=\"/sandbox/.local/bin:$PATH\" && "
         f"{{ {cmd_base} --continue || exec {cmd_base}; }}"
     )
 
