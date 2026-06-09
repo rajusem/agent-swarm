@@ -769,6 +769,12 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
     # Resolve prompt using layered composition
     resolved_prompt = await _resolve_session_prompt(session, db)
 
+    # Fetch workspace prompt sources for network policy scoping.
+    # Agents inside the sandbox may curl raw.githubusercontent.com to fetch
+    # prompt documents or files referenced by the prompt.  The policy is
+    # scoped to the configured prompt source repos (org/repo/branch).
+    prompt_sources = await _get_prompt_sources(ws.id, db)
+
     await _do_launch_openshell(
         session=session,
         ws=ws,
@@ -779,6 +785,7 @@ async def _do_launch(session: Session, ws: Workspace, db: AsyncSession, user_id:
         has_gemini=has_gemini,
         mcp_servers=mcp_servers,
         resolved_prompt=resolved_prompt,
+        prompt_sources=prompt_sources,
     )
 
 
@@ -792,6 +799,7 @@ async def _do_launch_openshell(
     has_gemini: bool,
     mcp_servers: list | None,
     resolved_prompt: str,
+    prompt_sources: list | None = None,
 ) -> None:
     """Launch a session via the OpenShell sandbox API."""
     from swarmer import openshell_client
@@ -839,6 +847,26 @@ async def _do_launch_openshell(
         pat_token = getattr(session.github_pat, "token", None) or getattr(session.github_pat, "pat", "")
         await openshell_client.ensure_provider(pname, "github", {}, credentials={"api_token": pat_token})
         provider_names.append(pname)
+    for mcp in (mcp_servers or []):
+        if "jira" in getattr(mcp, "slug", "") and getattr(mcp, "jira_access_token_enc", ""):
+            pname = f"swarmer-ws-{ws_id}-jira"
+            # Token goes through the gateway Provider API — stored securely and injected
+            # as an opaque reference token (openshell:resolve:...), never as plaintext.
+            # URL and email are non-secret config; they go as plain env vars via env_vars.
+            await openshell_client.ensure_provider(
+                pname, "jira",
+                config={
+                    "JIRA_SERVER_URL": mcp.jira_server_url or "",
+                    "JIRA_EMAIL": mcp.jira_email or "",
+                },
+                credentials={"JIRA_ACCESS_TOKEN": mcp.jira_access_token},
+            )
+            provider_names.append(pname)
+            # Pass URL and email as plain env vars so the sandbox process can read them.
+            # These are non-secret config values; only the token is gateway-managed.
+            env_vars["JIRA_SERVER_URL"] = mcp.jira_server_url or ""
+            env_vars["JIRA_EMAIL"] = mcp.jira_email or ""
+            break  # only one Jira provider per workspace
 
     # 2. Build policy YAML (pure computation, no I/O)
     policy = build_session_policy(
@@ -847,6 +875,7 @@ async def _do_launch_openshell(
         mcp_servers=list(mcp_servers or []),
         agent_tool=session.agent_tool,
         model=model,
+        prompt_sources=list(prompt_sources or []),
     )
 
 
@@ -981,9 +1010,13 @@ async def _setup_openshell_sandbox(
         # config that includes enabled_providers and any MCP config.
         from swarmer.agent_tools.registry import get as _get_tool
         _tool = _get_tool(tool_name)
+        # mcp_patch is already the extracted "mcp" dict (keys are server slugs, values
+        # are the per-server config dicts).  Do NOT call .get("mcp", {}) again here —
+        # that double-nesting always returns {} and silently drops MCP config from the
+        # written agent config JSON (ACM-34954).
         _mcp_list = [
             type("_MCP", (), {"slug": k, **v})()
-            for k, v in (mcp_patch.get("mcp", {}) or {}).items()
+            for k, v in (mcp_patch or {}).items()
         ] if mcp_patch else []
         _config_data = _tool.build_config_data(
             mcp_servers=_mcp_list,
@@ -1078,7 +1111,10 @@ async def _setup_openshell_sandbox(
         else:
             agent_cmd = f"HOME=/sandbox {main_cmd}"
 
-        # Launch agent
+        # Launch agent — pass env_vars so JIRA_* (and any other non-provider
+        # credentials) are forwarded into the agent process via ExecSandboxRequest.
+        # spec.environment is stored on the sandbox but is NOT forwarded to exec
+        # calls by the OpenShell gateway; env_vars in ExecSandboxRequest IS.
         asyncio.create_task(
             _run_openshell_agent(
                 session_id=session_id,
@@ -1086,6 +1122,7 @@ async def _setup_openshell_sandbox(
                 cmd=["sh", "-c", agent_cmd],
                 mode=mode,
                 agent_tool=tool_name,
+                env_vars=env_vars,
             ),
             name=f"openshell-agent-{session_id}",
         )
@@ -1103,6 +1140,7 @@ async def _run_openshell_agent(
     cmd: list[str],
     mode: str,
     agent_tool: str,
+    env_vars: dict | None = None,
 ) -> None:
     """Background task: starts the agent in the sandbox and tracks completion."""
     from swarmer import openshell_client
@@ -1126,7 +1164,8 @@ async def _run_openshell_agent(
 
         if mode == "prompt":
             result = await openshell_client.exec_command(sandbox_name, cmd, client=None,
-                                                         timeout_seconds=300)
+                                                         timeout_seconds=300,
+                                                         env=env_vars or {})
             exit_code = getattr(result, "exit_code", None)
             stdout = getattr(result, "stdout", "") or ""
             stderr = getattr(result, "stderr", "") or ""
@@ -1158,7 +1197,7 @@ async def _run_openshell_agent(
             if mode == "server":
                 # Launch server agent as a background nohup process so exec() returns
                 # immediately; the sandbox stays alive serving HTTP.
-                await openshell_client.start_agent(sandbox_name, cmd)
+                await openshell_client.start_agent(sandbox_name, cmd, env=env_vars or {})
 
             # TUI mode: the sandbox is ready; the TUI WebSocket handler starts the
             # agent interactively via exec_interactive when the user connects.

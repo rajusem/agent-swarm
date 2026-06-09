@@ -141,6 +141,31 @@ async def _run_openshell_tui(
         await websocket.close(code=4004, reason="Sandbox lookup failed")
         return
 
+    # Fetch provider-injected env vars (e.g. JIRA_ACCESS_TOKEN as opaque ref token)
+    # and plain env vars from spec.environment (e.g. JIRA_SERVER_URL, JIRA_EMAIL).
+    # These are not forwarded to ad-hoc exec calls by the gateway, so we inject them
+    # explicitly so they're visible in the TUI shell.
+    tui_env: dict[str, str] = {}
+    try:
+        provider_env = await openshell_client.get_sandbox_provider_environment(sandbox_id)
+        tui_env.update(provider_env)
+    except Exception:
+        pass
+    try:
+        from swarmer.database import get_db as _get_db
+        from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+        async for db in _get_db():
+            mcp_servers = await get_enabled_mcp_servers(session.workspace_id, db)
+            for mcp in mcp_servers:
+                if "jira" in getattr(mcp, "slug", ""):
+                    if mcp.jira_server_url:
+                        tui_env["JIRA_SERVER_URL"] = mcp.jira_server_url
+                    if mcp.jira_email:
+                        tui_env["JIRA_EMAIL"] = mcp.jira_email
+            break
+    except Exception:
+        pass
+
     command = ["sh", "-c", tui_shell]
 
     try:
@@ -151,6 +176,7 @@ async def _run_openshell_tui(
             command=command,
             cols=cols,
             rows=rows,
+            env=tui_env or None,
             client=client,
         )
     except Exception as exc:

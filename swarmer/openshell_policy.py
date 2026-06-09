@@ -84,17 +84,37 @@ _JIRA_MCP_BLOCK = {
     "name": "jira-mcp",
     "endpoints": [
         {
+            # Wildcard for all Atlassian Cloud tenants.
             "host": "*.atlassian.net",
             "port": 443,
             "protocol": "rest",
             "enforcement": "enforce",
             "access": "full",
-        }
+        },
+        {
+            # Literal entry for the Red Hat tenant — OPA proxy enforcement
+            # matches on literal host names; the wildcard alone may not be
+            # sufficient at the proxy CONNECT layer (confirmed via draft chunks).
+            "host": "redhat.atlassian.net",
+            "port": 443,
+            "protocol": "rest",
+            "enforcement": "enforce",
+            "access": "full",
+        },
     ],
     "binaries": [
         _bin("/usr/local/bin/jira-mcp-server"),
+        # jira-mcp-server is a Python package. OPA resolves the canonical binary
+        # path via /proc/{pid}/root. The agent container image uses python3.14
+        # installed at /usr/local/bin/python3.14 (confirmed via OPA draft chunks);
+        # /usr/bin/python3 and /usr/local/bin/python3 are symlinks to it.
+        # All three paths are listed so the rule survives image updates.
+        _bin("/usr/local/bin/python3.14"),
+        _bin("/usr/local/bin/python3"),
         _bin("/usr/bin/python3"),
         _bin("/sandbox/.venv/bin/python*"),
+        # curl is used by smoke-test connectivity checks and shell tooling.
+        _bin("/usr/bin/curl"),
     ],
 }
 
@@ -166,6 +186,78 @@ def _build_github_git_block(org: str, name: str) -> dict:
         "binaries": [
             _bin("/usr/local/bin/git"),  # agent container image path (confirmed via OPA logs)
             _bin("/usr/bin/git"),         # fallback for other base images
+        ],
+    }
+
+
+def _build_raw_github_block(
+    org: str, name: str, branch: str = "main", folder_path: str = ""
+) -> dict:
+    """Build the policy block for curl/python reads from raw.githubusercontent.com.
+
+    raw.githubusercontent.com URL structure:
+      https://raw.githubusercontent.com/{org}/{repo}/{branch}/{path}
+
+    The block is scoped to a specific org/repo/branch/folder so only files
+    within the configured prompt source folder are accessible — not all of
+    raw.githubusercontent.com, and not even the full branch.
+
+    folder_path scoping:
+      - "." or "" (root)  → /{org}/{repo}/{branch}/**  (whole branch)
+      - "prompts/"        → /{org}/{repo}/{branch}/prompts/**
+      - "docs/prompts"    → /{org}/{repo}/{branch}/docs/prompts/**
+    Trailing slashes are stripped; a leading slash is never added twice.
+
+    Path scoping note: OPA enforces path rules at the application layer after
+    TLS termination, so the path filter is meaningful here (unlike the proxy
+    CONNECT layer where only the host is visible).
+
+    Binaries: curl (shell invocations, agent tool calls) and python3 variants
+    (agents using the requests/urllib stack — canonical path confirmed via OPA
+    draft chunks as /usr/local/bin/python3.14).
+    """
+    folder = (folder_path or "").strip("/")
+    if folder and folder != ".":
+        path_prefix = f"/{org}/{name}/{branch}/{folder}/**"
+    else:
+        path_prefix = f"/{org}/{name}/{branch}/**"
+
+    # github.com raw/blob paths redirect to raw.githubusercontent.com.
+    # Scoped to read (GET) on this org/repo only — broader path than the raw
+    # prefix because github.com serves /raw/ and /blob/ sub-paths.
+    github_path_prefix = f"/{org}/{name}/**"
+
+    return {
+        "name": f"raw-github-{org}-{name}",
+        "endpoints": [
+            {
+                # raw.githubusercontent.com — canonical CDN for raw file content.
+                # Path scoped to org/repo/branch[/folder].
+                "host": "raw.githubusercontent.com",
+                "port": 443,
+                "path": path_prefix,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "rules": [{"allow": {"method": "GET", "path": path_prefix}}],
+            },
+            {
+                # github.com — paste-friendly URLs (/org/repo/raw/branch/... and
+                # /org/repo/blob/branch/...) redirect to raw.githubusercontent.com.
+                # Allowed so users don't need to know the raw subdomain.
+                # Read-only (GET), scoped to this org/repo.
+                "host": "github.com",
+                "port": 443,
+                "path": github_path_prefix,
+                "protocol": "rest",
+                "enforcement": "enforce",
+                "rules": [{"allow": {"method": "GET", "path": github_path_prefix}}],
+            },
+        ],
+        "binaries": [
+            _bin("/usr/bin/curl"),
+            _bin("/usr/local/bin/python3.14"),
+            _bin("/usr/local/bin/python3"),
+            _bin("/usr/bin/python3"),
         ],
     }
 
@@ -244,6 +336,7 @@ def build_session_policy(
     mcp_servers: list,
     agent_tool: str,
     model: str,
+    prompt_sources: list | None = None,
 ):
     """Assemble a complete OpenShell SandboxPolicy proto for this session.
 
@@ -260,7 +353,8 @@ def build_session_policy(
     from openshell._proto import openshell_pb2
 
     network_policies_dict = build_session_network_policies(
-        session, repos, mcp_servers, agent_tool, model
+        session, repos, mcp_servers, agent_tool, model,
+        prompt_sources=prompt_sources,
     )
 
     policy_dict = {
@@ -281,6 +375,7 @@ def build_session_network_policies(
     mcp_servers: list,
     agent_tool: str,
     model: str,
+    prompt_sources: list | None = None,
 ) -> dict:
     """Return the computed network_policies dict for this session.
 
@@ -297,8 +392,30 @@ def build_session_network_policies(
         network_policies_dict[f"github_git_{slug}"] = _build_github_git_block(org, name)
         network_policies_dict[f"github_api_{slug}"] = _build_github_api_block(org, name)
 
-    if any(getattr(mcp, "slug", None) == "jira" for mcp in (mcp_servers or [])):
+    if any("jira" in getattr(mcp, "slug", "") for mcp in (mcp_servers or [])):
         network_policies_dict["jira_mcp"] = _JIRA_MCP_BLOCK
+
+    # Per-prompt-source raw.githubusercontent.com access.
+    # Agents may curl prompt documents or files referenced within them from the
+    # prompt repository.  One block per source repo — keyed by org_name slug so
+    # multiple prompt sources on different repos each get their own rule entry.
+    # If multiple prompt sources share the same org/repo, the block is
+    # deduplicated by key (last write wins, contents are identical).
+    for ps in (prompt_sources or []):
+        repo_url = getattr(ps, "repo_url", "") or ""
+        if "github.com" not in repo_url:
+            continue
+        parts = repo_url.rstrip("/").split("/")
+        if len(parts) < 2:
+            continue
+        ps_name = parts[-1]
+        ps_org = parts[-2]
+        ps_branch = getattr(ps, "branch", "main") or "main"
+        ps_folder = getattr(ps, "folder_path", "") or ""
+        ps_slug = f"{ps_org}_{ps_name}".replace("-", "_").replace(".", "_")
+        network_policies_dict[f"raw_github_{ps_slug}"] = _build_raw_github_block(
+            ps_org, ps_name, ps_branch, ps_folder
+        )
 
     lang = getattr(session, "language", "golang")
     if lang == "golang":

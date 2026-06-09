@@ -44,11 +44,24 @@ _sdk_stub.SandboxClient = MagicMock
 _sdk_stub.TlsConfig = MagicMock
 _sdk_stub._proto = _proto_stub
 
-sys.modules.setdefault("openshell", _sdk_stub)
-sys.modules.setdefault("openshell._proto", _proto_stub)
-sys.modules.setdefault("openshell._proto.openshell_pb2", _proto_stub.openshell_pb2)
+# Save any real openshell modules already in sys.modules so we can restore
+# them after importing swarmer.openshell_client with our stubs.  This prevents
+# the stubs from polluting sys.modules for other test files (e.g.
+# test_openshell_policy.py) that need the real protobuf classes.
+_saved_modules = {k: v for k, v in sys.modules.items() if "openshell" in k}
+
+sys.modules["openshell"] = _sdk_stub
+sys.modules["openshell._proto"] = _proto_stub
+sys.modules["openshell._proto.openshell_pb2"] = _proto_stub.openshell_pb2
 
 import swarmer.openshell_client as oc  # noqa: E402
+
+# Restore real openshell modules (or remove the stubs if none were there before)
+for _k in ("openshell", "openshell._proto", "openshell._proto.openshell_pb2"):
+    if _k in _saved_modules:
+        sys.modules[_k] = _saved_modules[_k]
+    else:
+        sys.modules.pop(_k, None)
 
 
 # ---------------------------------------------------------------------------
@@ -165,21 +178,60 @@ async def test_create_provider_no_github_pat_in_env(session, workspace_secret, g
 
 
 @pytest.mark.asyncio
-async def test_create_provider_includes_jira_mcp_credentials(session, workspace_secret):
+async def test_create_provider_jira_not_in_env_vars(session, workspace_secret):
+    """Jira credentials must NOT appear in env_vars from create_provider().
+
+    Jira credentials go through the OpenShell Provider API, not raw env vars.
+    create_provider() only returns workspace extra env vars from the
+    swarmer-agent-extra-env K8s Secret.
+    """
     jira_mcp = MagicMock()
-    jira_mcp.catalog_key = "jira"
-    jira_mcp.config = {
-        "JIRA_SERVER_URL": "https://redhat.atlassian.net",
-        "JIRA_ACCESS_TOKEN": "tok-test",
-    }
+    jira_mcp.slug = "atlassian-jira"
+    jira_mcp.jira_server_url = "https://redhat.atlassian.net"
+    jira_mcp.jira_access_token = "tok-test"
+    jira_mcp.jira_email = "test@redhat.com"
+    with patch("swarmer.openshell_client.get_extra_env_vars", return_value={}) if False else \
+         patch("swarmer.k8s.get_extra_env_vars", return_value={}):
+        env_vars = await oc.create_provider(
+            session=session,
+            workspace_secret=workspace_secret,
+            github_pat=None,
+            mcp_servers=[jira_mcp],
+        )
+    assert "JIRA_SERVER_URL" not in env_vars, (
+        "Jira credentials must go through Provider API, not raw env_vars"
+    )
+    assert "JIRA_ACCESS_TOKEN" not in env_vars
+    assert "JIRA_EMAIL" not in env_vars
+
+
+@pytest.mark.asyncio
+async def test_create_provider_includes_workspace_extra_env_vars(session, workspace_secret):
+    """create_provider() returns workspace extra env vars from swarmer-agent-extra-env Secret."""
+    with patch("swarmer.k8s.get_extra_env_vars", return_value={"MY_VAR": "hello", "FOO": "bar"}):
+        env_vars = await oc.create_provider(
+            session=session,
+            workspace_secret=workspace_secret,
+            github_pat=None,
+            mcp_servers=[],
+        )
+    assert env_vars.get("MY_VAR") == "hello"
+    assert env_vars.get("FOO") == "bar"
+
+
+@pytest.mark.asyncio
+async def test_create_provider_empty_when_no_namespace(workspace_secret):
+    """create_provider() returns {} when session has no namespace (graceful fallback)."""
+    session_no_ns = MagicMock()
+    session_no_ns.namespace = None
+    session_no_ns.workspace = None
     env_vars = await oc.create_provider(
-        session=session,
+        session=session_no_ns,
         workspace_secret=workspace_secret,
         github_pat=None,
-        mcp_servers=[jira_mcp],
+        mcp_servers=[],
     )
-    assert "JIRA_SERVER_URL" in env_vars
-    assert "JIRA_ACCESS_TOKEN" in env_vars
+    assert env_vars == {}
 
 
 # ---------------------------------------------------------------------------

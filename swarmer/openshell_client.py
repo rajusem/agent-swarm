@@ -68,17 +68,29 @@ async def create_provider(
     mcp_servers: list,
     client=None,
 ) -> dict[str, str]:
-    """Return non-credential env vars for the sandbox (MCP Jira config only).
+    """Return workspace extra env vars to inject into the sandbox agent process.
 
-    AI credentials and GitHub tokens are injected by the OpenShell gateway
-    via the Provider API (ensure_provider / attach_sandbox_provider).
+    All credentials (AI keys, GitHub PAT, Jira token) are injected by the
+    OpenShell gateway via the Provider API (ensure_provider /
+    attach_sandbox_provider) — never as raw env vars here.
+
+    The only env vars returned here are the workspace extra env vars from the
+    swarmer-agent-extra-env K8s Secret (arbitrary key-value pairs set by the
+    user via the workspace settings UI). These are passed to exec_command(env=)
+    so they reach the agent process via ExecSandboxRequest.environment.
     """
+    import asyncio
     env_vars: dict[str, str] = {}
-    for mcp in (mcp_servers or []):
-        if getattr(mcp, "catalog_key", None) == "jira":
-            config = getattr(mcp, "config", {}) or {}
-            for k, v in config.items():
-                env_vars[k] = str(v)
+    try:
+        from swarmer.k8s import get_extra_env_vars
+        namespace = getattr(session, "namespace", None) or getattr(
+            getattr(session, "workspace", None), "namespace", None
+        )
+        if namespace:
+            extra = await asyncio.to_thread(get_extra_env_vars, namespace)
+            env_vars.update(extra)
+    except Exception:
+        pass  # K8s not available (local dev / no namespace) — silently skip
     return env_vars
 
 
@@ -629,7 +641,12 @@ async def write_file(sandbox_name: str, path: str, content: str, client=None) ->
     await asyncio.to_thread(_do_write)
 
 
-async def start_agent(sandbox_name: str, cmd: list[str], client=None) -> None:
+async def start_agent(
+    sandbox_name: str,
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+    client=None,
+) -> None:
     """Start the agent as a detached background process so exec() returns immediately."""
     if client is None:
         client = _get_client()
@@ -639,7 +656,7 @@ async def start_agent(sandbox_name: str, cmd: list[str], client=None) -> None:
     bg_cmd = ["sh", "-c", f"nohup {shell_cmd} >/sandbox/.agent.log 2>&1 &"]
 
     def _do_start(s=sid):
-        client.exec(s, bg_cmd)
+        client.exec(s, bg_cmd, env=env or {})
 
     await asyncio.to_thread(_do_start)
 
@@ -696,16 +713,46 @@ async def exec_command(
     client,
     stdin: bytes | None = None,
     timeout_seconds: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> Any:
-    """Execute a command inside the sandbox; returns ExecResult (.stdout, .stderr, .exit_code)."""
+    """Execute a command inside the sandbox; returns ExecResult (.stdout, .stderr, .exit_code).
+
+    env: extra environment variables to inject into this exec process.
+    Unlike spec.environment (which is stored on the sandbox but NOT forwarded to
+    exec calls by the OpenShell gateway), env vars passed here are sent as part of
+    ExecSandboxRequest.environment and ARE visible to the spawned process.
+    """
     if client is None:
         client = _get_client()
     sid = await _sandbox_id(sandbox_name, client)
 
     def _do_exec(s=sid):
-        return client.exec(s, cmd, stdin=stdin, timeout_seconds=timeout_seconds)
+        return client.exec(s, cmd, stdin=stdin, timeout_seconds=timeout_seconds,
+                           env=env or {})
 
     return await asyncio.to_thread(_do_exec)
+
+
+async def get_sandbox_provider_environment(sandbox_id: str, client=None) -> dict[str, str]:
+    """Fetch the provider-injected environment for a sandbox from the gateway.
+
+    Returns a dict of env var name → value (opaque reference tokens for credentials).
+    Returns {} if the call fails (e.g. no providers attached).
+    """
+    from openshell._proto import openshell_pb2
+
+    if client is None:
+        client = _get_client()
+
+    def _do_get():
+        req = openshell_pb2.GetSandboxProviderEnvironmentRequest(sandbox_id=sandbox_id)
+        resp = client._stub.GetSandboxProviderEnvironment(req, timeout=10)
+        return dict(resp.environment)
+
+    try:
+        return await asyncio.to_thread(_do_get)
+    except Exception:
+        return {}
 
 
 def exec_interactive(
@@ -714,6 +761,7 @@ def exec_interactive(
     command: list[str],
     cols: int,
     rows: int,
+    env: dict[str, str] | None = None,
     client=None,
 ):
     """Open an interactive PTY exec stream for a sandbox (for TUI WebSocket bridge).
@@ -733,16 +781,17 @@ def exec_interactive(
     input_q: queue.Queue = queue.Queue()
 
     def _request_generator():
-        start_msg = openshell_pb2.ExecSandboxInput(
-            start=openshell_pb2.ExecSandboxRequest(
-                sandbox_id=sandbox_id,
-                command=command,
-                workdir="/sandbox",
-                tty=True,
-                cols=cols,
-                rows=rows,
-            )
+        req = openshell_pb2.ExecSandboxRequest(
+            sandbox_id=sandbox_id,
+            command=command,
+            workdir="/sandbox",
+            tty=True,
+            cols=cols,
+            rows=rows,
         )
+        for k, v in (env or {}).items():
+            req.environment[k] = v
+        start_msg = openshell_pb2.ExecSandboxInput(start=req)
         yield start_msg
         while True:
             item = input_q.get()

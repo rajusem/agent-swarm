@@ -51,10 +51,21 @@ spec:
               value: "MAX_CONCURRENT_AGENTS_VALUE"
             - name: DEFAULT_AGENT_TOOL
               value: "opencode"
+            - name: OPENSHELL_GATEWAY_URL
+              value: "openshell.openshell.svc.cluster.local:8080"
+            - name: OPENSHELL_TLS_CERT
+              value: "/auth/openshell/tls.crt"
+            - name: OPENSHELL_TLS_KEY
+              value: "/auth/openshell/tls.key"
+            - name: OPENSHELL_TLS_CA
+              value: "/auth/openshell/ca.crt"
 
           volumeMounts:
             - name: swarmer-data
               mountPath: /data
+            - name: openshell-tls
+              mountPath: /auth/openshell
+              readOnly: true
 
           resources:
             requests:
@@ -75,3 +86,6 @@ spec:
         - name: swarmer-data
           persistentVolumeClaim:
             claimName: swarmer-data
+        - name: openshell-tls
+          secret:
+            secretName: openshell-tls

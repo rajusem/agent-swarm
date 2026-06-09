@@ -21,6 +21,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from swarmer.openshell_policy import build_session_policy, build_session_network_policies
 
+# Tests that call build_session_policy() need the real openshell protobuf
+# classes to construct a SandboxPolicy proto.  The stub package on PyPI
+# (0.0.0a0) provides the proto classes but they get replaced by MagicMock
+# stubs in other test files when the full suite runs.  Skip these tests when
+# the real SDK (identified by the presence of SandboxClient) is not available.
+try:
+    from openshell import SandboxClient  # noqa: F401
+    _REAL_SDK = True
+except Exception:
+    _REAL_SDK = False
+
+_requires_sdk = pytest.mark.skipif(
+    not _REAL_SDK,
+    reason="Requires real openshell SDK (SandboxClient); not available in CI",
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers to build minimal test fixtures matching the real model shapes
@@ -34,7 +50,21 @@ def _make_repo(org="stolostron", name="agent-swarm", branch="main"):
     })()
 
 
-def _make_mcp(slug="jira"):
+def _make_prompt_source(
+    repo_url="https://github.com/stolostron/agentic-sdlc",
+    branch="main",
+    folder_path=".",
+):
+    return type("PromptSource", (), {
+        "repo_url": repo_url,
+        "branch": branch,
+        "folder_path": folder_path,
+    })()
+
+
+def _make_mcp(slug="atlassian-jira"):
+    # Default slug matches the real McpServer catalog value ("atlassian-jira").
+    # build_session_network_policies() uses a loose "jira" in slug match.
     return type("MCP", (), {"slug": slug})()
 
 
@@ -68,17 +98,25 @@ def _policy_dict(policy) -> dict:
 _MODEL = "google-vertex-anthropic/claude-sonnet-4-6"
 
 
-def _bnet(session=None, repos=None, mcp_servers=None, agent_tool="opencode", model=_MODEL) -> dict:
+def _bnet(
+    session=None, repos=None, mcp_servers=None, agent_tool="opencode",
+    model=_MODEL, prompt_sources=None,
+) -> dict:
     """Build network_policies dict via build_session_network_policies."""
     return build_session_network_policies(
-        session or _make_session(), repos or [], mcp_servers or [], agent_tool, model
+        session or _make_session(), repos or [], mcp_servers or [], agent_tool, model,
+        prompt_sources=prompt_sources or [],
     )
 
 
-def _bhosts(session=None, repos=None, mcp_servers=None, agent_tool="opencode", model=_MODEL) -> list[str]:
+def _bhosts(
+    session=None, repos=None, mcp_servers=None, agent_tool="opencode",
+    model=_MODEL, prompt_sources=None,
+) -> list[str]:
     """Return all endpoint hosts from computed network_policies."""
     hosts = []
-    for rule in _bnet(session, repos, mcp_servers, agent_tool, model).values():
+    for rule in _bnet(session, repos, mcp_servers, agent_tool, model,
+                      prompt_sources=prompt_sources).values():
         for ep in rule.get("endpoints", []):
             hosts.append(ep.get("host", ""))
     return hosts
@@ -88,11 +126,13 @@ def _bhosts(session=None, repos=None, mcp_servers=None, agent_tool="opencode", m
 # 1. Required structure
 # ---------------------------------------------------------------------------
 
+@_requires_sdk
 def test_policy_has_version_1():
     result = build_session_policy(_make_session(), repos=[], mcp_servers=[], agent_tool="opencode", model="google-vertex-anthropic/claude-sonnet-4-6")
     assert result.version == 1
 
 
+@_requires_sdk
 def test_policy_has_filesystem_policy():
     result = build_session_policy(_make_session(), repos=[], mcp_servers=[], agent_tool="opencode", model="google-vertex-anthropic/claude-sonnet-4-6")
     assert result.filesystem.include_workdir is True
@@ -104,6 +144,7 @@ def test_policy_has_network_policies_section():
     assert len(net) > 0
 
 
+@_requires_sdk
 def test_build_session_policy_includes_network_policies_in_proto():
     """build_session_policy() must include network_policies in the proto (ACM-34909).
 
@@ -123,6 +164,7 @@ def test_build_session_policy_includes_network_policies_in_proto():
     assert any(k.startswith("github_api_") for k in net_keys), f"github_api_ block missing from proto: {net_keys}"
 
 
+@_requires_sdk
 def test_build_session_policy_network_policies_match_build_session_network_policies():
     """build_session_policy() proto network_policies must match build_session_network_policies() dict."""
     repo = _make_repo()
@@ -139,6 +181,7 @@ def test_build_session_policy_network_policies_match_build_session_network_polic
     )
 
 
+@_requires_sdk
 def test_policy_sandbox_uses_sandbox_path():
     result = build_session_policy(_make_session(), repos=[], mcp_servers=[], agent_tool="opencode", model="google-vertex-anthropic/claude-sonnet-4-6")
     assert "/sandbox" in result.filesystem.read_write
@@ -251,7 +294,8 @@ def test_two_repos_generate_two_github_block_pairs():
 # ---------------------------------------------------------------------------
 
 def test_jira_block_present_when_jira_mcp_enabled():
-    net = _bnet(mcp_servers=[_make_mcp(slug="jira")])
+    # Use the real catalog slug ("atlassian-jira") to confirm the loose match works.
+    net = _bnet(mcp_servers=[_make_mcp(slug="atlassian-jira")])
     assert any("jira" in k.lower() for k in net), "Expected a jira MCP network block"
 
 
@@ -322,3 +366,157 @@ def test_agent_api_block_crush_includes_crush_binary():
     binaries = api_block.get("binaries", [])
     binary_paths = [b.get("path", "") if isinstance(b, dict) else getattr(b, "path", "") for b in binaries]
     assert not any("opencode" in p for p in binary_paths), f"opencode binary in crush block: {binary_paths}"
+
+
+# ---------------------------------------------------------------------------
+# 7. Prompt source raw.githubusercontent.com blocks
+# ---------------------------------------------------------------------------
+
+def test_raw_github_block_present_when_prompt_source_configured():
+    """A prompt source on GitHub must produce a raw_github_* network block."""
+    ps = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="main",
+        folder_path="prompts",
+    )
+    net = _bnet(prompt_sources=[ps])
+    raw_keys = [k for k in net if k.startswith("raw_github_")]
+    assert raw_keys, f"Expected raw_github_* block, got keys: {sorted(net.keys())}"
+    hosts = _bhosts(prompt_sources=[ps])
+    assert "raw.githubusercontent.com" in hosts
+    assert "github.com" in hosts, "github.com must be included for paste-friendly URLs"
+
+
+def test_raw_github_block_absent_when_no_prompt_sources():
+    net = _bnet()
+    assert not any(k.startswith("raw_github_") for k in net)
+
+
+def test_raw_github_block_path_scoped_to_folder():
+    """When folder_path is set, the path prefix must include it."""
+    ps = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="main",
+        folder_path="skills",
+    )
+    net = _bnet(prompt_sources=[ps])
+    block = net.get("raw_github_stolostron_agentic_sdlc", {})
+    endpoints = block.get("endpoints", [])
+    assert endpoints, "raw_github block must have endpoints"
+    path = endpoints[0].get("path", "")
+    assert "skills" in path, f"Expected folder 'skills' in path, got: {path!r}"
+    assert path == "/stolostron/agentic-sdlc/main/skills/**"
+
+
+def test_raw_github_block_path_root_when_folder_is_dot():
+    """When folder_path is '.', the path prefix must be branch-level only."""
+    ps = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="main",
+        folder_path=".",
+    )
+    net = _bnet(prompt_sources=[ps])
+    block = net.get("raw_github_stolostron_agentic_sdlc", {})
+    endpoints = block.get("endpoints", [])
+    path = endpoints[0].get("path", "")
+    assert path == "/stolostron/agentic-sdlc/main/**", (
+        f"Root folder should produce branch-level path, got: {path!r}"
+    )
+
+
+def test_raw_github_block_path_root_when_folder_is_empty():
+    """When folder_path is empty, path prefix must be branch-level only."""
+    ps = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="main",
+        folder_path="",
+    )
+    net = _bnet(prompt_sources=[ps])
+    block = net.get("raw_github_stolostron_agentic_sdlc", {})
+    endpoints = block.get("endpoints", [])
+    path = endpoints[0].get("path", "")
+    assert path == "/stolostron/agentic-sdlc/main/**"
+
+
+def test_raw_github_block_uses_correct_branch():
+    """The branch from the prompt source must appear in the path."""
+    ps = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="release-2.13",
+        folder_path="prompts",
+    )
+    net = _bnet(prompt_sources=[ps])
+    block = net.get("raw_github_stolostron_agentic_sdlc", {})
+    endpoints = block.get("endpoints", [])
+    path = endpoints[0].get("path", "")
+    assert "release-2.13" in path, f"Expected branch in path, got: {path!r}"
+    assert path == "/stolostron/agentic-sdlc/release-2.13/prompts/**"
+
+
+def test_raw_github_block_github_com_endpoint_scoped_to_repo():
+    """github.com endpoint must be scoped to the prompt source org/repo (not all of github.com)."""
+    ps = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="main", folder_path="prompts",
+    )
+    net = _bnet(prompt_sources=[ps])
+    block = net.get("raw_github_stolostron_agentic_sdlc", {})
+    gh_ep = next(
+        (ep for ep in block.get("endpoints", []) if ep.get("host") == "github.com"), None
+    )
+    assert gh_ep is not None, "github.com endpoint missing from raw_github block"
+    assert gh_ep.get("path") == "/stolostron/agentic-sdlc/**", (
+        f"github.com path must be scoped to org/repo, got: {gh_ep.get('path')!r}"
+    )
+    rules = gh_ep.get("rules", [])
+    assert rules, "github.com endpoint must have rules"
+    assert rules[0]["allow"]["method"] == "GET", "github.com must be GET-only"
+
+
+def test_raw_github_block_curl_binary_present():
+    """curl binary must be listed so shell-based fetches work."""
+    ps = _make_prompt_source()
+    net = _bnet(prompt_sources=[ps])
+    block = next((v for k, v in net.items() if k.startswith("raw_github_")), {})
+    binaries = [
+        b.get("path", "") if isinstance(b, dict) else getattr(b, "path", "")
+        for b in block.get("binaries", [])
+    ]
+    assert "/usr/bin/curl" in binaries, f"curl not in binaries: {binaries}"
+
+
+def test_raw_github_block_python_binaries_present():
+    """python3 paths must be listed for agents using requests/urllib."""
+    ps = _make_prompt_source()
+    net = _bnet(prompt_sources=[ps])
+    block = next((v for k, v in net.items() if k.startswith("raw_github_")), {})
+    binaries = [
+        b.get("path", "") if isinstance(b, dict) else getattr(b, "path", "")
+        for b in block.get("binaries", [])
+    ]
+    assert "/usr/local/bin/python3.14" in binaries
+    assert "/usr/bin/python3" in binaries
+
+
+def test_raw_github_block_non_github_prompt_source_skipped():
+    """Non-GitHub prompt sources must not produce a raw_github_* block."""
+    ps = _make_prompt_source(repo_url="https://gitlab.com/org/repo")
+    net = _bnet(prompt_sources=[ps])
+    assert not any(k.startswith("raw_github_") for k in net)
+
+
+def test_raw_github_multiple_prompt_sources_each_get_block():
+    """Each distinct org/repo prompt source gets its own policy block."""
+    ps1 = _make_prompt_source(
+        repo_url="https://github.com/stolostron/agentic-sdlc",
+        branch="main", folder_path="prompts",
+    )
+    ps2 = _make_prompt_source(
+        repo_url="https://github.com/openshift-fleet/runbooks",
+        branch="main", folder_path=".",
+    )
+    net = _bnet(prompt_sources=[ps1, ps2])
+    raw_keys = sorted(k for k in net if k.startswith("raw_github_"))
+    assert len(raw_keys) == 2, f"Expected 2 raw_github blocks, got: {raw_keys}"
+    assert "raw_github_stolostron_agentic_sdlc" in raw_keys
+    assert "raw_github_openshift_fleet_runbooks" in raw_keys

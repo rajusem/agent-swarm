@@ -335,3 +335,102 @@ Sessions can generate git diffs from running pods:
 3. Add the tool name to `AGENT_TOOLS` tuple in `models/session.py`
 4. Add `agent_image_new_tool: str = ""` in `config.py:Settings`
 5. Add corresponding `AGENT_IMAGE_NEWTOOL` env var in `.env.example` and Makefile placeholders
+
+### Adding a new MCP server (OpenShell sandbox network policy)
+
+OpenShell sandboxes enforce outbound network access at **two layers** — both must be configured
+or the MCP server will fail to connect even if one layer is open:
+
+1. **OPA/Landlock** — controls which binary processes may open which network connections.
+   Configured via `swarmer/openshell_policy.py`. Each rule is a `{host, port, binary}` triplet.
+2. **Egress proxy** (`HTTP_PROXY=10.200.0.1:3128`) — a CONNECT proxy that gates all sandbox
+   HTTPS traffic. It enforces the same OPA policy at the proxy layer. A wildcard like
+   `*.example.com` in the OPA rule may not be sufficient; the proxy may require a literal
+   host match as well (confirmed with `redhat.atlassian.net` — wildcard `*.atlassian.net`
+   alone produced a 403 at the proxy; adding the literal host fixed it).
+
+**The key gotcha — OPA resolves canonical binary paths:**
+
+OPA identifies processes by resolving symlinks via `/proc/{pid}/root`. It sees the canonical
+binary path, not the symlink. For example, `/usr/bin/python3 → python3.14`, so the rule
+must list `/usr/local/bin/python3.14` (confirmed via OPA draft chunks), not just
+`/usr/bin/python3`. Always check draft chunks after the first run to discover the actual
+path OPA reports.
+
+**Step-by-step: adding a new MCP server**
+
+1. **Add the catalog entry** in `swarmer/mcp_catalog.py` with `slug`, `display_name`,
+   `command`, and any credential defaults.
+
+2. **Add credential fields** to `McpServer` in `swarmer/models/mcp_server.py` following the
+   `_enc` suffix + `@property` encrypt/decrypt pattern. Add an `ALTER TABLE` migration in
+   `database.py:migrate_db()`.
+
+3. **Inject credentials into the sandbox** in `swarmer/openshell_client.py:create_provider()`.
+   Match on `"<slug-keyword>" in getattr(mcp, "slug", "")` (loose match) and populate
+   `env_vars` from the model's direct fields. Credentials go into `SandboxSpec.environment`
+   at sandbox creation time. Note: `spec.environment` reaches the supervisor-launched agent
+   process but **not** ad-hoc `client.exec()` calls — write a `/sandbox/.tool.env` file via
+   `stdin` if exec commands also need the vars.
+
+4. **Add the network policy block** in `swarmer/openshell_policy.py`:
+   - Add a `_TOOL_MCP_BLOCK` constant with `endpoints` and `binaries`.
+   - For `binaries`: list both the entry-point binary (`/usr/local/bin/tool-server`) and
+     the underlying interpreter if it is a scripted tool (e.g. `python3.14`, `node`).
+     Use `_bin(path)` for every entry — `harness=True` is mandatory.
+   - For `endpoints`: list both a wildcard (`*.example.com`) **and** the specific literal
+     hostname (`tenant.example.com`) used in production. Wildcards alone are unreliable at
+     the proxy layer.
+   - Wire the block into `build_session_network_policies()` with a slug keyword check:
+     `if any("<keyword>" in getattr(mcp, "slug", "") for mcp in (mcp_servers or []))`.
+
+5. **Update the unit tests** in `tests/test_openshell_policy.py` and
+   `tests/test_openshell_client.py`. Use the real `slug` value from the catalog (not a
+   synthetic `"jira"` shorthand) so the tests catch slug-mismatch bugs.
+
+6. **Write a dedicated e2e smoke test** at `scripts/openshell_<tool>_smoke_test.py`.
+   Use `scripts/openshell_jira_smoke_test.py` as the template. The test must:
+   - Read credentials from the **process environment** (never from Python variables) —
+     source the tool's `.env` file before running: `set -a && source .env && set +a`.
+   - Write credentials into the sandbox via `stdin` to `/sandbox/.tool.env`, then
+     `source` that file in subsequent `exec()` calls.
+   - Validate network access with `curl -v` using env var refs (`$VAR`) inside the sandbox
+     shell — the `-v` output reveals whether the failure is a proxy 403 (policy gap) or a
+     DNS/TLS error (different problem).
+   - Run the MCP server binary with a JSON-RPC `initialize` request over stdin. A valid
+     MCP `initialize` response confirms the full stack works end-to-end.
+   - After the run, query `GetDraftPolicy` on the sandbox to surface any pending OPA draft
+     chunks — these are the **policy sub-bumps** (missing binary or host entries) that need
+     to be added to the policy block before the tool will work reliably.
+
+   **Iterating on policy gaps (the sub-bump loop):**
+
+   ```
+   Run smoke test
+     → step 9 fails with ProxyError / ConnectionError
+     → query GetDraftPolicy on the sandbox (before cleanup)
+     → draft chunk shows: binary=/usr/local/bin/python3.14 host=tenant.example.com
+     → add that binary + literal host to the policy block constant
+     → re-run smoke test
+     → repeat until 18/18 (or N/N) passes with "No OPA network denials"
+   ```
+
+   To inspect draft chunks mid-test without cleanup, temporarily add this after the
+   jira-mcp-server exec step:
+   ```python
+   req = openshell_pb2.GetDraftPolicyRequest()
+   req.name = sandbox_name
+   resp = client._stub.GetDraftPolicy(req, timeout=10)
+   for c in resp.chunks:
+       print(c.proposed_rule.binaries[0].path, c.proposed_rule.endpoints[0].host)
+   ```
+
+7. **Run the smoke test against a real cluster** (OpenShell gateway must be reachable via
+   port-forward or direct URL):
+   ```sh
+   set -a && source ../my-mcp-server/.env && set +a
+   python3 scripts/openshell_<tool>_smoke_test.py
+   ```
+
+**Reference implementation:** `scripts/openshell_jira_smoke_test.py` + `_JIRA_MCP_BLOCK`
+in `swarmer/openshell_policy.py` — worked through the full sub-bump loop to reach 18/18.

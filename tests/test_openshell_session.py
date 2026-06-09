@@ -17,6 +17,38 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# ---------------------------------------------------------------------------
+# Inject openshell SDK stub before any swarmer imports so that the real
+# openshell package (if installed) does not interfere with unit tests.
+# Force-assign replaces any already-loaded openshell module in sys.modules.
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock as _MagicMock  # noqa: E402
+
+
+class _SandboxSpec:
+    def __init__(self):
+        class _T:
+            image = ""
+        self.template = _T()
+        self.environment = {}
+        self.policy = None
+        self.providers = []
+
+
+_proto_stub = _MagicMock()
+_proto_stub.openshell_pb2 = _MagicMock()
+_proto_stub.openshell_pb2.SandboxSpec = _SandboxSpec
+
+_sdk_stub = _MagicMock()
+_sdk_stub.SandboxClient = _MagicMock
+_sdk_stub.TlsConfig = _MagicMock
+_sdk_stub._proto = _proto_stub
+
+sys.modules["openshell"] = _sdk_stub
+sys.modules["openshell._proto"] = _proto_stub
+sys.modules["openshell._proto.openshell_pb2"] = _proto_stub.openshell_pb2
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -577,6 +609,91 @@ class TestDoLaunchOpenshell:
         )
 
     @pytest.mark.asyncio
+    async def test_jira_provider_registered_when_mcp_configured(self, client):
+        """When a Jira MCP server is configured and valid, ensure_provider is called with all three credentials."""
+        from unittest.mock import patch as _patch, AsyncMock as _AsyncMock
+        ws = await _create_workspace(client)
+        # Add Jira MCP server from catalog
+        mcp_resp = await client.post(
+            f"/api/v1/workspaces/{ws['id']}/mcp-servers",
+            json={"catalog_slug": "atlassian-jira"},
+        )
+        assert mcp_resp.status_code == 201, mcp_resp.text
+        mcp = mcp_resp.json()
+        # Save credentials (mock the Jira probe so it reports valid)
+        with _patch("swarmer.routers.mcp_servers._probe_jira_token", new=_AsyncMock(return_value=True)):
+            save_resp = await client.post(
+                f"/api/v1/workspaces/{ws['id']}/mcp-servers/{mcp['id']}/save",
+                json={
+                    "jira_server_url": "https://redhat.atlassian.net",
+                    "jira_email": "test@redhat.com",
+                    "jira_access_token": "jira-tok-secret",
+                },
+            )
+        assert save_resp.status_code == 200, save_resp.text
+        # Create session — pass the MCP server ID so it's enabled for this session
+        # (sessions default to mcp_server_ids="none" when no IDs are supplied)
+        s_resp = await client.post(
+            f"/api/v1/workspaces/{ws['id']}/sessions",
+            json={"name": "s-with-jira", "mode": "prompt", "agent_tool": "opencode",
+                  "mcp_server_ids": [mcp["id"]]},
+        )
+        s = s_resp.json()
+
+        patches = self._patch_openshell()
+        with patches["create_provider"], \
+             patches["ensure_provider"] as mock_ensure, \
+             patches["configure_provider_credential"], patches["attach_sandbox_provider"], \
+             patches["create_sandbox"], patches["write_agent_config"], \
+             patches["write_agents_md"], patches["exec_command"], \
+             patches["start_agent"], patches["delete_sandbox"], \
+             patches["build_policy"], patches["run_agent"], \
+             patches["setup_sandbox"] as mock_setup:
+            await client.post(
+                f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch"
+            )
+
+        jira_calls = [
+            c for c in mock_ensure.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "jira"
+        ]
+        assert len(jira_calls) == 1, (
+            f"Expected 1 jira provider call when MCP is configured, got {len(jira_calls)}"
+        )
+        # Token must go through provider credentials — gateway stores it securely and
+        # injects as an opaque reference token (openshell:resolve:...), never plaintext.
+        creds = jira_calls[0].kwargs.get("credentials", {})
+        assert creds.get("JIRA_ACCESS_TOKEN") == "jira-tok-secret", (
+            f"Expected JIRA_ACCESS_TOKEN in jira provider credentials, got: {creds}"
+        )
+        assert "JIRA_SERVER_URL" not in creds, (
+            f"JIRA_SERVER_URL must not be in credentials (non-secret): {creds}"
+        )
+        assert "JIRA_EMAIL" not in creds, (
+            f"JIRA_EMAIL must not be in credentials (non-secret): {creds}"
+        )
+        # Non-secret config goes in provider config (gateway-internal, not injected as env var).
+        cfg = jira_calls[0].kwargs.get("config", {})
+        assert cfg.get("JIRA_SERVER_URL") == "https://redhat.atlassian.net", (
+            f"Expected JIRA_SERVER_URL in jira provider config, got: {cfg}"
+        )
+        assert cfg.get("JIRA_EMAIL") == "test@redhat.com", (
+            f"Expected JIRA_EMAIL in jira provider config, got: {cfg}"
+        )
+        # URL and email also go into env_vars so the sandbox process sees them directly.
+        setup_kwargs = mock_setup.call_args.kwargs if mock_setup.call_args else {}
+        sandbox_env = setup_kwargs.get("env_vars", {})
+        assert sandbox_env.get("JIRA_SERVER_URL") == "https://redhat.atlassian.net", (
+            f"Expected JIRA_SERVER_URL in sandbox env_vars, got: {sandbox_env}"
+        )
+        assert sandbox_env.get("JIRA_EMAIL") == "test@redhat.com", (
+            f"Expected JIRA_EMAIL in sandbox env_vars, got: {sandbox_env}"
+        )
+        assert "JIRA_ACCESS_TOKEN" not in sandbox_env, (
+            f"JIRA_ACCESS_TOKEN must not appear in plaintext sandbox env_vars: {sandbox_env}"
+        )
+
+    @pytest.mark.asyncio
     async def test_passes_policy_yaml_from_builder(self, client):
         ws = await _create_workspace(client)
         s = await _create_session(client, ws["id"])
@@ -800,6 +917,7 @@ class TestRunOpenshellAgent:
         exec_result = MagicMock(exit_code=0, stdout="agent done", stderr="")
         with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
              patch("swarmer.openshell_client.exec_command", new=AsyncMock(return_value=exec_result)), \
+             patch("swarmer.openshell_client.read_opencode_response", new=AsyncMock(return_value="agent done")), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
             from swarmer.routers.sessions import _run_openshell_agent
             await _run_openshell_agent(s["id"], "sandbox-prompt", ["sh", "-c", "opencode run"], "prompt", "opencode")
@@ -853,6 +971,7 @@ class TestRunOpenshellAgent:
         exec_result = MagicMock(exit_code=0, stdout="done", stderr="")
         with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
              patch("swarmer.openshell_client.exec_command", new=AsyncMock(return_value=exec_result)), \
+             patch("swarmer.openshell_client.read_opencode_response", new=AsyncMock(return_value="done")), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_del:
             from swarmer.routers.sessions import _run_openshell_agent
             await _run_openshell_agent(s["id"], "sandbox-autoclean", ["sh", "-c", "opencode run"], "prompt", "opencode")
@@ -879,7 +998,7 @@ class TestRunOpenshellAgent:
 
         phases_seen = []
 
-        async def _fake_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None):
+        async def _fake_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None, env=None):
             async with _TestSession() as db:
                 from sqlalchemy import select
                 from swarmer.models.session import Session
@@ -889,6 +1008,7 @@ class TestRunOpenshellAgent:
 
         with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
              patch("swarmer.openshell_client.exec_command", new=_fake_exec), \
+             patch("swarmer.openshell_client.read_opencode_response", new=AsyncMock(return_value="")), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
             from swarmer.routers.sessions import _run_openshell_agent
             await _run_openshell_agent(s["id"], "sandbox-running", ["sh", "-c", "opencode run"], "prompt", "opencode")
@@ -915,7 +1035,7 @@ class TestRunOpenshellAgent:
                 s["id"], "sandbox-server", ["sh", "-c", "opencode serve"], "server", "opencode"
             )
 
-        mock_start.assert_called_once_with("sandbox-server", ["sh", "-c", "opencode serve"])
+        mock_start.assert_called_once_with("sandbox-server", ["sh", "-c", "opencode serve"], env={})
         mock_exec.assert_not_called()
 
     @pytest.mark.asyncio
@@ -989,7 +1109,7 @@ class TestExecCommandTimeout:
         with patch("swarmer.openshell_client._get_client", return_value=mock_client):
             result = await exec_command("sb-name", ["echo", "hi"], client=None, timeout_seconds=120)
 
-        mock_client.exec.assert_called_once_with("test-id", ["echo", "hi"], stdin=None, timeout_seconds=120)
+        mock_client.exec.assert_called_once_with("test-id", ["echo", "hi"], stdin=None, timeout_seconds=120, env={})
         assert result.stdout == "ok"
 
     @pytest.mark.asyncio
@@ -1005,7 +1125,7 @@ class TestExecCommandTimeout:
         with patch("swarmer.openshell_client._get_client", return_value=mock_client):
             await exec_command("sb-name", ["ls"], client=None)
 
-        mock_client.exec.assert_called_once_with("test-id", ["ls"], stdin=None, timeout_seconds=None)
+        mock_client.exec.assert_called_once_with("test-id", ["ls"], stdin=None, timeout_seconds=None, env={})
 
 
 
@@ -1282,7 +1402,7 @@ async def _call_crush_setup(
 
     exec_calls: list[list[str]] = []
 
-    async def _capture_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None):
+    async def _capture_exec(sandbox_name, cmd, client=None, stdin=None, timeout_seconds=None, env=None):
         exec_calls.append(list(cmd))
         return MagicMock(exit_code=0, stdout="", stderr="")
 
@@ -1347,7 +1467,7 @@ class TestCrushOpenshellSetup:
         model = "anthropic/claude-sonnet-4-6"
         captured_cmd: list[str] = []
 
-        def _capture_run_agent(session_id, sandbox_name, cmd, mode, agent_tool):
+        def _capture_run_agent(session_id, sandbox_name, cmd, mode, agent_tool, env_vars=None):
             captured_cmd.extend(cmd)
             async def _noop():
                 pass
@@ -1539,7 +1659,7 @@ class TestCrushOpenshellSetup:
 
         # Use a plain function (not async) so the cmd is captured synchronously
         # when asyncio.create_task calls it — before the task body ever runs.
-        def _capture_run_agent(session_id, sandbox_name, cmd, mode, agent_tool):
+        def _capture_run_agent(session_id, sandbox_name, cmd, mode, agent_tool, env_vars=None):
             captured_cmd.extend(cmd)
             async def _noop():
                 pass
@@ -1619,4 +1739,184 @@ class TestCrushOpenshellSetup:
 
         assert sess.phase == "succeeded"
         assert "crush finished successfully" in (sess.last_output or "")
+
+
+# ---------------------------------------------------------------------------
+# MCP patch injection regression tests (ACM-34954)
+# ---------------------------------------------------------------------------
+
+class TestMcpPatchInjection:
+    """Verify that a non-empty mcp_patch is written into the agent config JSON.
+
+    Regression guard for the double-nesting bug where _setup_openshell_sandbox
+    called mcp_patch.get("mcp", {}) on a dict that was already the "mcp" value,
+    always producing an empty list and silently dropping MCP config from the
+    written opencode.json / crush.json.
+    """
+
+    @pytest.mark.asyncio
+    async def test_opencode_mcp_patch_written_to_agent_config(self, client):
+        """mcp_patch with Jira entry must appear in the config JSON passed to write_agent_config."""
+        import json as _json
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET phase='pending' WHERE id=:id"), {"id": s["id"]}
+            )
+            await db.commit()
+
+        from swarmer.agent_tools.opencode import OpenCodeStrategy
+        from swarmer.routers.sessions import _setup_openshell_sandbox
+
+        tool = OpenCodeStrategy()
+        model = "google/gemini-3.5-flash"
+        captured_config: list[str] = []
+
+        async def _capture_write_agent_config(sandbox_name, tool_name, config_json):
+            captured_config.append(config_json)
+
+        # mcp_patch is the already-extracted "mcp" dict (keys = server slugs)
+        mcp_patch = {
+            "atlassian-jira": {
+                "type": "local",
+                "command": ["jira-mcp-server"],
+                "enabled": True,
+                "environment": {
+                    "JIRA_SERVER_URL": "{env:JIRA_SERVER_URL}",
+                    "JIRA_ACCESS_TOKEN": "{env:JIRA_ACCESS_TOKEN}",
+                    "JIRA_EMAIL": "{env:JIRA_EMAIL}",
+                },
+            }
+        }
+
+        patches = _make_crush_setup_patches()
+        with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
+             patches["create_sandbox"], \
+             patch("swarmer.openshell_client.write_agent_config", new=_capture_write_agent_config), \
+             patches["write_agents_md"], \
+             patches["approve_chunks"], \
+             patches["run_agent"], \
+             patches["sleep"], \
+             patch("swarmer.openshell_client.exec_command", new=AsyncMock(
+                 return_value=MagicMock(exit_code=0, stdout="", stderr="")
+             )):
+            await _setup_openshell_sandbox(
+                session_id=s["id"],
+                provider_names=[],
+                env_vars={},
+                policy=None,
+                image=tool.get_image(),
+                tool_name="opencode",
+                model=model,
+                model_setup_cmd=tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/"),
+                share_cmd=tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/"),
+                mcp_patch=mcp_patch,
+                repos_data=[],
+                git_username="",
+                pat_token="",
+                working_branch="",
+                agents_md="",
+                mode="prompt",
+                main_cmd=f"opencode run --model {model} 'hello'",
+                resolved_prompt="hello",
+            )
+
+        assert captured_config, "write_agent_config was never called"
+        written = _json.loads(captured_config[0])
+        assert "mcp" in written, (
+            f"opencode.json must contain 'mcp' key when mcp_patch is non-empty; got keys: {list(written.keys())}"
+        )
+        assert "atlassian-jira" in written["mcp"], (
+            f"'atlassian-jira' entry missing from mcp section; got: {written['mcp']}"
+        )
+        assert written["mcp"]["atlassian-jira"]["command"] == ["jira-mcp-server"], (
+            "Jira MCP command must be ['jira-mcp-server']"
+        )
+
+    @pytest.mark.asyncio
+    async def test_crush_mcp_patch_written_to_agent_config(self, client):
+        """mcp_patch with Jira entry must appear in the config JSON passed to write_agent_config for Crush."""
+        import json as _json
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], agent_tool="crush")
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET phase='pending' WHERE id=:id"), {"id": s["id"]}
+            )
+            await db.commit()
+
+        from swarmer.agent_tools.crush import CrushStrategy
+        from swarmer.routers.sessions import _setup_openshell_sandbox
+        from swarmer.config import settings as _settings
+
+        tool = CrushStrategy()
+        model = "anthropic/claude-sonnet-4-6"
+        captured_config: list[str] = []
+
+        async def _capture_write_agent_config(sandbox_name, tool_name, config_json):
+            captured_config.append(config_json)
+
+        mcp_patch = {
+            "atlassian-jira": {
+                "type": "stdio",
+                "command": "jira-mcp-server",
+                "env": {
+                    "JIRA_SERVER_URL": "$JIRA_SERVER_URL",
+                    "JIRA_ACCESS_TOKEN": "$JIRA_ACCESS_TOKEN",
+                    "JIRA_EMAIL": "$JIRA_EMAIL",
+                },
+            }
+        }
+
+        _orig_crush_image = _settings.agent_image_crush
+        _settings.agent_image_crush = "quay.io/test/crush:test"
+        try:
+            patches = _make_crush_setup_patches()
+            with patch("swarmer.database.get_db", new=_make_test_db_provider()), \
+                 patches["create_sandbox"], \
+                 patch("swarmer.openshell_client.write_agent_config", new=_capture_write_agent_config), \
+                 patches["write_agents_md"], \
+                 patches["approve_chunks"], \
+                 patches["run_agent"], \
+                 patches["sleep"], \
+                 patch("swarmer.openshell_client.exec_command", new=AsyncMock(
+                     return_value=MagicMock(exit_code=0, stdout="", stderr="")
+                 )):
+                await _setup_openshell_sandbox(
+                    session_id=s["id"],
+                    provider_names=[],
+                    env_vars={},
+                    policy=None,
+                    image=tool.get_image(),
+                    tool_name="crush",
+                model=model,
+                model_setup_cmd=tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/"),
+                share_cmd=tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/"),
+                mcp_patch=mcp_patch,
+                repos_data=[],
+                git_username="",
+                pat_token="",
+                working_branch="",
+                agents_md="",
+                mode="prompt",
+                main_cmd=f"crush run --model {model} 'hello'",
+                resolved_prompt="hello",
+            )
+        finally:
+            _settings.agent_image_crush = _orig_crush_image
+
+        assert captured_config, "write_agent_config was never called"
+        written = _json.loads(captured_config[0])
+        assert "mcp" in written, (
+            f"crush.json must contain 'mcp' key when mcp_patch is non-empty; got keys: {list(written.keys())}"
+        )
+        assert "atlassian-jira" in written["mcp"], (
+            f"'atlassian-jira' entry missing from mcp section; got: {written['mcp']}"
+        )
+        assert written["mcp"]["atlassian-jira"]["command"] == "jira-mcp-server", (
+            "Jira MCP command must be 'jira-mcp-server' (string, not list, for Crush)"
+        )
 

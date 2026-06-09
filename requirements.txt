@@ -15,4 +15,4 @@ google-auth==2.53.0
 websockets==16.0
 itsdangerous==2.2.0
 croniter==6.2.2
-openshell>=0.1.0              # OpenShell sandbox SDK
+openshell>=0.0.58             # OpenShell sandbox SDK

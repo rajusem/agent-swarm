@@ -42,6 +42,15 @@ make openshell-status    # Show gateway pods, CRDs, cert status
 make openshell-delete    # Uninstall OpenShell from cluster
 # See docs/OPENSHELL_LOCAL_SETUP.md for full setup walkthrough
 
+# OpenShell e2e sandbox smoke tests (require port-forward to gateway + credentials in env)
+# Source credentials first: set -a && source ../jira-mcp-server/.env && set +a
+python3 scripts/openshell_smoke_test.py                          # OpenCode + Gemini (Google AI Studio)
+python3 scripts/openshell_smoke_test.py --vertex                 # OpenCode + Claude via VertexAI
+python3 scripts/openshell_smoke_test.py --vertex --agent crush   # Crush + Claude via VertexAI
+python3 scripts/openshell_smoke_test.py --policy-extract --repo https://github.com/org/repo  # git clone + policy
+python3 scripts/openshell_jira_smoke_test.py                     # Jira MCP: env → policy → binary → mcp-server
+# See docs/ARCHITECTURE.md "Adding a new MCP server" for how to write new smoke tests
+
 # Production Kubernetes
 make k8s-deploy          # Deploy to current kubectl context
 make k8s-connect         # Port-forward localhost:8080 → swarmer service

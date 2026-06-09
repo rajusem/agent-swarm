@@ -39,20 +39,66 @@ class _SandboxSpec:
         self.providers = []
 
 
+class _ProtoMessage:
+    """Minimal proto-message stub that stores constructor kwargs as attributes."""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class _ExecSandboxRequest(_ProtoMessage):
+    pass
+
+
+class _ExecSandboxInput(_ProtoMessage):
+    pass
+
+
 _proto_stub = MagicMock()
 _proto_stub.openshell_pb2 = MagicMock()
 _proto_stub.openshell_pb2.SandboxSpec = _SandboxSpec
+_proto_stub.openshell_pb2.ExecSandboxRequest = _ExecSandboxRequest
+_proto_stub.openshell_pb2.ExecSandboxInput = _ExecSandboxInput
 
 _sdk_stub = MagicMock()
 _sdk_stub.SandboxClient = MagicMock
 _sdk_stub.TlsConfig = MagicMock
 _sdk_stub._proto = _proto_stub
 
-sys.modules.setdefault("openshell", _sdk_stub)
-sys.modules.setdefault("openshell._proto", _proto_stub)
-sys.modules.setdefault("openshell._proto.openshell_pb2", _proto_stub.openshell_pb2)
+# Save any real openshell modules already in sys.modules so we can restore
+# them after importing swarmer.openshell_client with our stubs.  This prevents
+# the stubs from polluting sys.modules for other test files (e.g.
+# test_openshell_policy.py) that need the real protobuf classes.
+_saved_modules = {k: v for k, v in sys.modules.items() if "openshell" in k}
+
+sys.modules["openshell"] = _sdk_stub
+sys.modules["openshell._proto"] = _proto_stub
+sys.modules["openshell._proto.openshell_pb2"] = _proto_stub.openshell_pb2
 
 import swarmer.openshell_client as oc  # noqa: E402
+
+# Restore real openshell modules (or remove the stubs if none were there before)
+for _k in ("openshell", "openshell._proto", "openshell._proto.openshell_pb2"):
+    if _k in _saved_modules:
+        sys.modules[_k] = _saved_modules[_k]
+    else:
+        sys.modules.pop(_k, None)
+
+
+# Tests in this file that inspect proto message fields (e.g. req.sandbox_id)
+# need the real openshell SDK so proto constructors store kwargs as attributes.
+# The stub on PyPI (0.0.0a0) may not provide SandboxClient; skip those tests
+# when the full SDK is unavailable (CI without internal registry access).
+try:
+    from openshell import SandboxClient as _SC  # noqa: F401
+    _REAL_SDK = True
+except Exception:
+    _REAL_SDK = False
+
+_requires_sdk = pytest.mark.skipif(
+    not _REAL_SDK,
+    reason="Requires real openshell SDK (SandboxClient); not available in CI",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +205,7 @@ def sdk_client():
 # ===========================================================================
 
 
+@_requires_sdk
 class TestExposeService:
     @pytest.mark.asyncio
     async def test_expose_service_calls_stub(self, sdk_client):
@@ -190,6 +237,7 @@ class TestExposeService:
         assert req.service == "agent"
 
 
+@_requires_sdk
 class TestExecInteractive:
     def test_exec_interactive_returns_stream_and_queue(self, sdk_client):
         mock_stream = iter([])
@@ -730,6 +778,7 @@ class TestChatHttpProxyErrors:
 # ===========================================================================
 
 
+@_requires_sdk
 class TestTuiWsOpenshell:
     """Unit-level tests for the OpenShell branch in tui_ws.py.
 

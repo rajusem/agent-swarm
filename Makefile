@@ -33,7 +33,7 @@ OPENSHIFT_OAUTH_URL  ?=
 SWARMER_HOST         ?=
 
 # OpenShell gateway
-OPENSHELL_VERSION   ?= 0.0.55
+OPENSHELL_VERSION   ?= 0.0.58
 OPENSHELL_NAMESPACE ?= openshell
 OPENSHELL_TLS_DIR   ?= auth/openshell
 
@@ -127,6 +127,9 @@ test:  ## Run unit tests (excludes Playwright browser tests)
 	python3 -m pytest tests/ -q --ignore=tests/test_ui_patternfly.py
 	python3 -m pip install -q -e "mcp-server[dev]"
 	python3 -m pytest mcp-server/tests/ -q --rootdir=mcp-server
+
+smoke-test-jira:  ## Run Jira MCP OpenShell e2e smoke test (requires running OpenShell gateway)
+	python3 scripts/openshell_jira_smoke_test.py
 
 db-reset:  ## Delete the SQLite database (forces fresh schema on next start)
 	@rm -f data/swarmer.db && echo "Database deleted."
