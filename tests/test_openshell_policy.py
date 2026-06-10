@@ -8,7 +8,6 @@ Validates that build_session_policy() returns a SandboxPolicy proto with:
   - Conditional Jira MCP block (present when Jira MCP enabled, absent otherwise)
   - Conditional Go development block (proxy.golang.org etc.)
   - Conditional Python development block (pypi.org etc.)
-  - govulncheck block for Go sessions
   - Agent API block adapted to agent tool (opencode vs crush) and model provider
   - No excess blocks for minimal sessions (single repo, no MCP)
 """
@@ -324,8 +323,9 @@ def test_python_development_block_included_for_python_session():
     assert "files.pythonhosted.org" in hosts
 
 
-def test_govulncheck_block_included_for_go_session():
-    assert "vuln.go.dev" in _bhosts(session=_make_session(language="golang"))
+def test_govulncheck_not_in_static_policy():
+    # govulncheck is not pre-installed; OPA generates a draft chunk when it runs
+    assert "vuln.go.dev" not in _bhosts(session=_make_session(language="golang"))
 
 
 def test_go_block_absent_for_python_session():
@@ -520,3 +520,225 @@ def test_raw_github_multiple_prompt_sources_each_get_block():
     assert len(raw_keys) == 2, f"Expected 2 raw_github blocks, got: {raw_keys}"
     assert "raw_github_stolostron_agentic_sdlc" in raw_keys
     assert "raw_github_openshift_fleet_runbooks" in raw_keys
+
+
+# ---------------------------------------------------------------------------
+# custom_policies merge tests (no real SDK needed)
+# ---------------------------------------------------------------------------
+
+def test_custom_policies_merged_into_network_policies():
+    """Custom rules from session.custom_policies are merged into network_policies dict."""
+    custom = [
+        {
+            "name": "vuln-go-dev",
+            "endpoints": [{"host": "vuln.go.dev", "port": 443, "protocol": "rest"}],
+            "binaries": [{"path": "/usr/local/go/bin/govulncheck", "harness": True}],
+        }
+    ]
+    net = build_session_network_policies(
+        _make_session(language="golang"),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=custom,
+    )
+    # The custom rule should appear under a slugified key
+    matching = [k for k in net if "vuln_go_dev" in k or "custom_vuln" in k]
+    assert matching, f"Custom rule not found in network_policies keys: {list(net.keys())}"
+    rule = net[matching[0]]
+    assert rule["endpoints"][0]["host"] == "vuln.go.dev"
+
+
+def test_custom_policies_none_does_not_error():
+    """Passing custom_policies=None (the default) does not raise."""
+    net = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=None,
+    )
+    assert "agent_api" in net
+
+
+def test_custom_policies_empty_list_does_not_add_keys():
+    """Passing an empty custom_policies list adds no extra keys."""
+    net_no_custom = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+    )
+    net_empty_custom = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=[],
+    )
+    assert set(net_no_custom.keys()) == set(net_empty_custom.keys())
+
+
+# ---------------------------------------------------------------------------
+# L7 access backfill tests (ACM-XXXXX)
+# ---------------------------------------------------------------------------
+
+def test_custom_policy_endpoint_missing_access_gets_backfilled():
+    """An endpoint with protocol but no access/rules gets access=full added.
+
+    Draft chunks from OPA include host/port/protocol but omit access/rules.
+    Without the backfill the gateway rejects with 'protocol requires rules or
+    access to define allowed traffic'.
+    """
+    custom = [
+        {
+            "name": "raw-githubusercontent-com",
+            "endpoints": [
+                {"host": "raw.githubusercontent.com", "port": 443, "protocol": "rest"}
+            ],
+            "binaries": [{"path": "/usr/bin/curl", "harness": True}],
+        }
+    ]
+    net = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=custom,
+    )
+    key = next(k for k in net if "raw_githubusercontent" in k or "custom_raw" in k)
+    ep = net[key]["endpoints"][0]
+    assert ep.get("access") == "full", (
+        f"Expected access=full to be backfilled on endpoint missing access/rules, got: {ep}"
+    )
+
+
+def test_custom_policy_endpoint_with_existing_rules_not_overwritten():
+    """An endpoint that already has rules should NOT get access=full added."""
+    custom = [
+        {
+            "name": "api-github-scoped",
+            "endpoints": [
+                {
+                    "host": "api.github.com",
+                    "port": 443,
+                    "protocol": "rest",
+                    "rules": [{"allow": {"method": "GET", "path": "/repos/org/repo/**"}}],
+                }
+            ],
+            "binaries": [],
+        }
+    ]
+    net = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=custom,
+    )
+    key = next(k for k in net if "api_github" in k or "custom_api" in k)
+    ep = net[key]["endpoints"][0]
+    assert "access" not in ep, (
+        f"access should not be added when rules are already present, got: {ep}"
+    )
+    assert ep.get("rules"), "rules should be preserved"
+
+
+def test_custom_policy_endpoint_with_existing_access_not_overwritten():
+    """An endpoint that already has access set should keep its value unchanged."""
+    custom = [
+        {
+            "name": "some-host",
+            "endpoints": [
+                {
+                    "host": "example.com",
+                    "port": 443,
+                    "protocol": "rest",
+                    "access": "full",
+                }
+            ],
+            "binaries": [],
+        }
+    ]
+    net = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=custom,
+    )
+    key = next(k for k in net if "some_host" in k or "custom_some" in k)
+    ep = net[key]["endpoints"][0]
+    assert ep.get("access") == "full"
+    assert "rules" not in ep
+
+
+def test_custom_policy_endpoint_without_protocol_unchanged():
+    """An endpoint without a protocol field is left untouched (no access backfill)."""
+    custom = [
+        {
+            "name": "tcp-host",
+            "endpoints": [
+                {"host": "example.com", "port": 9090}
+            ],
+            "binaries": [],
+        }
+    ]
+    net = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=custom,
+    )
+    key = next(k for k in net if "tcp_host" in k or "custom_tcp" in k)
+    ep = net[key]["endpoints"][0]
+    assert "access" not in ep
+    assert "rules" not in ep
+
+
+def test_custom_policy_multiple_endpoints_backfill_only_missing():
+    """Only endpoints lacking both access and rules get the backfill; others unchanged."""
+    custom = [
+        {
+            "name": "mixed-endpoints",
+            "endpoints": [
+                # Missing access/rules — should get access=full
+                {"host": "raw.githubusercontent.com", "port": 443, "protocol": "rest"},
+                # Already has access — unchanged
+                {"host": "github.com", "port": 443, "protocol": "rest", "access": "full"},
+                # Already has rules — unchanged, no access added
+                {
+                    "host": "api.github.com",
+                    "port": 443,
+                    "protocol": "rest",
+                    "rules": [{"allow": {"method": "GET", "path": "/repos/**"}}],
+                },
+            ],
+            "binaries": [],
+        }
+    ]
+    net = build_session_network_policies(
+        _make_session(),
+        repos=[],
+        mcp_servers=[],
+        agent_tool="opencode",
+        model=_MODEL,
+        custom_policies=custom,
+    )
+    key = next(k for k in net if "mixed" in k or "custom_mixed" in k)
+    eps = net[key]["endpoints"]
+    assert eps[0]["access"] == "full", "missing endpoint should be backfilled"
+    assert "rules" not in eps[0]
+    assert eps[1]["access"] == "full", "existing access=full should be preserved"
+    assert "rules" not in eps[1]
+    assert "access" not in eps[2], "endpoint with rules should not get access added"
+    assert eps[2]["rules"], "rules should be preserved on third endpoint"

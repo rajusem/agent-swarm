@@ -83,6 +83,8 @@ async def migrate_db() -> None:
         "ALTER TABLE sessions DROP COLUMN resume",
         "ALTER TABLE sessions ADD COLUMN sandbox_name VARCHAR(255)",
         "ALTER TABLE sessions ADD COLUMN service_url VARCHAR(512)",
+        "ALTER TABLE sessions ADD COLUMN policy_chunks TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE sessions ADD COLUMN custom_policies TEXT NOT NULL DEFAULT ''",
     ]
     async with _engine.begin() as conn:
         for stmt in migrations:

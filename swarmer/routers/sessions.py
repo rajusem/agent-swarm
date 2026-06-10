@@ -1,4 +1,5 @@
 import asyncio
+import json as _json_filter
 import logging
 import re
 import shlex
@@ -65,6 +66,7 @@ async def _get_model_options(
 router = APIRouter()
 templates = Jinja2Templates(directory="swarmer/templates")
 templates.env.filters['ansi_to_html'] = ansi_to_html
+templates.env.filters['from_json'] = lambda s: _json_filter.loads(s) if s else []
 
 
 def _current_user(request: Request) -> str:
@@ -481,6 +483,13 @@ async def session_detail(
             "cron_presets": CRON_PRESETS,
             "mcp_servers": mcp_servers,
             "prompt_sources": prompt_sources,
+            "custom_policy_rules": _json_filter.loads(session.custom_policies) if session.custom_policies else [],
+            "show_policy_tab": bool(
+                settings.openshell_gateway_url
+                or session.sandbox_name
+                or session.policy_chunks
+                or session.custom_policies
+            ),
         },
     )
 
@@ -869,6 +878,16 @@ async def _do_launch_openshell(
             break  # only one Jira provider per workspace
 
     # 2. Build policy YAML (pure computation, no I/O)
+    # Parse session-level custom rules (approved from draft chunks) so they are
+    # merged into the static policy and take effect on this sandbox launch.
+    import json as _json
+    _custom_policies: list[dict] = []
+    if session.custom_policies:
+        try:
+            _custom_policies = _json.loads(session.custom_policies)
+        except Exception:
+            pass
+
     policy = build_session_policy(
         session=session,
         repos=list(session.repos or []),
@@ -876,12 +895,11 @@ async def _do_launch_openshell(
         agent_tool=session.agent_tool,
         model=model,
         prompt_sources=list(prompt_sources or []),
+        custom_policies=_custom_policies or None,
     )
-
 
     # Capture serialisable data for the background task before committing.
     # ORM objects cannot be used across DB sessions.
-    import json as _json
     mcp_patch: dict = {}
     if mcp_servers:
         config_data = tool.build_config_data(secret=oc_secret, mcp_servers=mcp_servers, model=model)
@@ -912,6 +930,7 @@ async def _do_launch_openshell(
     session.phase = "pending"
     session.last_output = ""
     session.status_detail = ""   # clear stale status from any previous run
+    session.policy_chunks = ""   # clear stale chunks; fresh snapshot at completion
     session.run_started_at = datetime.utcnow()
     session.run_completed_at = None
     await db.commit()
@@ -1178,6 +1197,17 @@ async def _run_openshell_agent(
             else:
                 output = stdout or stderr
 
+            # Snapshot draft policy chunks before any sandbox deletion so the
+            # Policy tab can show what was denied/proposed during this run.
+            chunks_json = ""
+            try:
+                chunks = await openshell_client.get_draft_chunks(sandbox_name)
+                if chunks:
+                    import json as _json_chunks
+                    chunks_json = _json_chunks.dumps(chunks)
+            except Exception:
+                log.warning("Failed to snapshot policy chunks for %s", sandbox_name, exc_info=True)
+
             new_sandbox_name: str | None = sandbox_name
             if phase == "succeeded":
                 try:
@@ -1190,6 +1220,7 @@ async def _run_openshell_agent(
                 phase=phase,
                 last_output=output,
                 status_detail="",  # clear any stale status from previous runs
+                policy_chunks=chunks_json,
                 run_completed_at=datetime.utcnow(),
                 sandbox_name=new_sandbox_name,
             )
@@ -1349,6 +1380,15 @@ async def session_stop(
 
     if session.sandbox_name:
         from swarmer import openshell_client
+        # Snapshot draft policy chunks before deleting the sandbox so the
+        # Policy tab remains useful after the session is stopped.
+        try:
+            chunks = await openshell_client.get_draft_chunks(session.sandbox_name)
+            if chunks:
+                import json as _json_stop
+                session.policy_chunks = _json_stop.dumps(chunks)
+        except Exception:
+            log.warning("Failed to snapshot policy chunks on stop for session %d", sid, exc_info=True)
         if session.service_url:
             try:
                 await openshell_client.delete_service(session.sandbox_name, "agent")
@@ -1520,6 +1560,237 @@ async def session_last_output(
         "sessions/_last_output.html",
         {"ws_id": ws_id, "session": session},
     )
+
+
+# ============================================================
+# Policy chunks (HTMX) + custom policy rules CRUD
+# ============================================================
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/{sid}/policy-chunks",
+    dependencies=[Depends(require_auth)],
+    response_class=HTMLResponse,
+)
+async def session_policy_chunks(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """HTMX partial: return draft policy chunks.
+
+    While the session has a live sandbox, fetch chunks directly from the
+    gateway.  Otherwise return the snapshot stored in session.policy_chunks.
+    """
+    session = await db.get(Session, sid)
+    if session is None or session.workspace_id != ws_id:
+        return HTMLResponse("")
+
+    chunks: list[dict] = []
+    if session.sandbox_name and session.is_active:
+        # Live fetch from gateway while sandbox is running
+        from swarmer import openshell_client
+        try:
+            chunks = await openshell_client.get_draft_chunks(session.sandbox_name)
+        except Exception:
+            pass  # get_draft_chunks logs internally; [] is the safe fallback
+    elif session.policy_chunks:
+        # Completed run — use snapshot
+        import json as _j
+        try:
+            chunks = _j.loads(session.policy_chunks)
+        except Exception:
+            pass
+
+    # Build a mapping of rule_name → set-of-binary-paths for all rules already
+    # added this session.  The template uses this to determine per-chunk "added"
+    # status: a chunk is fully added only when its rule exists AND every binary
+    # it lists is already covered.  Same rule_name + different binary = still pending.
+    import json as _j2
+    promoted_binaries: dict[str, set[str]] = {}
+    if session.custom_policies:
+        try:
+            for r in _j2.loads(session.custom_policies):
+                name = r.get("name")
+                if name:
+                    promoted_binaries[name] = {
+                        b.get("path", "") for b in r.get("binaries", [])
+                    }
+        except Exception:
+            pass
+
+    return templates.TemplateResponse(
+        request,
+        "sessions/_policy_chunks.html",
+        {"ws_id": ws_id, "session": session, "chunks": chunks, "promoted_binaries": promoted_binaries},
+    )
+
+
+@router.get(
+    "/workspaces/{ws_id}/sessions/{sid}/policy-rules-partial",
+    dependencies=[Depends(require_auth)],
+    response_class=HTMLResponse,
+)
+async def session_policy_rules_partial(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """HTMX partial: refresh the custom policy rules list."""
+    import json as _j
+    session = await db.get(Session, sid)
+    if session is None or session.workspace_id != ws_id:
+        return HTMLResponse("")
+    rules: list[dict] = []
+    if session.custom_policies:
+        try:
+            rules = _j.loads(session.custom_policies)
+        except Exception:
+            pass
+    return templates.TemplateResponse(
+        request,
+        "sessions/_policy_rules.html",
+        {"ws_id": ws_id, "session": session, "rules": rules},
+    )
+
+
+@router.post(
+    "/workspaces/{ws_id}/sessions/{sid}/policy-rules/add",
+    dependencies=[Depends(require_auth)],
+)
+async def session_policy_rules_add(
+    ws_id: int,
+    sid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Promote selected draft chunks to session-level custom_policies."""
+    import json as _j
+
+    session = await db.get(Session, sid)
+    if session is None or session.workspace_id != ws_id:
+        return HTMLResponse("", status_code=404)
+
+    form = await request.form()
+    # The form submits chunk JSON blobs for each selected chunk under key "chunk"
+    # (multiple values possible when multiple checkboxes are ticked).
+    selected_raw = form.getlist("chunk")
+
+    existing: list[dict] = []
+    if session.custom_policies:
+        try:
+            existing = _j.loads(session.custom_policies)
+        except Exception:
+            pass
+
+    # Index existing rules by name for O(1) lookup and in-place merge.
+    existing_by_name: dict[str, dict] = {
+        str(r["name"]): r for r in existing if r.get("name")
+    }
+    added = 0
+    from datetime import timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def _normalize_endpoints(raw_eps: list) -> list:
+        """Ensure every L7-protocol endpoint has access or rules.
+
+        Draft chunks from OPA include host/port/protocol but omit these fields,
+        which causes gateway validation to fail with 'protocol requires rules or
+        access to define allowed traffic'. Default to access=full for
+        user-approved traffic.
+        """
+        result = []
+        for ep in raw_eps:
+            ep = dict(ep)
+            if ep.get("protocol") and not ep.get("access") and not ep.get("rules"):
+                ep["access"] = "full"
+            result.append(ep)
+        return result
+
+    for raw in selected_raw:
+        try:
+            chunk = _j.loads(raw)
+        except Exception:
+            continue
+        rule_name = chunk.get("rule_name") or chunk.get("name") or ""
+        if not rule_name:
+            continue
+
+        new_eps = _normalize_endpoints(chunk.get("endpoints", []))
+        new_bins = chunk.get("binaries", [])
+
+        if rule_name in existing_by_name:
+            # Same rule name already exists — merge binaries rather than
+            # dropping the chunk. OPA emits one chunk per (rule_name, binary)
+            # pair so two chunks can share a name but differ only in binary.
+            rule = existing_by_name[rule_name]
+            existing_bin_paths = {b.get("path") for b in rule.get("binaries", [])}
+            merged = False
+            for b in new_bins:
+                if b.get("path") not in existing_bin_paths:
+                    rule.setdefault("binaries", []).append(b)
+                    existing_bin_paths.add(b.get("path"))
+                    merged = True
+            if merged:
+                added += 1
+        else:
+            existing.append({
+                "name": rule_name,
+                "endpoints": new_eps,
+                "binaries": new_bins,
+                "source": "chunk",
+                "added_at": now_iso,
+            })
+            existing_by_name[rule_name] = existing[-1]
+            added += 1
+
+    if added:
+        session.custom_policies = _j.dumps(existing)
+        await db.commit()
+        trigger_val = _j.dumps({"policyChanged": {"added": added}})
+        return HTMLResponse("", headers={"HX-Trigger": trigger_val})
+
+    # Nothing added — either no checkboxes were submitted or all were duplicates.
+    if selected_raw:
+        return HTMLResponse("", headers={"HX-Trigger": "policyNoop"})
+    return HTMLResponse("", headers={"HX-Trigger": "policyChanged"})
+
+
+@router.post(
+    "/workspaces/{ws_id}/sessions/{sid}/policy-rules/{idx}/delete",
+    dependencies=[Depends(require_auth)],
+)
+async def session_policy_rules_delete(
+    ws_id: int,
+    sid: int,
+    idx: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a custom policy rule by index."""
+    import json as _j
+
+    session = await db.get(Session, sid)
+    if session is None or session.workspace_id != ws_id:
+        return HTMLResponse("", status_code=404)
+
+    rules: list[dict] = []
+    if session.custom_policies:
+        try:
+            rules = _j.loads(session.custom_policies)
+        except Exception:
+            pass
+
+    deleted = False
+    if 0 <= idx < len(rules):
+        rules.pop(idx)
+        session.custom_policies = _j.dumps(rules)
+        await db.commit()
+        deleted = True
+
+    trigger_val = _j.dumps({"policyChanged": {"deleted": 1 if deleted else 0}})
+    return HTMLResponse("", headers={"HX-Trigger": trigger_val})
 
 
 # ============================================================

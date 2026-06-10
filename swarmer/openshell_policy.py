@@ -52,18 +52,6 @@ _GO_DEVELOPMENT_BLOCK = {
     ],
 }
 
-_GOVULNCHECK_BLOCK = {
-    "name": "govulncheck",
-    "endpoints": [
-        {"host": "vuln.go.dev", "port": 443},
-        {"host": "storage.googleapis.com", "port": 443},
-    ],
-    "binaries": [
-        _bin("/usr/local/go/bin/govulncheck"),
-        _bin("/home/node/go/bin/govulncheck"),
-        _bin("/home/sandbox/go/bin/govulncheck"),  # sandbox user GOPATH variant
-    ],
-}
 
 _PYTHON_DEVELOPMENT_BLOCK = {
     "name": "pypi",
@@ -337,6 +325,7 @@ def build_session_policy(
     agent_tool: str,
     model: str,
     prompt_sources: list | None = None,
+    custom_policies: list[dict] | None = None,
 ):
     """Assemble a complete OpenShell SandboxPolicy proto for this session.
 
@@ -347,6 +336,10 @@ def build_session_policy(
     clone and AI API calls work immediately without any probe-deny-approve
     cycle (ACM-34909).
 
+    custom_policies: optional list of session-level rule dicts promoted from
+    draft chunks.  These are merged into the static policy so approved rules
+    take effect on the next sandbox launch without any code change.
+
     Returns a SandboxPolicy proto object to be set on SandboxSpec.policy.
     """
     from google.protobuf.json_format import ParseDict
@@ -355,6 +348,7 @@ def build_session_policy(
     network_policies_dict = build_session_network_policies(
         session, repos, mcp_servers, agent_tool, model,
         prompt_sources=prompt_sources,
+        custom_policies=custom_policies,
     )
 
     policy_dict = {
@@ -376,12 +370,17 @@ def build_session_network_policies(
     agent_tool: str,
     model: str,
     prompt_sources: list | None = None,
+    custom_policies: list[dict] | None = None,
 ) -> dict:
     """Return the computed network_policies dict for this session.
 
     Called by build_session_policy() to populate spec.policy.network_policies
     at sandbox creation time.  Also exposed directly for testing and for the
     policy-extract smoke test harness (scripts/openshell_smoke_test.py).
+
+    custom_policies: optional list of session-level rule dicts promoted from
+    draft chunks.  Each entry is merged into the dict keyed by a slugified
+    version of its "name" field (or "custom_{i}" as a fallback).
     """
     network_policies_dict: dict = {}
     network_policies_dict.update(_build_agent_api_block(agent_tool, model))
@@ -420,8 +419,25 @@ def build_session_network_policies(
     lang = getattr(session, "language", "golang")
     if lang == "golang":
         network_policies_dict["golang"] = _GO_DEVELOPMENT_BLOCK
-        network_policies_dict["govulncheck"] = _GOVULNCHECK_BLOCK
+        # govulncheck is not pre-installed in the sandbox image; if the agent installs it,
+        # OPA will emit a draft chunk for vuln.go.dev that the user can explicitly approve.
     elif lang == "python":
         network_policies_dict["pypi"] = _PYTHON_DEVELOPMENT_BLOCK
+
+    # Merge session-level custom rules approved from draft chunks.
+    # Backfill access="full" on any endpoint that carries a protocol but lacks
+    # both "access" and "rules" — guards against rules stored before the
+    # promotion-time fix was applied (the gateway rejects such endpoints with
+    # "protocol requires rules or access to define allowed traffic").
+    for i, rule in enumerate(custom_policies or []):
+        rule_name = rule.get("name", "")
+        key = f"custom_{rule_name.replace('-', '_').replace(' ', '_') or i}"
+        endpoints = []
+        for ep in rule.get("endpoints", []):
+            ep = dict(ep)
+            if ep.get("protocol") and not ep.get("access") and not ep.get("rules"):
+                ep["access"] = "full"
+            endpoints.append(ep)
+        network_policies_dict[key] = {**rule, "endpoints": endpoints}
 
     return network_policies_dict

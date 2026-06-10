@@ -75,6 +75,10 @@ class Session(Base):
     pvc_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_output: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status_detail: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
+    # OpenShell draft policy chunks — JSON snapshot from last run (cleared on next launch)
+    policy_chunks: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    # Session-level custom network rules approved from chunks — JSON array, cumulative
+    custom_policies: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     phase: Mapped[str] = mapped_column(String(32), nullable=False, default="idle")
     run_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     run_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

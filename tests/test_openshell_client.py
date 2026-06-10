@@ -329,6 +329,57 @@ async def test_stop_calls_delete_sandbox(sdk_client):
     sdk_client.delete.assert_called_once_with(sandbox_name)
 
 
+# ---------------------------------------------------------------------------
+# get_draft_chunks tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_draft_chunks_returns_serializable_list(sdk_client):
+    """get_draft_chunks() calls GetDraftPolicy and returns a list of dicts."""
+    # Build a fake chunk proto-like object
+    fake_ep = MagicMock()
+    fake_ep.host = "vuln.go.dev"
+    fake_ep.port = 443
+    fake_ep.protocol = "rest"
+
+    fake_bin = MagicMock()
+    fake_bin.path = "/usr/local/go/bin/govulncheck"
+    fake_bin.harness = True
+
+    fake_chunk = MagicMock()
+    fake_chunk.id = "chunk-abc"
+    fake_chunk.status = "pending"
+    fake_chunk.rule_name = "govulncheck"
+    fake_chunk.proposed_rule.endpoints = [fake_ep]
+    fake_chunk.proposed_rule.binaries = [fake_bin]
+
+    fake_dp = MagicMock()
+    fake_dp.chunks = [fake_chunk]
+    sdk_client._stub.GetDraftPolicy.return_value = fake_dp
+
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        result = await oc.get_draft_chunks("sandbox-test")
+
+    assert len(result) == 1
+    c = result[0]
+    assert c["id"] == "chunk-abc"
+    assert c["status"] == "pending"
+    assert c["rule_name"] == "govulncheck"
+    assert c["endpoints"][0]["host"] == "vuln.go.dev"
+    assert c["endpoints"][0]["port"] == 443
+    assert c["binaries"][0]["path"] == "/usr/local/go/bin/govulncheck"
+    assert c["binaries"][0]["harness"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_draft_chunks_returns_empty_on_error(sdk_client):
+    """get_draft_chunks() returns [] when the gateway call fails."""
+    sdk_client._stub.GetDraftPolicy.side_effect = Exception("gateway unavailable")
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        result = await oc.get_draft_chunks("sandbox-gone")
+    assert result == []
+
+
 @pytest.mark.asyncio
 async def test_stop_does_not_call_pvc_delete(sdk_client):
     from swarmer import k8s_session as k8s_sess

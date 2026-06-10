@@ -414,6 +414,67 @@ async def approve_draft_policy_chunks(
     return unexpected
 
 
+async def get_draft_chunks(sandbox_name: str, client=None) -> list[dict]:
+    """Fetch all draft policy chunks for a sandbox and return them as serializable dicts.
+
+    Each dict has the shape:
+      {
+        "id": str,
+        "status": "pending" | "approved" | "rejected",
+        "rule_name": str,
+        "endpoints": [{"host": str, "port": int, "protocol": str}, ...],
+        "binaries": [{"path": str, "harness": bool}, ...],
+      }
+
+    Returns [] if the sandbox does not exist, the gateway is unreachable, or
+    any other error occurs — callers should treat an empty list as "no chunks".
+    """
+    from openshell._proto import openshell_pb2
+
+    if client is None:
+        client = _get_client()
+
+    def _do_fetch() -> list[dict]:
+        try:
+            dp = client._stub.GetDraftPolicy(
+                openshell_pb2.GetDraftPolicyRequest(name=sandbox_name), timeout=10
+            )
+            result = []
+            for chunk in dp.chunks:
+                endpoints = [
+                    {
+                        "host": ep.host,
+                        "port": ep.port,
+                        "protocol": ep.protocol or "rest",
+                    }
+                    for ep in chunk.proposed_rule.endpoints
+                ]
+                binaries = [
+                    {"path": b.path, "harness": bool(b.harness)}
+                    for b in chunk.proposed_rule.binaries
+                ]
+                result.append({
+                    "id": chunk.id,
+                    "status": chunk.status or "pending",
+                    "rule_name": chunk.rule_name,
+                    "endpoints": endpoints,
+                    "binaries": binaries,
+                })
+            return result
+        except Exception as exc:
+            # NOT_FOUND is expected for TUI/server sessions whose sandbox has
+            # not yet recorded any policy chunks — log at debug, not warning.
+            code = getattr(getattr(exc, "code", None), "value", None) or str(exc)
+            is_not_found = "NOT_FOUND" in str(exc) or code == 5  # grpc StatusCode.NOT_FOUND = 5
+            if is_not_found:
+                log.debug("get_draft_chunks: sandbox %s not found (no chunks yet)", sandbox_name)
+            else:
+                log.warning("get_draft_chunks failed for %s: %s", sandbox_name, exc)
+            return []
+
+    return await asyncio.to_thread(_do_fetch)
+
+
 async def import_provider_profiles(profiles: list[dict], client=None) -> None:
     """Import custom provider type profiles into the gateway (idempotent)."""
     from openshell._proto import openshell_pb2

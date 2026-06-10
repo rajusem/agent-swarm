@@ -196,6 +196,13 @@
       </button>
     </li>
     {% endif %}
+    {% if show_policy_tab %}
+    <li class="pf-v6-c-tabs__item" id="tab-policy">
+      <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-policy" tabindex="-1" onclick="switchTab('policy')">
+        <span class="pf-v6-c-tabs__item-text" id="policy-tab-text">Net Rules</span>
+      </button>
+    </li>
+    {% endif %}
   </ul>
 </div>
 
@@ -558,6 +565,77 @@ git apply /path/to/{{ patch_filename }}
 </div>
 {% endif %}
 
+{# ════════════════════════════════════════════════════════════
+   Tab panel: Net Rules (OpenShell sessions)
+   ════════════════════════════════════════════════════════════ #}
+{% if show_policy_tab %}
+<div id="panel-policy" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-policy" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
+
+  {# ── Net Rules card ── #}
+  <div class="pf-v6-c-card" style="margin-bottom:var(--pf-t--global--spacer--md);">
+    <div class="pf-v6-c-card__header">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Net Rules</h3>
+    </div>
+    <div class="pf-v6-c-card__body"
+         hx-get="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/policy-rules-partial"
+         hx-trigger="policyChanged from:body"
+         hx-swap="innerHTML"
+         id="policy-rules-container">
+      {% set rules = custom_policy_rules %}
+      {% include "sessions/_policy_rules.html" with context %}
+    </div>
+  </div>
+
+  {# ── Pending Chunks card ── #}
+  <div class="pf-v6-c-card">
+    <div class="pf-v6-c-card__header">
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Pending Chunks</h3>
+    </div>
+    <div class="pf-v6-c-card__body" style="padding:0;"
+         id="policy-chunks-container">
+      <div id="policy-chunks-content"
+           hx-get="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/policy-chunks"
+           {% if session.is_active %}
+           hx-trigger="load, every 30s"
+           data-active="1"
+           {% else %}
+           hx-trigger="load"
+           data-active="0"
+           {% endif %}
+           hx-swap="innerHTML"
+           style="padding:var(--pf-t--global--spacer--md);">
+        <span style="color:var(--pf-t--global--text--color--subtle); font-size:var(--pf-t--global--font--size--sm);">Loading…</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endif %}
+
+{# ── Floating toast notification (bottom-right) ── #}
+<div id="policy-toast"
+     style="display:none; position:fixed; bottom:var(--pf-t--global--spacer--lg); right:var(--pf-t--global--spacer--lg);
+            z-index:9999; min-width:280px; max-width:400px;
+            background:var(--pf-t--global--background--color--secondary--default);
+            border:1px solid var(--pf-t--global--border--color--default);
+            border-radius:var(--pf-t--global--border--radius--medium);
+            box-shadow:0 4px 16px rgba(0,0,0,0.4);
+            overflow:hidden;
+            flex-direction:column; gap:0;">
+  <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--md);
+              padding:var(--pf-t--global--spacer--md) var(--pf-t--global--spacer--lg);">
+    <span id="policy-toast-msg" style="flex:1; font-size:var(--pf-t--global--font--size--sm);"></span>
+    <button onclick="_policyHideToast()"
+            style="background:none; border:none; cursor:pointer; padding:0; line-height:1;
+                   color:var(--pf-t--global--text--color--subtle); font-size:1rem;"
+            title="Dismiss">&#x2715;</button>
+  </div>
+  {# Progress bar sweeps left→right over the toast duration #}
+  <div id="policy-toast-bar"
+       style="height:3px; width:0%; background:var(--pf-t--global--color--brand--default);
+              transition:none;"></div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -590,6 +668,11 @@ function switchTab(name) {
   if (name === 'output') {
     const textEl = document.getElementById('output-tab-text');
     if (textEl) textEl.textContent = 'Output';
+  }
+  // Clear Net Rules tab dot when visiting
+  if (name === 'policy') {
+    const textEl = document.getElementById('policy-tab-text');
+    if (textEl) textEl.textContent = 'Net Rules';
   }
 }
 
@@ -886,6 +969,165 @@ document.addEventListener('htmx:afterSwap', function () {
   }, 2000);
 })();
 {% endif %}
+
+// ── Net Rules / Policy tab JS ──
+// All policy interactions live here (page-level) so that HTMX innerHTML
+// swaps of _policy_chunks.html never destroy event bindings.
+(function () {
+
+  // ── Toast helpers ──
+  var _toastTimer = null;
+  var _toastBarRaf = null;
+
+  function _showToast(msg, seconds) {
+    var toast = document.getElementById('policy-toast');
+    var msgEl = document.getElementById('policy-toast-msg');
+    var bar   = document.getElementById('policy-toast-bar');
+    if (!toast || !msgEl) return;
+    msgEl.textContent = msg;
+    toast.style.display = 'flex';
+    clearTimeout(_toastTimer);
+    cancelAnimationFrame(_toastBarRaf);
+
+    // Reset bar instantly, then animate to 100% over `seconds`.
+    if (bar) {
+      bar.style.transition = 'none';
+      bar.style.width = '0%';
+      // Force reflow so the reset takes effect before starting the animation.
+      void bar.offsetWidth;
+      bar.style.transition = 'width ' + (seconds || 10) + 's linear';
+      bar.style.width = '100%';
+    }
+
+    _toastTimer = setTimeout(function () { _hideToast(); }, (seconds || 10) * 1000);
+  }
+
+  function _hideToast() {
+    clearTimeout(_toastTimer);
+    var toast = document.getElementById('policy-toast');
+    var bar   = document.getElementById('policy-toast-bar');
+    if (toast) toast.style.display = 'none';
+    if (bar) { bar.style.transition = 'none'; bar.style.width = '0%'; }
+  }
+
+  window._policyHideToast = _hideToast;
+
+  // ── Chunk poll pause/resume ──
+  // Use a flag + htmx:beforeRequest to cancel in-flight polls rather than
+  // mutating hx-trigger + calling htmx.process(), which re-initializes all
+  // child HTMX bindings and can reset checkbox state.
+  var _pollPaused = false;
+
+  function _chunkEl() { return document.getElementById('policy-chunks-content'); }
+
+  function _pauseChunkPoll() { _pollPaused = true; }
+
+  function _resumeChunkPoll() { _pollPaused = false; }
+
+  function _refreshChunks() {
+    _pollPaused = false;
+    var el = _chunkEl();
+    if (!el) return;
+    // Use htmx.ajax directly rather than triggering a synthetic 'load' event,
+    // which may be intercepted or not map to the element's hx-trigger binding.
+    var url = el.getAttribute('hx-get');
+    if (url) htmx.ajax('GET', url, {target: el, swap: 'innerHTML'});
+  }
+
+  // Cancel outgoing chunk poll requests while checkboxes are checked.
+  // _refreshChunks() uses htmx.ajax directly and bypasses this guard.
+  document.addEventListener('htmx:beforeRequest', function (e) {
+    var el = _chunkEl();
+    if (!el || e.detail.elt !== el) return;
+    if (_pollPaused) e.preventDefault();
+  });
+
+  // Checkbox change — pause poll when anything is checked.
+  document.addEventListener('change', function (e) {
+    if (!e.target.classList.contains('policy-chunk-cb')) return;
+    var any = document.querySelectorAll('.policy-chunk-cb:checked').length > 0;
+    if (any) { _pauseChunkPoll(); } else { _resumeChunkPoll(); }
+  });
+
+  // ── Handle add-form submission ──
+  // Listen on document so the handler survives innerHTML swaps of the partial.
+  document.addEventListener('htmx:afterRequest', function (e) {
+    // Match requests to the add endpoint by URL pattern.
+    var url = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || '';
+    var xhr = e.detail && e.detail.xhr;
+    if (!url.endsWith('/policy-rules/add') || !xhr) return;
+
+    var rawTrigger = xhr.getResponseHeader('HX-Trigger') || '';
+    var form = document.getElementById('policy-chunks-form');
+    if (form) form.reset();
+    _resumeChunkPoll();
+
+    if (rawTrigger === 'policyNoop') {
+      _showToast('Rule already in Net Rules — no changes made', 6);
+      return;
+    }
+
+    // Parse JSON trigger to get added count.
+    var added = 0;
+    try {
+      var parsed = JSON.parse(rawTrigger);
+      added = (parsed.policyChanged && parsed.policyChanged.added) || 0;
+    } catch (_) {}
+
+    if (added > 0) {
+      _showToast('Added ' + added + ' rule' + (added === 1 ? '' : 's') + ' to Net Rules', 6);
+      _markPolicyTabDirty();
+    }
+
+    // Refresh both panels: rules container (via policyChanged event that HTMX
+    // dispatches from the HX-Trigger header) and chunks (force a reload so
+    // promoted rules are reflected as "added" immediately).
+    _refreshChunks();
+  });
+
+  // ── Handle delete-button responses ──
+  document.addEventListener('htmx:afterRequest', function (e) {
+    var url = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || '';
+    var xhr = e.detail && e.detail.xhr;
+    if (!/\/policy-rules\/\d+\/delete$/.test(url) || !xhr) return;
+
+    var rawTrigger = xhr.getResponseHeader('HX-Trigger') || '';
+    var deleted = 0;
+    try {
+      var parsed = JSON.parse(rawTrigger);
+      deleted = (parsed.policyChanged && parsed.policyChanged.deleted) || 0;
+    } catch (_) {}
+
+    if (deleted) {
+      _showToast('Rule removed from Net Rules', 6);
+      _markPolicyTabDirty();
+      _refreshChunks(); // refresh so "added" badge reverts to "pending" for removed rule
+    }
+  });
+
+  // ── Dot indicator on Net Rules tab ──
+  function _markPolicyTabDirty() {
+    var tab = document.getElementById('tab-policy');
+    if (tab && tab.classList.contains('pf-m-current')) return;
+    var textEl = document.getElementById('policy-tab-text');
+    if (textEl) textEl.textContent = '● Net Rules';
+  }
+  // Fired by HTMX from HX-Trigger headers (bubbles up from the requesting element).
+  document.body.addEventListener('policyChanged', _markPolicyTabDirty);
+  // Also mark directly from our afterRequest handlers so the dot always
+  // appears even if the HX-Trigger event doesn't reach body for any reason.
+  window._markPolicyTabDirty = _markPolicyTabDirty;
+
+  // Mark dot when the chunk poll swap reveals pending chunks while on another tab.
+  document.addEventListener('htmx:afterSwap', function (e) {
+    var el = _chunkEl();
+    if (!el || e.detail.elt !== el) return;
+    // Check if any pending (non-added) chunks are now visible in the swapped content.
+    var hasPending = el.querySelector('.policy-chunk-cb') !== null;
+    if (hasPending) _markPolicyTabDirty();
+  });
+
+}());
 </script>
 
 {% if session.mode == 'tui' and session.phase == 'running' and tui_token %}
