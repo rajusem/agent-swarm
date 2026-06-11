@@ -140,7 +140,7 @@ Use placeholder patterns instead: `<YOUR_PROJECT>`, `example.com`, `your-registr
 
 5. **Session mode affects sandbox lifecycle**:
    - `prompt` mode: sandbox runs the agent command once; on success, `_run_openshell_agent` auto-deletes the sandbox. On app restart, `_restart_prompt_pollers()` resumes monitoring via `exec_command_streaming`.
-   - `server` mode: sandbox runs the agent serve command indefinitely; `expose_service()` creates a routable URL stored in `session.service_url`
+   - `server` mode: sandbox runs the agent serve command indefinitely; `expose_service()` creates a routable URL stored in `session.service_url`. The chat proxy rewrites the gateway-assigned virtual hostname to the real gateway address at connect time (`_resolve_upstream()`) and sets the `Host` header to the virtual domain for gateway routing — the domain itself is not DNS-resolvable from the Swarmer pod.
    - `tui` mode: sandbox runs `sleep infinity`; browser connects via xterm.js → WebSocket → OpenShell `exec_interactive()` PTY
    - Stopping always calls `openshell_client.delete_sandbox()` (and `delete_service()` for server mode)
 

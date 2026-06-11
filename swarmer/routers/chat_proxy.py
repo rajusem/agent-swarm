@@ -4,11 +4,18 @@ Reverse-proxy router for server-mode sessions.
 Swarmer proxies HTTP/WebSocket traffic through /chat/{path} using
 httpx + websockets, connecting to the session's OpenShell service URL.
 HTML asset paths are rewritten so they resolve through the proxy prefix.
+
+Gateway routing: the OpenShell gateway assigns virtual-host domain URLs
+(e.g. https://oriented-lizardfish--agent.openshell.localhost:8080) that
+are not DNS-resolvable from the Swarmer pod.  _resolve_upstream() rewrites
+the hostname to the gateway's real address while preserving the original
+domain as the Host header so the gateway can route to the right sandbox.
 """
 import asyncio
 import contextlib
 import logging
 import ssl
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 import websockets
@@ -55,6 +62,43 @@ def _openshell_httpx_kwargs() -> dict:
     if cert and key:
         return {"verify": False, "cert": (cert, key)}
     return {"verify": False}
+
+
+def _resolve_upstream(service_url: str) -> tuple[str, str]:
+    """Return (connectable_url, virtual_host) for an OpenShell service URL.
+
+    The OpenShell gateway assigns virtual-host domain URLs like
+      https://oriented-lizardfish--agent.openshell.localhost:8080
+    whose hostnames are not resolvable from the Swarmer pod.  We rewrite
+    the hostname to the gateway's real address (derived from
+    OPENSHELL_GATEWAY_URL) so httpx/websockets can open a TCP connection,
+    while returning the original domain as the Host header value so the
+    gateway's HTTP router can identify the target sandbox.
+
+    If OPENSHELL_GATEWAY_URL is not configured, the original URL is returned
+    unchanged (useful when wildcard DNS is set up at the cluster level).
+    """
+    from swarmer.config import settings
+
+    parsed = urlparse(service_url)
+    virtual_host = parsed.hostname or ""
+    port = parsed.port
+
+    gw = settings.openshell_gateway_url or ""
+    if gw:
+        # Parse the real gateway hostname from OPENSHELL_GATEWAY_URL.
+        # The URL may be bare "host:port" (no scheme) or "grpc://host:port".
+        gw_with_scheme = gw if "://" in gw else f"https://{gw}"
+        gw_parsed = urlparse(gw_with_scheme)
+        real_host = gw_parsed.hostname or virtual_host
+        # Port is already rewritten to the gateway port by expose_service().
+        netloc = f"{real_host}:{port}" if port else real_host
+        connectable_url = urlunparse(parsed._replace(netloc=netloc))
+    else:
+        connectable_url = service_url
+
+    host_header = f"{virtual_host}:{port}" if port else virtual_host
+    return connectable_url, host_header
 
 
 # ── HTML rewriting ───────────────────────────────────────────────────────────
@@ -154,7 +198,8 @@ async def _chat_http_proxy(
         msg, code = err
         return Response(msg, status_code=code, media_type="text/plain")
 
-    upstream_base = session.service_url.rstrip("/")
+    connectable_base, virtual_host = _resolve_upstream(session.service_url or "")
+    upstream_base = connectable_base.rstrip("/")
 
     query = str(request.url.query)
     upstream_url = f"{upstream_base}/{path}"
@@ -162,6 +207,8 @@ async def _chat_http_proxy(
         upstream_url += f"?{query}"
 
     fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
+    # Set the virtual host so the OpenShell gateway routes to the right sandbox.
+    fwd_headers["host"] = virtual_host
     fwd_headers["x-opencode-directory"] = "/sandbox/"
 
     # Check if the request wants SSE (event-stream)
@@ -209,7 +256,7 @@ async def _chat_http_proxy(
         log.warning("chat proxy: upstream error %s for session %d url=%s: %s",
                     type(exc).__name__, sid, upstream_url, exc, exc_info=True)
         return Response(
-            f"Could not connect to session ({upstream_base}): {type(exc).__name__}: {exc}",
+            f"Could not connect to session ({virtual_host}): {type(exc).__name__}: {exc}",
             status_code=503, media_type="text/plain",
         )
 
@@ -288,7 +335,8 @@ async def chat_ws_proxy(
         await websocket.close(code=4004, reason="Session unavailable")
         return
 
-    upstream_base = session.service_url.rstrip("/")
+    connectable_base, virtual_host = _resolve_upstream(session.service_url or "")
+    upstream_base = connectable_base.rstrip("/")
 
     query = websocket.url.query
     upstream_url = upstream_base.replace("http://", "ws://").replace("https://", "wss://") + f"/{path}"
@@ -296,9 +344,10 @@ async def chat_ws_proxy(
         upstream_url += f"?{query}"
 
     _ws_ssl = _openshell_ssl_context() if upstream_url.startswith("wss://") else None
+    _ws_extra_headers = {"Host": virtual_host} if virtual_host else {}
 
     try:
-        async with websockets.connect(upstream_url, ssl=_ws_ssl) as upstream_ws:
+        async with websockets.connect(upstream_url, ssl=_ws_ssl, additional_headers=_ws_extra_headers) as upstream_ws:
             async def client_to_upstream() -> None:
                 try:
                     while True:

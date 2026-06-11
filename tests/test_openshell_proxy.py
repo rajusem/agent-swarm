@@ -386,8 +386,11 @@ class TestChatHttpProxy:
 
         mock_instance.request.assert_called_once()
         _, call_kwargs = mock_instance.request.call_args
-        assert "agent.openshell.internal" in call_kwargs.get("url", ""), (
-            f"Expected service_url upstream in request URL, got: {call_kwargs}"
+        headers = call_kwargs.get("headers", {})
+        # With gateway URL rewriting, the upstream URL uses the gateway's real
+        # hostname; the virtual host is preserved in the Host header instead.
+        assert "agent.openshell.internal" in headers.get("host", ""), (
+            f"Expected virtual host in Host header, got headers: {headers}"
         )
 
     @pytest.mark.asyncio
@@ -432,6 +435,31 @@ class TestChatHttpProxy:
         mock_instance.request.assert_called_once()
         _, call_kwargs = mock_instance.request.call_args
         assert call_kwargs.get("headers", {}).get("x-opencode-directory") == "/sandbox/"
+
+    @pytest.mark.asyncio
+    async def test_proxy_sets_host_header_for_gateway_routing(self, client):
+        """HTTP proxy sets Host header to the virtual domain for gateway routing."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-test-abc"
+            session_obj.service_url = "https://oriented-lizardfish--agent.openshell.localhost:8080"
+            await db.commit()
+
+        mock_cls, mock_instance = self._make_mock_client()
+        with patch("swarmer.routers.chat_proxy.httpx.AsyncClient", mock_cls):
+            await client.get(f"/workspaces/{ws['id']}/sessions/{s['id']}/chat/api")
+
+        mock_instance.request.assert_called_once()
+        _, call_kwargs = mock_instance.request.call_args
+        headers = call_kwargs.get("headers", {})
+        assert headers.get("host") == "oriented-lizardfish--agent.openshell.localhost:8080", (
+            f"Expected Host header to be set to virtual domain, got: {headers}"
+        )
 
 
 # ===========================================================================
@@ -754,6 +782,65 @@ class TestChatHttpProxyErrors:
         finally:
             settings.openshell_tls_cert = orig_cert
             settings.openshell_tls_key = orig_key
+
+    def test_resolve_upstream_no_gateway_url(self):
+        """When OPENSHELL_GATEWAY_URL is unset, URL is returned unchanged."""
+        from swarmer.routers.chat_proxy import _resolve_upstream
+        from swarmer.config import settings
+
+        orig = settings.openshell_gateway_url
+        try:
+            settings.openshell_gateway_url = ""
+            url, host = _resolve_upstream("https://oriented-lizardfish--agent.openshell.localhost:8080")
+            assert url == "https://oriented-lizardfish--agent.openshell.localhost:8080"
+            assert host == "oriented-lizardfish--agent.openshell.localhost:8080"
+        finally:
+            settings.openshell_gateway_url = orig
+
+    def test_resolve_upstream_rewrites_hostname_to_gateway(self):
+        """When OPENSHELL_GATEWAY_URL is set, hostname is rewritten to gateway's real host."""
+        from swarmer.routers.chat_proxy import _resolve_upstream
+        from swarmer.config import settings
+
+        orig = settings.openshell_gateway_url
+        try:
+            settings.openshell_gateway_url = "openshell-gateway.svc.cluster.local:8080"
+            url, host = _resolve_upstream("https://oriented-lizardfish--agent.openshell.localhost:8080")
+            # URL hostname should now be the gateway's real host
+            assert "openshell-gateway.svc.cluster.local" in url
+            # Virtual host preserved for gateway routing
+            assert host == "oriented-lizardfish--agent.openshell.localhost:8080"
+            # Port is unchanged (already rewritten by expose_service)
+            assert ":8080" in url
+        finally:
+            settings.openshell_gateway_url = orig
+
+    def test_resolve_upstream_gateway_url_with_scheme(self):
+        """OPENSHELL_GATEWAY_URL with grpc:// scheme is handled correctly."""
+        from swarmer.routers.chat_proxy import _resolve_upstream
+        from swarmer.config import settings
+
+        orig = settings.openshell_gateway_url
+        try:
+            settings.openshell_gateway_url = "grpc://openshell-gateway.svc:443"
+            url, host = _resolve_upstream("https://some-sandbox--agent.openshell.localhost:443")
+            assert "openshell-gateway.svc" in url
+            assert host == "some-sandbox--agent.openshell.localhost:443"
+        finally:
+            settings.openshell_gateway_url = orig
+
+    def test_resolve_upstream_sets_host_header_with_port(self):
+        """Host header value includes the port from the service URL."""
+        from swarmer.routers.chat_proxy import _resolve_upstream
+        from swarmer.config import settings
+
+        orig = settings.openshell_gateway_url
+        try:
+            settings.openshell_gateway_url = "gateway.local:17670"
+            _, host = _resolve_upstream("https://sandbox--agent.openshell.localhost:17670")
+            assert host == "sandbox--agent.openshell.localhost:17670"
+        finally:
+            settings.openshell_gateway_url = orig
 
     @pytest.mark.asyncio
     async def test_session_not_running_returns_503(self, client):
