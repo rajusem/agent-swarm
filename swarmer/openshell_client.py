@@ -493,6 +493,146 @@ async def get_draft_chunks(sandbox_name: str, client=None) -> list[dict]:
     return await asyncio.to_thread(_do_fetch)
 
 
+async def approve_chunks_by_id(
+    sandbox_name: str,
+    chunk_ids: list[str],
+    client=None,
+) -> int:
+    """Approve specific draft chunks by their IDs immediately on a running sandbox.
+
+    Used when a user promotes a chunk via the Policy tab while the sandbox is
+    active. Calls ApproveDraftChunk for each supplied chunk ID, merging the rule
+    into the sandbox's active policy without a restart.
+
+    Returns the count of chunks successfully approved. Logs warnings on
+    individual failures but does not raise — the rule is already persisted in
+    the DB and will apply on next launch regardless.
+    """
+    from openshell._proto import openshell_pb2
+
+    if not chunk_ids:
+        return 0
+
+    if client is None:
+        client = _get_client()
+
+    def _do_approve() -> int:
+        approved = 0
+        for chunk_id in chunk_ids:
+            try:
+                client._stub.ApproveDraftChunk(
+                    openshell_pb2.ApproveDraftChunkRequest(
+                        name=sandbox_name, chunk_id=chunk_id
+                    ),
+                    timeout=10,
+                )
+                approved += 1
+            except Exception as exc:
+                log.warning(
+                    "approve_chunks_by_id: failed to approve chunk %s on sandbox %s: %s",
+                    chunk_id, sandbox_name, exc,
+                )
+        return approved
+
+    approved = await asyncio.to_thread(_do_approve)
+    if approved:
+        log.info(
+            "sandbox %s: live-applied %d/%d chunk(s) from Policy tab",
+            sandbox_name, approved, len(chunk_ids),
+        )
+        await asyncio.sleep(1)  # let supervisor apply the new policy
+    return approved
+
+
+async def undo_chunks_by_rule_name(
+    sandbox_name: str,
+    rule_names: list[str],
+    chunk_ids: list[str] | None = None,
+    client=None,
+) -> int:
+    """Undo (revoke) approved draft chunks for the given rule names on a running sandbox.
+
+    When a user deletes a Net Rule via the Policy tab while the sandbox is
+    active, this removes the rule from the sandbox's active policy immediately.
+
+    Strategy:
+    1. If ``chunk_ids`` are provided (stored at promote-time), call UndoDraftChunk
+       directly by ID — fast and precise.
+    2. Otherwise, call GetDraftHistory to find approved chunk IDs by rule_name,
+       then call UndoDraftChunk on each. This handles rules promoted in earlier
+       sessions or before chunk_id tracking was added.
+    3. If no chunk is found via either path, the rule was baked into the
+       startup policy (not approved via draft mechanism) and cannot be revoked
+       live — caller receives 0 and should inform the user it takes effect on
+       next launch.
+
+    Returns the count of chunks successfully undone.
+    """
+    from openshell._proto import openshell_pb2
+
+    if not rule_names:
+        return 0
+
+    if client is None:
+        client = _get_client()
+
+    def _do_undo() -> int:
+        ids_to_undo: list[str] = list(chunk_ids or [])
+
+        # If no IDs supplied, look them up from draft history by rule_name.
+        if not ids_to_undo:
+            rule_name_set = set(rule_names)
+            try:
+                history = client._stub.GetDraftHistory(
+                    openshell_pb2.GetDraftHistoryRequest(name=sandbox_name),
+                    timeout=10,
+                )
+                for entry in history.chunks:
+                    if entry.rule_name in rule_name_set and entry.status == "approved":
+                        ids_to_undo.append(entry.id)
+            except Exception as exc:
+                log.warning(
+                    "undo_chunks_by_rule_name: GetDraftHistory failed for %s: %s",
+                    sandbox_name, exc,
+                )
+                return 0
+
+        if not ids_to_undo:
+            # Rule was part of startup policy — cannot revoke live.
+            log.info(
+                "sandbox %s: rule(s) %s were baked into startup policy; "
+                "revocation will take effect on next launch",
+                sandbox_name, rule_names,
+            )
+            return 0
+
+        undone = 0
+        for chunk_id in ids_to_undo:
+            try:
+                client._stub.UndoDraftChunk(
+                    openshell_pb2.UndoDraftChunkRequest(
+                        name=sandbox_name, chunk_id=chunk_id
+                    ),
+                    timeout=10,
+                )
+                undone += 1
+            except Exception as exc:
+                log.warning(
+                    "undo_chunks_by_rule_name: failed to undo chunk %s on sandbox %s: %s",
+                    chunk_id, sandbox_name, exc,
+                )
+        return undone
+
+    undone = await asyncio.to_thread(_do_undo)
+    if undone:
+        log.info(
+            "sandbox %s: live-revoked %d/%d chunk(s) from Policy tab delete",
+            sandbox_name, undone, len(rule_names),
+        )
+        await asyncio.sleep(1)  # let supervisor apply the policy change
+    return undone
+
+
 async def import_provider_profiles(profiles: list[dict], client=None) -> None:
     """Import custom provider type profiles into the gateway (idempotent)."""
     from openshell._proto import openshell_pb2

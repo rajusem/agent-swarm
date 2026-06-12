@@ -2543,3 +2543,272 @@ class TestPolicyRulesEndpoints:
         assert "added" in html
         assert 'class="policy-chunk-cb"' in html
 
+
+# ---------------------------------------------------------------------------
+# Live policy apply / revoke tests (ACM-35281)
+# ---------------------------------------------------------------------------
+
+class TestPolicyRulesLiveApplyRevoke:
+    """Verify live apply (add) and live revoke (delete) of Net Rules on running sandboxes."""
+
+    @pytest.mark.asyncio
+    async def test_add_chunk_live_applies_to_running_sandbox(self, client):
+        """Promoting a chunk while sandbox is active calls approve_chunks_by_id."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        # Put session in running state with a sandbox.
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='live-sb-1', phase='running' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        chunk = {
+            "id": "chunk-live-1",
+            "status": "pending",
+            "rule_name": "allow-vuln-go-dev-443",
+            "endpoints": [{"host": "vuln.go.dev", "port": 443, "protocol": "rest"}],
+            "binaries": [{"path": "/usr/local/go/bin/govulncheck", "harness": True}],
+        }
+
+        with patch("swarmer.openshell_client.approve_chunks_by_id", new=AsyncMock(return_value=1)) as mock_approve:
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/add",
+                data={"chunk": _j.dumps(chunk)},
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["added"] == 1
+        assert trigger["policyChanged"]["live_applied"] is True
+
+        # approve_chunks_by_id should have been called with the sandbox name and chunk ID.
+        mock_approve.assert_awaited_once()
+        call_args = mock_approve.call_args
+        assert call_args[0][0] == "live-sb-1"
+        assert "chunk-live-1" in call_args[0][1]
+
+        # The chunk_id should be persisted alongside the rule for future undo.
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+        rules = _j.loads(sess.custom_policies)
+        assert rules[0]["chunk_id"] == "chunk-live-1"
+
+    @pytest.mark.asyncio
+    async def test_add_chunk_no_live_apply_when_sandbox_not_active(self, client):
+        """Promoting a chunk when sandbox is idle does not call approve_chunks_by_id."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        chunk = {
+            "id": "chunk-idle-1",
+            "status": "pending",
+            "rule_name": "allow-idle-rule",
+            "endpoints": [{"host": "example.com", "port": 443, "protocol": "rest"}],
+            "binaries": [],
+        }
+
+        with patch("swarmer.openshell_client.approve_chunks_by_id", new=AsyncMock(return_value=0)) as mock_approve:
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/add",
+                data={"chunk": _j.dumps(chunk)},
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["added"] == 1
+        assert trigger["policyChanged"]["live_applied"] is False
+        mock_approve.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_add_chunk_live_apply_failure_does_not_rollback_db(self, client):
+        """If approve_chunks_by_id raises, the rule is still persisted in the DB."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        async with _TestSession() as db:
+            await db.execute(
+                text("UPDATE sessions SET sandbox_name='live-sb-fail', phase='running' WHERE id=:id"),
+                {"id": s["id"]},
+            )
+            await db.commit()
+
+        chunk = {
+            "id": "chunk-fail-1",
+            "status": "pending",
+            "rule_name": "allow-fail-rule",
+            "endpoints": [{"host": "fail.example.com", "port": 443, "protocol": "rest"}],
+            "binaries": [],
+        }
+
+        with patch("swarmer.openshell_client.approve_chunks_by_id", new=AsyncMock(side_effect=Exception("grpc error"))):
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/add",
+                data={"chunk": _j.dumps(chunk)},
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["added"] == 1
+        assert trigger["policyChanged"]["live_applied"] is False
+
+        # Rule must be persisted despite the gateway error.
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+        rules = _j.loads(sess.custom_policies)
+        assert len(rules) == 1
+        assert rules[0]["name"] == "allow-fail-rule"
+
+    @pytest.mark.asyncio
+    async def test_delete_rule_live_revokes_from_running_sandbox(self, client):
+        """Deleting a Net Rule while sandbox is active calls undo_chunks_by_rule_name."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        # Pre-populate a rule that was live-applied (has chunk_id stored).
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+            sess.sandbox_name = "live-sb-2"
+            sess.phase = "running"
+            sess.custom_policies = _j.dumps([
+                {
+                    "name": "allow-vuln-go-dev-443",
+                    "endpoints": [{"host": "vuln.go.dev", "port": 443}],
+                    "binaries": [],
+                    "source": "chunk",
+                    "added_at": "2026-01-01T00:00:00+00:00",
+                    "chunk_id": "chunk-undo-1",
+                }
+            ])
+            await db.commit()
+
+        with patch("swarmer.openshell_client.undo_chunks_by_rule_name", new=AsyncMock(return_value=1)) as mock_undo:
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/0/delete"
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["deleted"] == 1
+        assert trigger["policyChanged"]["live_revoked"] is True
+
+        # undo_chunks_by_rule_name should have been called with the sandbox name,
+        # rule name, and the stored chunk_id.
+        mock_undo.assert_awaited_once()
+        call_args = mock_undo.call_args
+        assert call_args[0][0] == "live-sb-2"
+        assert call_args[1].get("rule_names") == ["allow-vuln-go-dev-443"] or \
+               call_args[0][1] == ["allow-vuln-go-dev-443"]
+        assert "chunk-undo-1" in (call_args[1].get("chunk_ids") or [])
+
+    @pytest.mark.asyncio
+    async def test_delete_rule_no_revoke_when_sandbox_not_active(self, client):
+        """Deleting a Net Rule when sandbox is idle does not call undo_chunks_by_rule_name."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"])
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+            sess.custom_policies = _j.dumps([
+                {"name": "rule-a", "endpoints": [], "binaries": [], "source": "chunk",
+                 "added_at": "2026-01-01", "chunk_id": "chunk-x"}
+            ])
+            await db.commit()
+
+        with patch("swarmer.openshell_client.undo_chunks_by_rule_name", new=AsyncMock(return_value=0)) as mock_undo:
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/0/delete"
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["deleted"] == 1
+        assert trigger["policyChanged"]["live_revoked"] is False
+        mock_undo.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_rule_live_revoke_failure_still_removes_from_db(self, client):
+        """If undo_chunks_by_rule_name raises, the rule is still removed from the DB."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+            sess.sandbox_name = "live-sb-fail2"
+            sess.phase = "running"
+            sess.custom_policies = _j.dumps([
+                {"name": "rule-b", "endpoints": [], "binaries": [], "source": "chunk",
+                 "added_at": "2026-01-01", "chunk_id": "chunk-fail-2"}
+            ])
+            await db.commit()
+
+        with patch("swarmer.openshell_client.undo_chunks_by_rule_name", new=AsyncMock(side_effect=Exception("grpc error"))):
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/0/delete"
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["deleted"] == 1
+        assert trigger["policyChanged"]["live_revoked"] is False
+
+        # Rule must be removed from DB despite the gateway error.
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+        rules = _j.loads(sess.custom_policies)
+        assert len(rules) == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_startup_rule_returns_live_revoked_false(self, client):
+        """A rule without a chunk_id (baked into startup policy) returns live_revoked=False
+        because UndoDraftChunk cannot affect startup-policy rules."""
+        import json as _j
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session
+            from sqlalchemy import select
+            sess = (await db.execute(select(Session).where(Session.id == s["id"]))).scalar_one()
+            sess.sandbox_name = "live-sb-startup"
+            sess.phase = "running"
+            # No chunk_id — simulates a rule from custom_policies baked at launch.
+            sess.custom_policies = _j.dumps([
+                {"name": "startup-rule", "endpoints": [], "binaries": [], "source": "chunk",
+                 "added_at": "2026-01-01"}
+            ])
+            await db.commit()
+
+        # undo_chunks_by_rule_name returns 0 when chunk not found in history.
+        with patch("swarmer.openshell_client.undo_chunks_by_rule_name", new=AsyncMock(return_value=0)) as mock_undo:
+            resp = await client.post(
+                f"/workspaces/{ws['id']}/sessions/{s['id']}/policy-rules/0/delete"
+            )
+
+        assert resp.status_code == 200
+        trigger = _j.loads(resp.headers.get("hx-trigger", "{}"))
+        assert trigger["policyChanged"]["deleted"] == 1
+        assert trigger["policyChanged"]["live_revoked"] is False
+        # Was called but returned 0 (startup rule, not in draft history).
+        mock_undo.assert_awaited_once()
+
