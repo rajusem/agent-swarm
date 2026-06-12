@@ -101,13 +101,18 @@ async def _collect_orphaned_sandboxes(db) -> None:
     if not live_names:
         return
 
-    # Skip GC entirely if any session is pending (mid-setup: sandbox may exist but
-    # sandbox_name not yet committed to DB — deleting it would corrupt the setup).
+    # Skip GC entirely if any session is pending AND has a sandbox_name already set
+    # (mid-setup: sandbox exists but sandbox_name not yet committed to DB — deleting
+    # it would corrupt the setup). Sessions pending with sandbox_name=NULL are stale
+    # and are handled by the stale-running pass below; they must not block GC.
     pending_result = await db.execute(
-        select(Session.id).where(Session.phase == "pending").limit(1)
+        select(Session.id).where(
+            Session.phase == "pending",
+            Session.sandbox_name.is_not(None),
+        ).limit(1)
     )
     if pending_result.scalar_one_or_none() is not None:
-        log.debug("sandbox-gc: skipping — pending session in progress")
+        log.debug("sandbox-gc: skipping — pending session with sandbox in progress")
         return
 
     # Collect all sessions with a sandbox_name, split by whether they are active or
@@ -214,15 +219,13 @@ async def _collect_orphaned_sandboxes(db) -> None:
         if db_dirty:
             await db.commit()
 
-    # --- Stale running with no sandbox_name: sessions stuck in "running" with
-    # sandbox_name=NULL have no recoverable sandbox — move them to "stopped".
-    # Only "running" is caught here; "pending" sessions are mid-setup and may not
-    # yet have sandbox_name written — the pending guard above already skips GC
-    # entirely when any session is pending, so this path is only reached when
-    # there are no pending sessions.
+    # --- Stale running/pending with no sandbox_name: sessions stuck in "running" or
+    # "pending" with sandbox_name=NULL have no recoverable sandbox — move to "stopped".
+    # The pending guard above only skips GC when a pending session *has* a sandbox_name
+    # (genuinely mid-setup), so pending+NULL sessions reach this path safely.
     stale_result = await db.execute(
         select(Session).where(
-            Session.phase == "running",
+            Session.phase.in_(("running", "pending")),
             Session.sandbox_name.is_(None),
         )
     )
