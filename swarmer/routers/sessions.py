@@ -1768,12 +1768,18 @@ async def session_policy_rules_add(
             if merged:
                 added += 1
         else:
+            chunk_id = chunk.get("id") or ""
             existing.append({
                 "name": rule_name,
                 "endpoints": new_eps,
                 "binaries": new_bins,
                 "source": "chunk",
                 "added_at": now_iso,
+                # Store the chunk ID so live-revoke (delete path) can call
+                # UndoDraftChunk directly without a GetDraftHistory lookup.
+                # Empty string means the rule was merged into an existing entry
+                # or the ID was unavailable; revoke falls back to history lookup.
+                "chunk_id": chunk_id,
             })
             existing_by_name[rule_name] = existing[-1]
             added += 1
@@ -1781,7 +1787,32 @@ async def session_policy_rules_add(
     if added:
         session.custom_policies = _j.dumps(existing)
         await db.commit()
-        trigger_val = _j.dumps({"policyChanged": {"added": added}})
+
+        # Live-apply to running sandbox: approve the draft chunks immediately
+        # so new network rules take effect without a session restart.
+        live_applied = False
+        if session.sandbox_name and session.is_active:
+            import swarmer.openshell_client as _oc
+            # Collect chunk IDs for newly-promoted rules (may be empty strings
+            # for binary-merge updates — those were already approved earlier).
+            chunk_ids = [
+                chunk.get("id", "")
+                for raw in selected_raw
+                for chunk in [(_j.loads(raw) if isinstance(raw, str) else raw)]
+                if chunk.get("id")
+            ]
+            if chunk_ids:
+                try:
+                    n = await _oc.approve_chunks_by_id(session.sandbox_name, chunk_ids)
+                    live_applied = n > 0
+                except Exception as exc:
+                    log.warning(
+                        "session %d: live-apply to sandbox %s failed (rule persisted, "
+                        "will apply on next launch): %s",
+                        sid, session.sandbox_name, exc,
+                    )
+
+        trigger_val = _j.dumps({"policyChanged": {"added": added, "live_applied": live_applied}})
         return HTMLResponse("", headers={"HX-Trigger": trigger_val})
 
     # Nothing added — either no checkboxes were submitted or all were duplicates.
@@ -1816,13 +1847,45 @@ async def session_policy_rules_delete(
             pass
 
     deleted = False
+    live_revoked = False
+    deleted_rule: dict | None = None
     if 0 <= idx < len(rules):
-        rules.pop(idx)
+        deleted_rule = rules.pop(idx)
         session.custom_policies = _j.dumps(rules)
         await db.commit()
         deleted = True
 
-    trigger_val = _j.dumps({"policyChanged": {"deleted": 1 if deleted else 0}})
+    # Live-revoke from running sandbox: undo the approved draft chunk so the
+    # rule is removed from the active policy without requiring a restart.
+    # Only possible for rules that were approved via the draft mechanism during
+    # this sandbox session. Rules baked into the startup policy cannot be
+    # revoked live; the caller is informed via live_revoked=False.
+    if deleted and deleted_rule and session.sandbox_name and session.is_active:
+        import swarmer.openshell_client as _oc
+        rule_name = deleted_rule.get("name", "")
+        # Use stored chunk_id if available (fast path); fall back to history lookup.
+        stored_chunk_id = deleted_rule.get("chunk_id", "")
+        chunk_ids = [stored_chunk_id] if stored_chunk_id else []
+        try:
+            n = await _oc.undo_chunks_by_rule_name(
+                session.sandbox_name,
+                rule_names=[rule_name],
+                chunk_ids=chunk_ids or None,
+            )
+            live_revoked = n > 0
+        except Exception as exc:
+            log.warning(
+                "session %d: live-revoke of rule '%s' from sandbox %s failed "
+                "(rule removed from DB, will not apply on next launch): %s",
+                sid, rule_name, session.sandbox_name, exc,
+            )
+
+    trigger_val = _j.dumps({
+        "policyChanged": {
+            "deleted": 1 if deleted else 0,
+            "live_revoked": live_revoked,
+        }
+    })
     return HTMLResponse("", headers={"HX-Trigger": trigger_val})
 
 
