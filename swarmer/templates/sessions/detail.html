@@ -20,24 +20,22 @@
     background: none;
   }
   .launch-pill-green {
-    background-color: var(--pf-t--global--color--status--success--default);
-    color: #111;
-    border-color: var(--pf-t--global--color--status--success--default);
+    --pf-v6-c-label--BackgroundColor: var(--pf-t--global--color--status--success--default);
+    --pf-v6-c-label--Color: #111;
   }
   .launch-pill-green:hover {
-    background-color: var(--pf-t--global--color--status--success--hover, #1e7e34);
-    border-color: var(--pf-t--global--color--status--success--hover, #1e7e34);
-    color: #333;
+    --pf-v6-c-label--BackgroundColor: var(--pf-t--global--color--status--success--hover, #1e7e34);
+    --pf-v6-c-label--Color: #333;
   }
   .launch-pill-muted {
-    background-color: #2d2d2d;
-    color: #ccc;
-    border-color: var(--pf-t--global--color--status--success--default);
+    --pf-v6-c-label--BackgroundColor: #2d2d2d;
+    --pf-v6-c-label--Color: #ccc;
+    --pf-v6-c-label--BorderWidth: var(--pf-t--global--border--width--action--default);
+    --pf-v6-c-label--BorderColor: var(--pf-t--global--color--status--success--default);
   }
   .launch-pill-muted:hover {
-    background-color: #2d2d2d;
-    border-color: var(--pf-t--global--color--status--success--hover, #1e7e34);
-    color: #fff;
+    --pf-v6-c-label--BorderColor: var(--pf-t--global--color--status--success--hover, #1e7e34);
+    --pf-v6-c-label--Color: #fff;
   }
   .agent-pill-oc               { background: #2d2d2d; }
   .agent-pill-crush            { background: #1a1a2e; color: #56b6c2; letter-spacing: 0.05em; }
@@ -120,7 +118,9 @@
     <form method="post"
           action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/stop">
       <button type="submit" id="launch-stop-btn"
-              class="pf-v6-c-button pf-m-small pf-m-warning">&#9632; Stop</button>
+              class="pf-v6-c-label pf-m-warning" style="cursor:pointer; font-family:inherit; font-weight:700;">
+        <span class="pf-v6-c-label__content">&#9632; Stop</span>
+      </button>
     </form>
   </div>
 
@@ -128,15 +128,21 @@
   <div id="launch-pills" style="display:{% if session.is_active %}none{% else %}flex{% endif %}; gap:var(--pf-t--global--spacer--sm); align-items:center;">
     <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
       <input type="hidden" name="mode" value="tui">
-        <button type="submit" class="pf-v6-c-button pf-m-small launch-pill-green" style="font-weight:700;">&#9654; TUI</button>
+      <button type="submit" class="pf-v6-c-label launch-pill-green" style="cursor:pointer; font-family:inherit; font-weight:700;">
+        <span class="pf-v6-c-label__content">&#9654; TERM.UI</span>
+      </button>
     </form>
     <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
       <input type="hidden" name="mode" value="server">
-        <button type="submit" class="pf-v6-c-button pf-m-small launch-pill-green" style="font-weight:700;">&#9654; CHAT</button>
+      <button type="submit" class="pf-v6-c-label launch-pill-green" style="cursor:pointer; font-family:inherit; font-weight:700;">
+        <span class="pf-v6-c-label__content">&#9654; CHAT</span>
+      </button>
     </form>
     <form method="post" action="/workspaces/{{ ws.id }}/sessions/{{ session.id }}/launch">
       <input type="hidden" name="mode" value="prompt">
-        <button type="submit" class="pf-v6-c-button pf-m-small launch-pill-muted" style="font-weight:700;">&#9654; PROMPT</button>
+      <button type="submit" class="pf-v6-c-label launch-pill-muted" style="cursor:pointer; font-family:inherit; font-weight:700;">
+        <span class="pf-v6-c-label__content">&#9654; PROMPT</span>
+      </button>
     </form>
   </div>
 
