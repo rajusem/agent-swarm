@@ -668,7 +668,7 @@ async def write_agent_config(
     config_json: str,
     client=None,
 ) -> None:
-    """Write agent config JSON to /sandbox/{tool_name}.json (CWD config, read by agent at startup).
+    """Write agent config JSON to /sandbox/{tool_name}.json, passed via --config at startup.
 
     Uses stdin to deliver file content so the gateway's no-newline-in-args
     restriction is never hit.
@@ -681,10 +681,9 @@ async def write_agent_config(
         dest = shlex.quote("/sandbox/.config/crush/crush.json")
         script = f"mkdir -p /sandbox/.config/crush && cat > {dest}"
     else:
-        # Write directly to /sandbox/<tool>.json — OpenCode reads config from CWD,
-        # and also overwrites the broken LSP config shipped in the container image
-        # (missing required 'extensions' field).
-        dest = shlex.quote(f"/sandbox/{tool_name}.json")
+        # Write to /sandbox/opencode.json — passed explicitly via --config so
+        # OpenCode loads it regardless of HOME or working directory.
+        dest = shlex.quote("/sandbox/opencode.json")
         script = f"cat > {dest}"
 
     def _do_write(s=sid):
@@ -726,7 +725,12 @@ async def start_agent(
     env: dict[str, str] | None = None,
     client=None,
 ) -> None:
-    """Start the agent as a detached background process so exec() returns immediately."""
+    """Start the agent as a detached background process so exec() returns immediately.
+
+    Uses workdir="/sandbox" on the ExecSandboxRequest — identical to how
+    exec_interactive sets workdir for TUI sessions — so the agent process starts
+    in the correct directory without relying on a shell-level cd.
+    """
     if client is None:
         client = _get_client()
     sid = await _sandbox_id(sandbox_name, client)
@@ -735,7 +739,7 @@ async def start_agent(
     bg_cmd = ["sh", "-c", f"nohup {shell_cmd} >/sandbox/.agent.log 2>&1 &"]
 
     def _do_start(s=sid):
-        client.exec(s, bg_cmd, env=env or {})
+        client.exec(s, bg_cmd, env=env or {}, workdir="/sandbox")
 
     await asyncio.to_thread(_do_start)
 

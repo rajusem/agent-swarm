@@ -754,6 +754,39 @@ class TestDoLaunchOpenshell:
         assert data["status_detail"] == "", f"Expected empty status_detail, got: {data['status_detail']!r}"
         assert data["phase"] == "pending"
 
+    @pytest.mark.asyncio
+    async def test_opencode_config_env_var_injected_in_launch(self, client):
+        """OPENCODE_CONFIG env var must be /sandbox/opencode.json for OpenCode sessions.
+
+        OpenCode has no --config CLI flag; the config path is passed via the
+        OPENCODE_CONFIG environment variable instead.
+        """
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server")
+
+        captured_env: dict = {}
+
+        patches = self._patch_openshell()
+        with patches["create_provider"] as mock_provider, \
+             patches["ensure_provider"], patches["configure_provider_credential"], \
+             patches["attach_sandbox_provider"], patches["create_sandbox"], \
+             patches["write_agent_config"], patches["write_agents_md"], \
+             patches["exec_command"], patches["start_agent"], patches["delete_sandbox"], \
+             patches["build_policy"], patches["run_agent"], patches["setup_sandbox"] as mock_setup:
+            mock_provider.return_value = {}
+
+            def _capture_setup(**kwargs):
+                captured_env.update(kwargs.get("env_vars", {}))
+
+            mock_setup.side_effect = _capture_setup
+            await client.post(
+                f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/launch"
+            )
+
+        assert captured_env.get("OPENCODE_CONFIG") == "/sandbox/opencode.json", (
+            f"Expected OPENCODE_CONFIG=/sandbox/opencode.json in env_vars, got: {captured_env}"
+        )
+
 
 # ===========================================================================
 # 3. Session stop: sandbox deletion
@@ -1819,7 +1852,7 @@ class TestCrushOpenshellSetup:
 
     @pytest.mark.asyncio
     async def test_write_agent_config_opencode_path_unchanged(self):
-        """write_agent_config for opencode writes to /sandbox/opencode.json (no regression)."""
+        """write_agent_config for opencode writes to /sandbox/opencode.json (passed via --config)."""
         from swarmer.openshell_client import write_agent_config
 
         captured: list[list] = []

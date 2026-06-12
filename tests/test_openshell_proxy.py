@@ -412,11 +412,12 @@ class TestChatHttpProxy:
 
         mock_instance.request.assert_called_once()
         _, call_kwargs = mock_instance.request.call_args
-        assert call_kwargs.get("headers", {}).get("x-opencode-directory") == "/sandbox/"
+        # No repos on this session → fallback to /sandbox
+        assert call_kwargs.get("headers", {}).get("x-opencode-directory") == "/sandbox"
 
     @pytest.mark.asyncio
     async def test_proxy_always_sets_sandbox_directory(self, client):
-        """All sessions use /sandbox/ — legacy /workspace header is no longer sent."""
+        """All sessions use /sandbox (or /sandbox/{repo}) — legacy /workspace header is no longer sent."""
         ws = await _create_workspace(client)
         s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
 
@@ -434,7 +435,8 @@ class TestChatHttpProxy:
 
         mock_instance.request.assert_called_once()
         _, call_kwargs = mock_instance.request.call_args
-        assert call_kwargs.get("headers", {}).get("x-opencode-directory") == "/sandbox/"
+        # No repos on this session → fallback to /sandbox
+        assert call_kwargs.get("headers", {}).get("x-opencode-directory") == "/sandbox"
 
     @pytest.mark.asyncio
     async def test_proxy_sets_host_header_for_gateway_routing(self, client):
@@ -862,7 +864,235 @@ class TestChatHttpProxyErrors:
 
 
 # ===========================================================================
-# 5. TUI WebSocket — OpenShell path (unit-level)
+# 5. OpenCode root /chat path proxies native UI; Crush keeps template
+# ===========================================================================
+
+
+class TestOpenCodeRootProxied:
+    """The /chat root path for OpenCode sessions proxies to the native UI."""
+
+    def _make_mock_client(self, status=200, content=b"<html><head></head></html>", content_type="text/html"):
+        import httpx as _httpx
+        mock_resp = MagicMock()
+        mock_resp.status_code = status
+        mock_resp.content = content
+        mock_resp.headers = _httpx.Headers({"content-type": content_type})
+
+        mock_instance = AsyncMock()
+        mock_instance.request = AsyncMock(return_value=mock_resp)
+
+        mock_cls = MagicMock()
+        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        return mock_cls, mock_instance
+
+    @pytest.mark.asyncio
+    async def test_opencode_root_proxies_to_upstream(self, client):
+        """OpenCode /chat root path is proxied to the OpenCode server, not a Swarmer template."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-test-abc"
+            session_obj.service_url = "http://agent.openshell.internal:4096"
+            await db.commit()
+
+        mock_cls, mock_instance = self._make_mock_client()
+        with patch("swarmer.routers.chat_proxy.httpx.AsyncClient", mock_cls):
+            resp = await client.get(f"/workspaces/{ws['id']}/sessions/{s['id']}/chat")
+
+        # Upstream was called (proxy forwarded the request)
+        mock_instance.request.assert_called_once()
+        # The upstream URL should target port 4096 at the root path (empty suffix after base).
+        # _resolve_upstream may rewrite the hostname via OPENSHELL_GATEWAY_URL, but the
+        # port and empty path must be preserved.
+        _, call_kwargs = mock_instance.request.call_args
+        url = call_kwargs.get("url", "")
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        assert parsed.port == 4096, f"Expected port 4096 in upstream URL, got: {url}"
+        # path must be empty / root — no sub-path appended
+        assert parsed.path in ("", "/"), f"Expected root path in upstream URL, got: {url}"
+
+    @pytest.mark.asyncio
+    async def test_opencode_root_does_not_serve_swarmer_template(self, client):
+        """OpenCode /chat root response is NOT the Swarmer opencode_chat.html template."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-test-abc"
+            session_obj.service_url = "http://agent.openshell.internal:4096"
+            await db.commit()
+
+        upstream_content = b"<html><head></head><body>OpenCode Native UI</body></html>"
+        mock_cls, _ = self._make_mock_client(content=upstream_content)
+        with patch("swarmer.routers.chat_proxy.httpx.AsyncClient", mock_cls):
+            resp = await client.get(f"/workspaces/{ws['id']}/sessions/{s['id']}/chat")
+
+        # Should not contain Swarmer-specific template markers
+        assert b"opencode_chat" not in resp.content
+        assert b"PatternFly" not in resp.content
+
+    @pytest.mark.asyncio
+    async def test_crush_root_still_serves_swarmer_template(self, client):
+        """Crush /chat root still renders the Swarmer crush_chat.html template."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="crush")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-test-abc"
+            session_obj.service_url = "http://agent.openshell.internal:4096"
+            await db.commit()
+
+        with patch("swarmer.routers.chat_proxy.httpx.AsyncClient") as mock_cls:
+            resp = await client.get(f"/workspaces/{ws['id']}/sessions/{s['id']}/chat")
+
+        # Crush root must NOT call the upstream proxy
+        mock_cls.assert_not_called()
+        # Response should be the Swarmer template (HTML rendered by FastAPI)
+        assert resp.status_code == 200
+        assert b"text/html" in resp.headers.get("content-type", "").encode()
+
+
+# ===========================================================================
+# 6. _restart_server_sessions() startup reconciliation
+# ===========================================================================
+
+
+class TestRestartServerSessions:
+    """Startup reconciliation re-connects server-mode sessions after Swarmer restart."""
+
+    @pytest.mark.asyncio
+    async def test_live_sandbox_refreshes_service_url(self, client):
+        """A server-mode session with a live sandbox gets a fresh service_url."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-abc"
+            session_obj.service_url = "http://old-service-url:4096"
+            await db.commit()
+
+        fresh_url = "http://new-service-url:4096"
+
+        with (
+            patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=["sandbox-abc"])),
+            patch("swarmer.openshell_client.expose_service", new=AsyncMock(return_value=fresh_url)),
+            patch("swarmer.database.get_db", new=_override_get_db),
+        ):
+            from swarmer.main import _restart_server_sessions
+            await _restart_server_sessions()
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            assert session_obj.phase == "running"
+            assert session_obj.service_url == fresh_url
+
+    @pytest.mark.asyncio
+    async def test_dead_sandbox_stops_session(self, client):
+        """A server-mode session whose sandbox is gone is moved to stopped."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-gone"
+            session_obj.service_url = "http://dead:4096"
+            await db.commit()
+
+        with (
+            patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=[])),
+            patch("swarmer.database.get_db", new=_override_get_db),
+        ):
+            from swarmer.main import _restart_server_sessions
+            await _restart_server_sessions()
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            assert session_obj.phase == "stopped"
+            assert session_obj.sandbox_name is None
+            assert session_obj.service_url is None
+
+    @pytest.mark.asyncio
+    async def test_list_sandboxes_failure_is_safe(self, client):
+        """If list_sandboxes fails, sessions are left unchanged (safe degradation)."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="server", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-abc"
+            session_obj.service_url = "http://service:4096"
+            await db.commit()
+
+        with (
+            patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(side_effect=Exception("gateway down"))),
+            patch("swarmer.database.get_db", new=_override_get_db),
+        ):
+            from swarmer.main import _restart_server_sessions
+            await _restart_server_sessions()
+
+        # Session must be unchanged — no DB writes on gateway failure
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            assert session_obj.phase == "running"
+            assert session_obj.service_url == "http://service:4096"
+
+    @pytest.mark.asyncio
+    async def test_prompt_mode_sessions_are_not_touched(self, client):
+        """Prompt-mode sessions are not processed by _restart_server_sessions."""
+        ws = await _create_workspace(client)
+        s = await _create_session(client, ws["id"], mode="prompt", agent_tool="opencode")
+
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            session_obj.phase = "running"
+            session_obj.sandbox_name = "sandbox-prompt"
+            session_obj.service_url = None
+            await db.commit()
+
+        mock_expose = AsyncMock()
+        with (
+            patch("swarmer.openshell_client.list_sandboxes", new=AsyncMock(return_value=[])),
+            patch("swarmer.openshell_client.expose_service", new=mock_expose),
+            patch("swarmer.database.get_db", new=_override_get_db),
+        ):
+            from swarmer.main import _restart_server_sessions
+            await _restart_server_sessions()
+
+        # expose_service must never be called for prompt-mode sessions
+        mock_expose.assert_not_called()
+
+        # Session phase untouched (prompt-mode sessions are handled by _restart_prompt_pollers)
+        async with _TestSession() as db:
+            from swarmer.models.session import Session as _Session
+            session_obj = await db.get(_Session, s["id"])
+            assert session_obj.phase == "running"
+
+
+# ===========================================================================
+# 7. TUI WebSocket — OpenShell path (unit-level)
 # ===========================================================================
 
 

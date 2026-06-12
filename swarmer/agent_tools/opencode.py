@@ -83,9 +83,6 @@ class OpenCodeStrategy(AgentToolStrategy):
             "rm -rf /workspace/.local/share/opencode && "
             "ln -sf /workspace/.opencode /workspace/.local/share/opencode && "
             "find /workspace/.opencode -name '*.db-wal' -o -name '*.db-shm' | xargs rm -f 2>/dev/null; "
-            "[ -n \"$GOOGLE_API_KEY\" ] && "
-            "printf '{\"google\":{\"type\":\"api\",\"key\":\"%s\"}}' \"$GOOGLE_API_KEY\" "
-            "> /workspace/.opencode/auth.json; "
         )
 
     def build_model_setup_cmd(self, model: str) -> str:

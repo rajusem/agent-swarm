@@ -109,23 +109,16 @@ async def _run_openshell_tui(
         await websocket.close(code=4004, reason="Sandbox lookup failed")
         return
 
-    # Fetch provider-injected env vars (e.g. JIRA_ACCESS_TOKEN as opaque ref token)
-    # and plain env vars from spec.environment (e.g. JIRA_SERVER_URL, JIRA_EMAIL).
-    # These are not forwarded to ad-hoc exec calls by the gateway, so we inject them
-    # explicitly so they're visible in the TUI shell.
+    # Inject workspace extra env vars (arbitrary key-value pairs stored in DB).
+    # Provider vars (GOOGLE_API_KEY, JIRA_ACCESS_TOKEN, GH_TOKEN etc.) are attached
+    # as providers at sandbox creation and are already in the sandbox environment —
+    # they are inherited by exec calls without explicit injection.
     tui_env: dict[str, str] = {}
-    try:
-        provider_env = await openshell_client.get_sandbox_provider_environment(sandbox_id)
-        tui_env.update(provider_env)
-    except Exception:
-        pass
     try:
         from sqlalchemy import select as _sa_select
         from swarmer.database import get_db as _get_db
         from swarmer.models.sandbox_env_var import SandboxEnvVar
-        from swarmer.routers.mcp_servers import get_enabled_mcp_servers
         async for db in _get_db():
-            # Workspace env vars from DB (encrypted at rest; decrypt here)
             _ev_result = await db.execute(
                 _sa_select(SandboxEnvVar).where(
                     SandboxEnvVar.workspace_id == session.workspace_id
@@ -133,17 +126,13 @@ async def _run_openshell_tui(
             )
             for ev_row in _ev_result.scalars().all():
                 tui_env[ev_row.key] = ev_row.value
-            # Non-secret MCP config (URL, email; token goes via provider env above)
-            mcp_servers = await get_enabled_mcp_servers(session.workspace_id, db)
-            for mcp in mcp_servers:
-                if "jira" in getattr(mcp, "slug", ""):
-                    if mcp.jira_server_url:
-                        tui_env["JIRA_SERVER_URL"] = mcp.jira_server_url
-                    if mcp.jira_email:
-                        tui_env["JIRA_EMAIL"] = mcp.jira_email
             break
     except Exception:
         log.warning("TUI: failed to load workspace env vars for session %d", session.id, exc_info=True)
+    # Point OpenCode at the config file written at sandbox setup time.
+    # OPENCODE_CONFIG is the env-var equivalent of --config (there is no CLI flag).
+    if session.agent_tool == "opencode":
+        tui_env["OPENCODE_CONFIG"] = "/sandbox/opencode.json"
 
     command = ["sh", "-c", tui_shell]
 
