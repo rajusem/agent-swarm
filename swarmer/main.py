@@ -62,6 +62,12 @@ _OPENSHELL_CUSTOM_PROFILES = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure logging first so all startup messages are captured at the right level.
+    # LOG_LEVEL env var (or .env) controls verbosity: DEBUG, INFO, WARNING, ERROR.
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
     # Crypto must be initialised before any DB access (model properties call decrypt)
     init_crypto(settings.secret_key_file)
     init_db(settings.database_url)
@@ -72,6 +78,8 @@ async def lifespan(app: FastAPI):
     if settings.openshell_gateway_url:
         await _ensure_openshell_provider_profiles()
     await _restart_prompt_pollers()
+    if settings.openshell_gateway_url:
+        await _restart_server_sessions()
     from swarmer import scheduler
     scheduler.start_scheduler()
     yield
@@ -130,6 +138,81 @@ async def _restart_prompt_pollers() -> None:
                 _run_openshell_agent(s.id, s.sandbox_name, ["sh", "-c", _main_cmd], s.mode, s.agent_tool),
                 name=f"openshell-agent-{s.id}",
             )
+        break
+
+
+async def _restart_server_sessions() -> None:
+    """Re-establish proxy connections for server-mode sessions still active after a restart.
+
+    For each server-mode session that was running/pending with a live sandbox:
+    - Re-call expose_service() to get a fresh service_url (handles gateway restarts).
+    - Sessions whose sandbox has disappeared are moved to 'stopped'.
+
+    This allows Swarmer to restart while OpenCode continues running in the sandbox
+    without losing the proxy connection.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    from swarmer import openshell_client
+    from swarmer.database import get_db
+    from swarmer.models.session import Session
+    from swarmer.agent_tools.registry import get as _get_tool
+
+    try:
+        live_sandboxes = set(await openshell_client.list_sandboxes())
+    except Exception:
+        log.warning("_restart_server_sessions: could not list sandboxes — skipping", exc_info=True)
+        return
+
+    async for db in get_db():
+        result = await db.execute(
+            select(Session).where(
+                Session.mode == "server",
+                Session.phase.in_(["pending", "running"]),
+                Session.sandbox_name.isnot(None),
+            )
+        )
+        sessions = result.scalars().all()
+        if not sessions:
+            break
+
+        for s in sessions:
+            sandbox_name = s.sandbox_name
+            if sandbox_name not in live_sandboxes:
+                # Sandbox is gone — stop the session cleanly.
+                log.warning(
+                    "restart: server-mode session %d sandbox %s not found — marking stopped",
+                    s.id, sandbox_name,
+                )
+                s.phase = "stopped"
+                s.sandbox_name = None
+                s.service_url = None
+                s.run_completed_at = datetime.now(timezone.utc)
+                continue
+
+            # Sandbox is alive — re-expose the service to get a fresh URL.
+            try:
+                _tool = _get_tool(s.agent_tool)
+                port = _tool.get_server_port() or 4096
+                service_url = await openshell_client.expose_service(sandbox_name, "agent", port)
+                s.service_url = service_url
+                s.phase = "running"
+                log.info(
+                    "restart: server-mode session %d re-connected to sandbox %s at %s",
+                    s.id, sandbox_name, service_url,
+                )
+            except Exception:
+                log.warning(
+                    "restart: could not re-expose service for session %d sandbox %s — marking stopped",
+                    s.id, sandbox_name, exc_info=True,
+                )
+                s.phase = "stopped"
+                s.sandbox_name = None
+                s.service_url = None
+                s.run_completed_at = datetime.now(timezone.utc)
+
+        await db.commit()
         break
 
 

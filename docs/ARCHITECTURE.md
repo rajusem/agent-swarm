@@ -134,6 +134,7 @@ All sensitive fields (PATs, API keys, ADC credentials) are Fernet-encrypted at r
 - Manual migrations in `database.py:migrate_db()` — uses `ALTER TABLE ... ADD COLUMN` wrapped in try/except (idempotent; only suppresses "duplicate column"/"already exists" errors, all others re-raise)
 - All models must be imported in `models/__init__.py` for table registration to work
 - SQLite single-writer: K8s Deployment uses `strategy: Recreate` (not RollingUpdate)
+- **`NullPool` for SQLite** — `init_db()` uses `NullPool` instead of the default `QueuePool` for SQLite connections. `aiosqlite` opens a new OS-level connection on every call and does not benefit from connection pooling; `QueuePool`'s default limit of 5+10 connections would be exhausted under concurrent chat proxy load (one DB lookup per proxied asset). `NullPool` creates and closes connections on-demand with no cap, matching `aiosqlite`'s actual behaviour.
 
 ## Kubernetes Integration
 

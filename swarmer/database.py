@@ -1,4 +1,5 @@
 import logging
+from collections.abc import AsyncGenerator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 log = logging.getLogger(__name__)
 
@@ -22,9 +24,16 @@ _AsyncSessionLocal: async_sessionmaker | None = None
 def init_db(database_url: str) -> None:
     global _engine, _AsyncSessionLocal
     connect_args = {}
+    engine_kwargs: dict = {"echo": False}
     if database_url.startswith("sqlite"):
         connect_args["timeout"] = 15
-    _engine = create_async_engine(database_url, echo=False, connect_args=connect_args)
+        # aiosqlite opens a new connection per call and doesn't benefit from
+        # SQLAlchemy's QueuePool.  NullPool creates connections on-demand and
+        # closes them immediately after use, eliminating pool exhaustion under
+        # concurrent load (the chat proxy makes one DB call per proxied asset).
+        engine_kwargs["poolclass"] = NullPool
+    engine_kwargs["connect_args"] = connect_args
+    _engine = create_async_engine(database_url, **engine_kwargs)
 
     if database_url.startswith("sqlite"):
         @event.listens_for(_engine.sync_engine, "connect")
@@ -124,6 +133,6 @@ async def checkpoint_db() -> None:
         log.warning("db: WAL checkpoint failed (DB may be held by another process)", exc_info=True)
 
 
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with _AsyncSessionLocal() as session:
         yield session

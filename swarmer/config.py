@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     openshell_tls_ca: str = ""          # path to CA bundle
     openshell_bearer_token: str = ""    # bearer token for gateway/supervisor auth
     sandbox_gc_interval: int = 300      # seconds between sandbox GC sweeps
+    log_level: str = "INFO"             # Python logging level: DEBUG, INFO, WARNING, ERROR
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
