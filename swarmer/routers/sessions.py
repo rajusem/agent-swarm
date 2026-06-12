@@ -851,6 +851,10 @@ async def _do_launch_openshell(
         mcp_servers=mcp_servers or [],
         extra_env=extra_env,
     )
+    # Point OpenCode at the config file written by write_agent_config() via the
+    # OPENCODE_CONFIG env var (there is no --config CLI flag).
+    if tool.name == "opencode":
+        env_vars["OPENCODE_CONFIG"] = "/sandbox/opencode.json"
 
     # 1b. Create/update gateway providers for each available credential.
     #     Must happen BEFORE sandbox creation: provider names go into SandboxSpec.providers
@@ -1071,17 +1075,21 @@ async def _setup_openshell_sandbox(
         # Share/state dir setup runs FIRST so the $HOME/.local/share/<tool> symlink
         # is in place before model_setup_cmd writes the model config through it.
         # Both commands need HOME=/sandbox to match the agent's runtime environment.
+        # Provider env vars (GOOGLE_API_KEY etc.) are inherited from the sandbox
+        # environment automatically — no explicit injection needed.
         if share_cmd.strip():
             clean_share = share_cmd.rstrip().rstrip(";").rstrip()
             await openshell_client.exec_command(
-                ref.name, ["sh", "-c", f"export HOME=/sandbox; {clean_share}"], client=None
+                ref.name, ["sh", "-c", f"export HOME=/sandbox; {clean_share}"],
+                client=None,
             )
 
         # Model selection config
         if model_setup_cmd.strip():
             clean_cmd = model_setup_cmd.rstrip().rstrip("&").rstrip()
             await openshell_client.exec_command(
-                ref.name, ["sh", "-c", f"export HOME=/sandbox; {clean_cmd}"], client=None
+                ref.name, ["sh", "-c", f"export HOME=/sandbox; {clean_cmd}"],
+                client=None,
             )
 
         # Write AGENTS.md for all modes (prompt, tui, server).
@@ -1149,7 +1157,12 @@ async def _setup_openshell_sandbox(
                 # No prompt configured — launch without a message argument.
                 agent_cmd = f"HOME=/sandbox {main_cmd}"
         else:
-            agent_cmd = f"HOME=/sandbox {main_cmd}"
+            # Server and TUI modes: export HOME and PATH, cd into /sandbox/.
+            # Mirrors tui_ws.py exactly: HOME=/sandbox, PATH includes /sandbox/.local/bin.
+            agent_cmd = (
+                f"export HOME=/sandbox PATH=\"/sandbox/.local/bin:$PATH\" && "
+                f"{main_cmd}"
+            )
 
         # Launch agent — pass env_vars so JIRA_* (and any other non-provider
         # credentials) are forwarded into the agent process via ExecSandboxRequest.
@@ -1272,6 +1285,8 @@ async def _run_openshell_agent(
             if mode == "server":
                 # Launch server agent as a background nohup process so exec() returns
                 # immediately; the sandbox stays alive serving HTTP.
+                # Provider env vars (GOOGLE_API_KEY etc.) are inherited from the
+                # sandbox environment automatically — no explicit injection needed.
                 await openshell_client.start_agent(sandbox_name, cmd, env=env_vars or {})
 
             # TUI mode: the sandbox is ready; the TUI WebSocket handler starts the
@@ -1478,10 +1493,6 @@ async def session_schedule(
 
     if len(cron_expr) > 128:
         flash(request, "Cron expression is too long (max 128 characters).", "warning")
-        return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
-
-    if session.mode != "prompt":
-        flash(request, "Scheduling is only supported for prompt-mode sessions.", "warning")
         return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/{sid}#schedule", status_code=302)
 
     if not croniter.is_valid(cron_expr):

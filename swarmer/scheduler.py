@@ -264,7 +264,6 @@ async def _check_and_launch(db=None) -> None:
             .where(
                 Session.cron_schedule != "",
                 Session.cron_next_run <= now,
-                Session.mode == "prompt",
                 Session.phase.notin_(["pending", "running", "queued"]),
             )
             .order_by(Session.cron_next_run)
@@ -307,6 +306,8 @@ async def _check_and_launch(db=None) -> None:
             )
             try:
                 from swarmer.routers.sessions import _do_launch
+                session.mode = "prompt"
+                await db.commit()
                 await _do_launch(session, ws, db)
 
                 session.cron_next_run = croniter(

@@ -736,6 +736,112 @@ class TestCronCapacityCheck:
 
 
 # ===========================================================================
+# Cron scheduler — mode coercion (ACM-35280)
+# Scheduled runs always execute in prompt mode regardless of the session's
+# configured mode. The scheduler sets session.mode = "prompt" before _do_launch.
+# ===========================================================================
+
+
+class TestCronModeCoercion:
+    @pytest.mark.asyncio
+    async def test_cron_sets_mode_to_prompt_for_tui_session(self, client):
+        """Scheduler coerces a TUI-mode session to prompt before launching."""
+        import swarmer.scheduler as sched
+
+        ws = await _create_workspace(client)
+        cron_s = await _create_session(client, ws["id"], "tui-cron-session")
+
+        # Set mode to TUI and make the cron overdue
+        async with _TestSession() as db:
+            await db.execute(
+                text(
+                    "UPDATE sessions SET mode='tui', cron_schedule='*/30 * * * *', "
+                    "cron_next_run=datetime('now','-1 minute'), phase='idle' "
+                    "WHERE id=:id"
+                ),
+                {"id": cron_s["id"]},
+            )
+            await db.commit()
+
+        launched = []
+
+        async def _fake_do_launch(session, ws, db):
+            launched.append(session.mode)
+
+        with patch("swarmer.routers.sessions._do_launch", new=_fake_do_launch):
+            async with _TestSession() as db:
+                await sched._check_and_launch(db)
+
+        assert launched == ["prompt"], (
+            f"Expected scheduler to coerce mode to 'prompt', got {launched}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cron_sets_mode_to_prompt_for_server_session(self, client):
+        """Scheduler coerces a server-mode session to prompt before launching."""
+        import swarmer.scheduler as sched
+
+        ws = await _create_workspace(client)
+        cron_s = await _create_session(client, ws["id"], "server-cron-session")
+
+        async with _TestSession() as db:
+            await db.execute(
+                text(
+                    "UPDATE sessions SET mode='server', cron_schedule='*/30 * * * *', "
+                    "cron_next_run=datetime('now','-1 minute'), phase='idle' "
+                    "WHERE id=:id"
+                ),
+                {"id": cron_s["id"]},
+            )
+            await db.commit()
+
+        launched = []
+
+        async def _fake_do_launch(session, ws, db):
+            launched.append(session.mode)
+
+        with patch("swarmer.routers.sessions._do_launch", new=_fake_do_launch):
+            async with _TestSession() as db:
+                await sched._check_and_launch(db)
+
+        assert launched == ["prompt"], (
+            f"Expected scheduler to coerce mode to 'prompt', got {launched}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cron_claims_non_prompt_sessions(self, client):
+        """Scheduler now claims sessions of any mode (not just prompt-mode)."""
+        import swarmer.scheduler as sched
+
+        ws = await _create_workspace(client)
+        cron_s = await _create_session(client, ws["id"], "tui-cron-any-mode")
+
+        async with _TestSession() as db:
+            await db.execute(
+                text(
+                    "UPDATE sessions SET mode='tui', cron_schedule='*/30 * * * *', "
+                    "cron_next_run=datetime('now','-1 minute'), phase='idle' "
+                    "WHERE id=:id"
+                ),
+                {"id": cron_s["id"]},
+            )
+            await db.commit()
+
+        launched = []
+
+        async def _fake_do_launch(session, ws, db):
+            launched.append(session.id)
+
+        with patch("swarmer.routers.sessions._do_launch", new=_fake_do_launch):
+            async with _TestSession() as db:
+                await sched._check_and_launch(db)
+
+        assert cron_s["id"] in launched, (
+            "Expected TUI-mode session to be claimed and launched by cron scheduler"
+        )
+
+
+# ===========================================================================
 # WAL mode — database.py must enable WAL so the scheduler can write
 # concurrently while a route handler holds an open read transaction.
 # ===========================================================================

@@ -374,9 +374,6 @@ async def schedule_session(
     from croniter import croniter
 
     session = await _get_session_or_404(ws_id, sid, db)
-    if session.mode != "prompt":
-        raise HTTPException(status_code=422, detail="Scheduling only supported for prompt-mode sessions")
-
     if not croniter.is_valid(body.cron_expr):
         raise HTTPException(status_code=422, detail=f"Invalid cron expression: {body.cron_expr}")
 

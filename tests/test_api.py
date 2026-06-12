@@ -318,7 +318,8 @@ class TestSessions:
         assert resp.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_schedule_non_prompt_fails(self, client):
+    async def test_schedule_non_prompt_allowed(self, client):
+        """Scheduling is now allowed for any mode; the scheduler forces prompt at run time."""
         ws = await _create_workspace(client)
         s = await _create_session(client, ws["id"])
         # Change to TUI mode first
@@ -330,7 +331,7 @@ class TestSessions:
             f"/api/v1/workspaces/{ws['id']}/sessions/{s['id']}/schedule",
             json={"cron_expr": "0 * * * *"},
         )
-        assert resp.status_code == 422
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_schedule_and_unschedule(self, client):

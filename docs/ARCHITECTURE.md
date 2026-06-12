@@ -86,7 +86,7 @@ agent-swarm/
   - `server` — persistent: runs the agent in server mode, exposes a service via OpenShell `expose_service()`, dashboard proxies HTTP/WS/SSE to it
   - `tui` — persistent: runs `sleep infinity`; user connects via xterm.js WebSocket → OpenShell `exec_interactive()` PTY
 - **Session phases**: `idle` → `pending` → `running` → `succeeded`/`failed`/`stopped`
-- **Cron scheduling** — prompt-mode sessions can have a cron schedule (`cron_schedule` field). A background asyncio loop (`scheduler.py`) checks every 30s, uses an atomic `UPDATE … RETURNING` to claim due rows (prevents duplicates), then calls the shared `_do_launch()` helper in `sessions.py`.
+- **Cron scheduling** — sessions of any mode can have a cron schedule (`cron_schedule` field). A background asyncio loop (`scheduler.py`) checks every 30s, uses an atomic `UPDATE … RETURNING` to claim due rows (prevents duplicates), sets `session.mode = "prompt"` before calling `_do_launch()` (scheduled runs always execute in prompt mode regardless of the session's configured mode), then calls the shared `_do_launch()` helper in `sessions.py`.
 - **OpencodeSecret** — per-workspace encrypted storage for GCP project, Vertex location, ADC JSON, Google API key, Anthropic API key, OpenAI API key. Stored in SQLite via Fernet encryption. Despite the legacy name, used by both OpenCode and Crush.
 - **GitHubPAT** — per-workspace encrypted GitHub personal access tokens with optional org scope for HTTPS git auth. Injected into OpenShell sandboxes via Gateway credential providers.
 - **McpServer** — per-workspace MCP server configurations with OAuth 2.1 tokens encrypted at rest. Enabled servers are configured in the agent config JSON and credentials injected via Gateway env vars.
@@ -233,7 +233,7 @@ One background asyncio system runs during app lifespan:
 
 **Cron Scheduler + Queue Processor** (`scheduler.py`) — Single global task that checks every 30s. Each cycle:
    - **Queue processor** (`_process_queue`): If the global concurrency cap is not reached, fetches sessions in `"queued"` phase ordered by `created_at` (FIFO) and launches them up to the available slot count. Applies a 2-minute in-memory cooldown when still at capacity to avoid tight retry loops.
-   - **Cron launcher**: Claims prompt-mode sessions with a due `cron_next_run` via atomic `UPDATE … RETURNING`. Respects the concurrency cap — does not over-claim. On launch failure, resets phase to `idle` and advances `cron_next_run`.
+   - **Cron launcher**: Claims sessions of any mode with a due `cron_next_run` via atomic `UPDATE … RETURNING`. Sets `session.mode = "prompt"` before `_do_launch()` — scheduled runs always execute in prompt mode. Respects the concurrency cap — does not over-claim. On launch failure, resets phase to `idle` and advances `cron_next_run`.
 
 A **sandbox GC loop** also runs every `SANDBOX_GC_INTERVAL` seconds, collecting orphaned sandboxes whose sessions are no longer active in the DB.
 
@@ -289,6 +289,27 @@ Sessions can generate git diffs from running sandboxes:
 - **HTMX** for partial page updates (status polling, inline forms, repo management) — vendored as `swarmer/static/htmx.min.js`
 - Flash messages stored in Starlette session, rendered in `base.html`
 - ANSI escape codes in pod output converted to HTML spans via `ansi_to_html` Jinja2 filter
+
+### Session Detail Page Layout
+
+The session detail page (`sessions/detail.html`) uses a two-column grid inside the Details tab:
+
+- **Left column (4-col)** — two stacked cards: Configuration and Schedule. The Configuration card contains agent tool pills, model select, working branch, and MCP server checkboxes. The Schedule card is always visible regardless of session mode; the scheduler coerces to prompt at run time.
+- **Right column (8-col)** — Git Repositories card only.
+
+**Action bar** (below session title, above Prompt/tabs):
+
+| State | Layout |
+|---|---|
+| Idle | `(Status) ∙ [▶ TUI] [▶ CHAT] [▶ PROMPT] · · · · · · [Delete]` |
+| Active (Chat) | `(Status) ∙ [■ Stop] sandbox-name [Chat ↗] · · · · · [Delete]` |
+| Active (other) | `(Status) ∙ [■ Stop] sandbox-name · · · · · · · · · · [Delete]` |
+
+Launch pills are ordered TUI → CHAT → PROMPT (most-used first). TUI and CHAT use green fill (`.launch-pill-green`); PROMPT uses a dark charcoal fill with green border (`.launch-pill-muted`). Each pill POSTs the full config form to `/launch` with `mode` and `save_config=1` — no separate save step required.
+
+**Agent tool pills** replace the agent tool dropdown. The opencode pill renders the official block-pixel SVG logo inline at 78×14px. The Crush pill uses the Unicode box-drawing text `CR╚═╝SH`. Selecting a pill auto-saves the config and HTMX-reloads the model dropdown via `#model-select-wrapper`.
+
+**Cluster capacity indicator** — a single pill labelled `Sessions: X / Y active` with optional `· N queued` appended. Colour escalates: outline (0 active) → green (healthy) → gold (near/at capacity: `active >= max-1` for `max > 2`, `active == max` for `max ≤ 2`) → red (any queued). Rendered in both `detail.html` and `_list_rows.html`.
 
 ## Adding New Features
 
