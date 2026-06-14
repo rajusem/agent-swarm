@@ -92,6 +92,13 @@ async def migrate_db() -> None:
         "ALTER TABLE sessions ADD COLUMN service_url VARCHAR(512)",
         "ALTER TABLE sessions ADD COLUMN policy_chunks TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE sessions ADD COLUMN custom_policies TEXT NOT NULL DEFAULT ''",
+        # ACM-35375: drop columns removed from Session model in ACM-34863 (K8s cleanup)
+        # Error suppression ("no such column") handles fresh databases safely.
+        "ALTER TABLE sessions DROP COLUMN persist",
+        "ALTER TABLE sessions DROP COLUMN privileged",
+        "ALTER TABLE sessions DROP COLUMN pod_name",
+        "ALTER TABLE sessions DROP COLUMN pvc_name",
+        "ALTER TABLE sessions DROP COLUMN k8s_secret_names",
     ]
     async with _engine.begin() as conn:
         for stmt in migrations:

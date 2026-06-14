@@ -303,7 +303,6 @@ async def session_create(
     github_pat_id: str = Form(""),
     prompt_id: str = Form(""),
     instruction_prompt: str = Form(""),
-    mode: str = Form("prompt"),
     model: str = Form(""),
     agent_tool: str = Form("opencode"),
     working_branch: str = Form(""),
@@ -338,9 +337,6 @@ async def session_create(
             flash(request, "Invalid prompt selection.", "danger")
             return RedirectResponse(url=f"/workspaces/{ws_id}/sessions/new", status_code=302)
 
-    if mode not in ("tui", "server", "prompt"):
-        mode = "prompt"
-
     try:
         agent_tool = get_tool(agent_tool).name
     except ValueError:
@@ -360,7 +356,6 @@ async def session_create(
         github_pat_id=pat_id,
         prompt_id=pid,
         name=name.strip(),
-        mode=mode,
         model=model.strip(),
         instruction_prompt=instruction_prompt.strip(),
         agent_tool=agent_tool,
@@ -383,6 +378,9 @@ async def session_create(
             await db.commit()
     except IntegrityError:
         await db.rollback()
+        # Rollback expires all ORM objects; refresh ws so the template can read
+        # ws.display_name without triggering a lazy-load outside async context.
+        await db.refresh(ws)
         pats = await _visible_pats(ws_id, db, user_id=_current_user(request))
         _tools = all_tools()
         try:
@@ -393,6 +391,9 @@ async def session_create(
         _avail = await asyncio.gather(
             *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
         )
+        from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+        mcp_servers = await get_enabled_mcp_servers(ws_id, db, user_id=_current_user(request))
+        prompt_sources = await _get_prompt_sources(ws_id, db)
         return templates.TemplateResponse(
             request,
             "sessions/new.html",
@@ -406,6 +407,8 @@ async def session_create(
                 "agent_tools": _tools,
                 "default_agent_tool": default_agent_tool,
                 "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
+                "mcp_servers": mcp_servers,
+                "prompt_sources": prompt_sources,
             },
             status_code=422,
         )

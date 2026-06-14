@@ -13,7 +13,7 @@
 <div style="display:flex; align-items:center; gap:var(--pf-t--global--spacer--sm); flex-wrap:wrap; margin-bottom:var(--pf-t--global--spacer--md);">
   <span style="font-size:var(--pf-t--global--font--size--sm); color:var(--pf-t--global--text--color--regular); font-weight:700;">Sessions:</span>
   <span class="pf-v6-c-label {{ _cap_colour }}">
-    <span class="pf-v6-c-label__content" style="font-weight:700;">{{ capacity.ws_active }} / {{ capacity.max }} active{% if capacity.ws_queued > 0 %} · {{ capacity.ws_queued }} queued{% endif %}</span>
+    <span class="pf-v6-c-label__content">{{ capacity.ws_active }} / {{ capacity.max }} active{% if capacity.ws_queued > 0 %} · {{ capacity.ws_queued }} queued{% endif %}</span>
   </span>
 </div>
 {% endif %}
