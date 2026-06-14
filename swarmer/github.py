@@ -88,15 +88,17 @@ async def fetch_repo_info(repos: list, pat: str | None) -> dict:
 async def list_repos_for_pat(pat) -> list[dict] | str:
     """Fetch all repos accessible via a GitHubPAT, paginated up to 500.
 
-    If pat.github_org is set, lists repos from that org via GET /orgs/{org}/repos.
-    Otherwise lists the authenticated user's repos via GET /user/repos.
+    If pat.github_org is set, tries GET /orgs/{org}/repos first. If that returns
+    404 (i.e. the name is a personal account, not an org), falls back to
+    GET /users/{org}/repos. Otherwise lists the authenticated user's repos via
+    GET /user/repos.
 
     Returns a list of repo dicts (keys: full_name, private, updated_at, description)
     or a string error message on failure.
 
     The ``pat`` argument must expose:
       - pat.pat       (str)  — the raw token value
-      - pat.github_org (str) — org name or empty string
+      - pat.github_org (str) — org/username name or empty string
     """
     headers = {
         "Accept": "application/vnd.github+json",
@@ -115,6 +117,13 @@ async def list_repos_for_pat(pat) -> list[dict] | str:
             while url and len(repos) < 500:
                 r = await client.get(url, headers=headers, params=params)
                 params = {}  # pagination: subsequent URLs already carry params
+                if r.status_code == 404 and pat.github_org and url.startswith(
+                    f"https://api.github.com/orgs/{pat.github_org}/repos"
+                ):
+                    # The name is a personal account, not an org — retry as user
+                    url = f"https://api.github.com/users/{pat.github_org}/repos"
+                    params = {"per_page": 100, "sort": "updated"}
+                    continue
                 if r.status_code != 200:
                     ct = r.headers.get("content-type", "")
                     msg = (
