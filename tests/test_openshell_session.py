@@ -688,7 +688,9 @@ class TestDoLaunchOpenshell:
         assert cfg.get("JIRA_EMAIL") == "test@redhat.com", (
             f"Expected JIRA_EMAIL in jira provider config, got: {cfg}"
         )
-        # URL and email also go into env_vars so the sandbox process sees them directly.
+        # URL and email must also appear as plain env vars so the sandbox process sees
+        # them directly on every ExecSandboxRequest (SandboxSpec.environment is not
+        # forwarded to exec calls by the gateway).
         setup_kwargs = mock_setup.call_args.kwargs if mock_setup.call_args else {}
         sandbox_env = setup_kwargs.get("env_vars", {})
         assert sandbox_env.get("JIRA_SERVER_URL") == "https://redhat.atlassian.net", (

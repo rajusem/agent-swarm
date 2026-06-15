@@ -883,9 +883,11 @@ async def _do_launch_openshell(
     for mcp in (mcp_servers or []):
         if "jira" in getattr(mcp, "slug", "") and getattr(mcp, "jira_access_token_enc", ""):
             pname = f"swarmer-ws-{ws_id}-jira"
-            # Token goes through the gateway Provider API — stored securely and injected
-            # as an opaque reference token (openshell:resolve:...), never as plaintext.
-            # URL and email are non-secret config; they go as plain env vars via env_vars.
+            # All three Jira vars go through the gateway Provider API.
+            # JIRA_ACCESS_TOKEN is a credential (injected as openshell:resolve:... token).
+            # JIRA_SERVER_URL and JIRA_EMAIL are non-secret config — the gateway injects
+            # them as plain env vars into the sandbox (and into every exec call) alongside
+            # the credential reference tokens, so no separate env_vars entry is needed.
             await openshell_client.ensure_provider(
                 pname, "jira",
                 config={
@@ -895,8 +897,8 @@ async def _do_launch_openshell(
                 credentials={"JIRA_ACCESS_TOKEN": mcp.jira_access_token},
             )
             provider_names.append(pname)
-            # Pass URL and email as plain env vars so the sandbox process can read them.
-            # These are non-secret config values; only the token is gateway-managed.
+            # URL and email are non-secret; pass them as plain env vars so the
+            # sandbox process sees them directly on every exec call.
             env_vars["JIRA_SERVER_URL"] = mcp.jira_server_url or ""
             env_vars["JIRA_EMAIL"] = mcp.jira_email or ""
             break  # only one Jira provider per workspace

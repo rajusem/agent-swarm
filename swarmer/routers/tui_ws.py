@@ -109,15 +109,19 @@ async def _run_openshell_tui(
         await websocket.close(code=4004, reason="Sandbox lookup failed")
         return
 
-    # Inject workspace extra env vars (arbitrary key-value pairs stored in DB).
-    # Provider vars (GOOGLE_API_KEY, JIRA_ACCESS_TOKEN, GH_TOKEN etc.) are attached
-    # as providers at sandbox creation and are already in the sandbox environment —
-    # they are inherited by exec calls without explicit injection.
+    # Inject workspace extra env vars (arbitrary key-value pairs stored in DB) and
+    # Jira MCP non-secret config (JIRA_SERVER_URL, JIRA_EMAIL).
+    # NOTE: provider credentials (GOOGLE_API_KEY, JIRA_ACCESS_TOKEN, GH_TOKEN etc.)
+    # are attached as providers at sandbox creation and injected by the gateway supervisor
+    # as opaque reference tokens — they ARE inherited by exec calls.
+    # However, JIRA_SERVER_URL and JIRA_EMAIL are plain env vars (not provider credentials)
+    # and must be passed explicitly on every ExecSandboxRequest.
     tui_env: dict[str, str] = {}
     try:
         from sqlalchemy import select as _sa_select
         from swarmer.database import get_db as _get_db
         from swarmer.models.sandbox_env_var import SandboxEnvVar
+        from swarmer.routers.mcp_servers import get_enabled_mcp_servers as _get_mcp
         async for db in _get_db():
             _ev_result = await db.execute(
                 _sa_select(SandboxEnvVar).where(
@@ -126,6 +130,13 @@ async def _run_openshell_tui(
             )
             for ev_row in _ev_result.scalars().all():
                 tui_env[ev_row.key] = ev_row.value
+            for mcp in await _get_mcp(session.workspace_id, db):
+                if "jira" in getattr(mcp, "slug", "") and getattr(mcp, "jira_access_token_enc", ""):
+                    if mcp.jira_server_url:
+                        tui_env["JIRA_SERVER_URL"] = mcp.jira_server_url
+                    if mcp.jira_email:
+                        tui_env["JIRA_EMAIL"] = mcp.jira_email
+                    break
             break
     except Exception:
         log.warning("TUI: failed to load workspace env vars for session %d", session.id, exc_info=True)
