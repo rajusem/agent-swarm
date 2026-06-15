@@ -104,6 +104,12 @@ class Session(Base):
         back_populates="session", cascade="all, delete-orphan", lazy="selectin"
     )
 
+    @staticmethod
+    def _as_utc(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     @property
     def run_duration(self) -> str | None:
         if not self.run_started_at:
@@ -114,7 +120,9 @@ class Session(Base):
             end = datetime.now(timezone.utc)
         else:
             return None
-        total_secs = int((end - self.run_started_at).total_seconds())
+        start = self._as_utc(self.run_started_at)
+        end = self._as_utc(end)
+        total_secs = int((end - start).total_seconds())
         mins, secs = divmod(max(total_secs, 0), 60)
         hours, mins = divmod(mins, 60)
         if hours:
