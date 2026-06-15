@@ -106,13 +106,17 @@ class CrushStrategy(AgentToolStrategy):
             provider_id, model_id = model.split("/", 1)
         else:
             provider_id, model_id = "", model
-        large = {"model": model_id, "provider": provider_id}
+        # think: false disables Gemini reasoning/thinking tokens.  The OpenShell
+        # egress proxy performs TLS inspection and corrupts the opaque signatures
+        # embedded in reasoning blocks, causing "Corrupted thought signature"
+        # errors after the first few turns.
+        large = {"model": model_id, "provider": provider_id, "think": False}
         models_cfg: dict = {"large": large}
 
         small = _derive_small_model(model)
         if small:
             sp, sm = small.split("/", 1)
-            models_cfg["small"] = {"model": sm, "provider": sp}
+            models_cfg["small"] = {"model": sm, "provider": sp, "think": False}
 
         config_data = json.dumps({"models": models_cfg})
         return (
