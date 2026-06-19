@@ -49,7 +49,7 @@ AC_DEFAULTS ?= .push-defaults
         k8s-deploy k8s-delete k8s-connect \
         openshift-deploy \
         kind-create kind-load kind-deploy kind-delete kind-connect \
-        openshell-setup openshell-extract-tls openshell-gen-token openshell-status openshell-delete \
+        openshell-setup openshell-extract-tls openshell-sync-cli-certs openshell-gen-token openshell-status openshell-delete \
         sync-images help
 
 # ──────────────────────────────────────────────────────────────
@@ -383,6 +383,7 @@ openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl c
 	  --set server.auth.allowUnauthenticatedUsers=true \
 	  --wait --timeout 5m
 	$(MAKE) openshell-extract-tls
+	$(MAKE) openshell-sync-cli-certs 2>/dev/null || true
 	$(MAKE) k8s-openshell-tls-secret NAMESPACE=$(NAMESPACE) 2>/dev/null || true
 	@echo ""
 	@echo "✓ OpenShell $(OPENSHELL_VERSION) installed."
@@ -398,6 +399,19 @@ openshell-extract-tls:  ## Extract mTLS client certs from cluster to auth/opensh
 	kubectl -n $(OPENSHELL_NAMESPACE) get secret openshell-client-tls \
 	  -o jsonpath='{.data.tls\.key}' | base64 -d > $(OPENSHELL_TLS_DIR)/tls.key
 	@echo "✓ mTLS certs written to $(OPENSHELL_TLS_DIR)/"
+
+openshell-sync-cli-certs:  ## Sync fresh mTLS certs from auth/openshell/ into all openshell CLI gateway configs
+	@test -f $(OPENSHELL_TLS_DIR)/ca.crt || (echo "OpenShell mTLS certs not found. Run 'make openshell-extract-tls' first." && exit 1)
+	@for gw_dir in $(HOME)/.config/openshell/gateways/*/; do \
+	  gw=$$(basename "$$gw_dir"); \
+	  mtls_dir="$$gw_dir/mtls"; \
+	  if [ -d "$$mtls_dir" ]; then \
+	    cp $(OPENSHELL_TLS_DIR)/ca.crt  "$$mtls_dir/ca.crt"; \
+	    cp $(OPENSHELL_TLS_DIR)/tls.crt "$$mtls_dir/tls.crt"; \
+	    cp $(OPENSHELL_TLS_DIR)/tls.key "$$mtls_dir/tls.key"; \
+	    echo "✓ Updated certs for gateway: $$gw"; \
+	  fi; \
+	done
 
 openshell-gen-token:  ## Generate a JWT bearer token for the in-cluster OIDC provider and append to .env
 	@TOKEN=$$(python3 scripts/openshell_gen_token.py) && \
