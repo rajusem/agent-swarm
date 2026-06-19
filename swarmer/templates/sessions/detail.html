@@ -55,6 +55,38 @@
       linear-gradient(#0d1b2a, #0d1b2a),
       linear-gradient(135deg, #e06c75, #e5c07b, #98c379, #56b6c2, #61afef, #c678dd);
   }
+  /* ── Log-view toggle pills (Output tab + History expanded rows) ── */
+  .log-pill {
+    display: inline-flex; align-items: center;
+    padding: 4px 12px;
+    border: 2px solid #444;
+    border-radius: var(--pf-t--global--border--radius--small);
+    font-family: monospace; font-weight: 700;
+    font-size: var(--pf-t--global--font--size--sm);
+    cursor: pointer; transition: color 0.15s ease, border-color 0.15s ease;
+    background: #2d2d2d; background-image: none; background-clip: border-box;
+    background-origin: padding-box; color: #aaa;
+  }
+  .log-pill:hover { border-color: #666; color: #fff; }
+  .log-pill.selected {
+    border: 2px solid transparent;
+    background-origin: border-box;
+    background-clip: padding-box, border-box;
+    background-image:
+      linear-gradient(#1e1e1e, #1e1e1e),
+      linear-gradient(135deg, #e06c75, #e5c07b, #98c379, #56b6c2, #61afef, #c678dd);
+    color: #fff;
+  }
+  /* ── History expandable row ── */
+  .pf-v6-c-table__toggle button {
+    background: none; border: none; cursor: pointer;
+    color: var(--pf-t--global--text--color--subtle);
+    padding: 4px 6px; border-radius: var(--pf-t--global--border--radius--small);
+    transition: color 0.15s ease;
+  }
+  .pf-v6-c-table__toggle button:hover { color: var(--pf-t--global--text--color--regular); }
+  .pf-v6-c-table__toggle button svg { transition: transform 0.2s ease; display: block; }
+  .pf-v6-c-table__toggle.pf-m-expanded button svg { transform: rotate(90deg); }
 </style>
 {% endblock %}
 
@@ -241,21 +273,21 @@
     {% if session.mode in ('prompt', 'server') %}
     <li class="pf-v6-c-tabs__item" id="tab-output">
       <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-output" tabindex="-1" onclick="switchTab('output')">
-        <span class="pf-v6-c-tabs__item-text" id="output-tab-text">Output</span>
+        <span class="pf-v6-c-tabs__item-text" id="output-tab-text">Logs</span>
       </button>
     </li>
     {% endif %}
     {% if session.mode == 'prompt' %}
     <li class="pf-v6-c-tabs__item" id="tab-history">
       <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-history" tabindex="-1" onclick="switchTab('history')">
-        <span class="pf-v6-c-tabs__item-text">History{% if session_runs %} ({{ session_runs | length }}){% endif %}</span>
+        <span class="pf-v6-c-tabs__item-text" id="history-tab-text"><span id="history-tab-dot" style="display:none;">● </span>History{% if session_runs %}&nbsp;<span style="display:inline-flex;align-items:center;justify-content:center;min-width:1.75em;height:1.75em;padding:0 0.45em;background:#111;color:#ccc;border:1px solid #444;border-radius:999px;font-size:0.875em;font-family:monospace;font-weight:700;line-height:1;vertical-align:middle;">{{ session_runs | length }}</span>{% endif %}</span>
       </button>
     </li>
     {% endif %}
     {% if session.repos %}
     <li class="pf-v6-c-tabs__item" id="tab-patch">
       <button class="pf-v6-c-tabs__link" role="tab" aria-selected="false" aria-controls="panel-patch" tabindex="-1" onclick="switchTab('patch')">
-        <span class="pf-v6-c-tabs__item-text">Patch</span>
+        <span class="pf-v6-c-tabs__item-text" id="patch-tab-text">Patch</span>
       </button>
     </li>
     {% endif %}
@@ -470,7 +502,7 @@
 <div id="panel-output" class="pf-v6-c-tab-content" role="tabpanel" aria-labelledby="tab-output" hidden style="margin-top:var(--pf-t--global--spacer--lg);">
   <div class="pf-v6-c-card">
     <div class="pf-v6-c-card__header" style="display:flex; justify-content:space-between; align-items:center;">
-      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Output</h3>
+      <h3 class="pf-v6-c-card__header-main" style="font-weight:var(--pf-t--global--font--weight--heading--bold);">Last Session</h3>
     </div>
     <div class="pf-v6-c-card__body" style="padding:0;">
       {% include "sessions/_last_output.html" with context %}
@@ -703,31 +735,45 @@ function switchTab(name) {
     if (initTerminal()) window._terminalInitialized = true;
   }
 
-  // Clear Output tab new-content marker when visiting the tab
+  // Clear tab new-content markers when visiting the tab
   if (name === 'output') {
     const textEl = document.getElementById('output-tab-text');
-    if (textEl) textEl.textContent = 'Output';
+    if (textEl) textEl.textContent = 'Logs';
   }
-  // Clear Net Rules tab dot when visiting
+  if (name === 'history') {
+    const dot = document.getElementById('history-tab-dot');
+    if (dot) dot.style.display = 'none';
+  }
   if (name === 'policy') {
     const textEl = document.getElementById('policy-tab-text');
     if (textEl) textEl.textContent = 'Net Rules';
   }
 }
 
-// Show ● on Output tab when new output arrives while not viewing it
+// Show ● on Output / History tabs when new output arrives while not viewing them
+// Seed from current DOM so a page load/refresh never fires spurious dots.
 (function() {
-  let lastOutputText = '';
+  const _initEl = document.getElementById('last-output-pre');
+  let lastOutputText = _initEl ? _initEl.textContent : '';
   document.addEventListener('htmx:afterSwap', function() {
     const newEl = document.getElementById('last-output-pre');
     if (!newEl) return;
     const newText = newEl.textContent;
     if (newText === lastOutputText) return;
     lastOutputText = newText;
+
+    // Output dot
     const outputTab = document.getElementById('tab-output');
-    if (outputTab && outputTab.classList.contains('pf-m-current')) return;
-    const textEl = document.getElementById('output-tab-text');
-    if (textEl) textEl.textContent = 'Output ●';
+    if (outputTab && !outputTab.classList.contains('pf-m-current')) {
+      const textEl = document.getElementById('output-tab-text');
+      if (textEl) textEl.textContent = '● Logs';
+    }
+    // History dot — new output means a run just completed
+    const histTab = document.getElementById('tab-history');
+    if (histTab && !histTab.classList.contains('pf-m-current')) {
+      const dot = document.getElementById('history-tab-dot');
+      if (dot) dot.style.display = '';
+    }
   });
 })();
 
@@ -895,6 +941,35 @@ function selectAgentTool(btn) {
     { target: '#model-select-wrapper', swap: 'outerHTML' }
   );
   window._cfgSave();
+}
+
+// ── History expandable rows ──
+function toggleHistoryRow(runId) {
+  var toggleTd = document.getElementById('hist-toggle-' + runId);
+  var row      = document.getElementById('hist-expand-' + runId);
+  if (!toggleTd || !row) return;
+  var expanded = toggleTd.classList.toggle('pf-m-expanded');
+  row.style.display = expanded ? '' : 'none';
+  toggleTd.querySelector('button').setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
+
+function switchHistoryOutput(runId, type) {
+  var processed = document.getElementById('hist-out-processed-' + runId);
+  var raw       = document.getElementById('hist-out-raw-' + runId);
+  var btnP      = document.getElementById('hist-btn-processed-' + runId);
+  var btnR      = document.getElementById('hist-btn-raw-' + runId);
+  if (!processed || !raw) return;
+  if (type === 'processed') {
+    processed.style.display = 'block';
+    raw.style.display = 'none';
+    if (btnP) { btnP.classList.add('selected'); }
+    if (btnR) { btnR.classList.remove('selected'); }
+  } else {
+    raw.style.display = 'block';
+    processed.style.display = 'none';
+    if (btnR) { btnR.classList.add('selected'); }
+    if (btnP) { btnP.classList.remove('selected'); }
+  }
 }
 
 function showRename() {

@@ -31,19 +31,19 @@
   {# Output / Raw Log toggle — client-side only, no round-trip needed #}
   <div style="display:flex; gap:var(--pf-t--global--spacer--sm); padding:var(--pf-t--global--spacer--sm) var(--pf-t--global--spacer--md); border-bottom:1px solid var(--pf-t--global--border--color--default);">
     <button id="btn-output-processed"
-            class="pf-v6-c-button pf-m-small pf-m-primary"
+            class="log-pill selected"
             onclick="document.getElementById('out-processed').style.display='block';
                      document.getElementById('out-raw').style.display='none';
-                     this.className='pf-v6-c-button pf-m-small pf-m-primary';
-                     document.getElementById('btn-output-raw').className='pf-v6-c-button pf-m-small pf-m-secondary';">
+                     this.classList.add('selected');
+                     document.getElementById('btn-output-raw').classList.remove('selected');">
       Output
     </button>
     <button id="btn-output-raw"
-            class="pf-v6-c-button pf-m-small pf-m-secondary"
+            class="log-pill"
             onclick="document.getElementById('out-raw').style.display='block';
                      document.getElementById('out-processed').style.display='none';
-                     this.className='pf-v6-c-button pf-m-small pf-m-primary';
-                     document.getElementById('btn-output-processed').className='pf-v6-c-button pf-m-small pf-m-secondary';">
+                     this.classList.add('selected');
+                     document.getElementById('btn-output-processed').classList.remove('selected');">
       Raw Log
     </button>
   </div>
