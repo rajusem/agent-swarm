@@ -13,8 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from swarmer import k8s
 from swarmer.config import settings
 from swarmer.database import get_db
-from swarmer.api.deps import get_workspace_or_404, require_api_auth
+from swarmer.api.deps import (
+    filter_accessible_workspaces,
+    get_bearer_token,
+    get_workspace_or_404,
+    require_api_auth,
+)
 from swarmer.api.schemas import MessageOut, WorkspaceCreate, WorkspaceOut, WorkspaceUpdate
+from swarmer.k8s_auth import TokenIdentity, can_create_namespaces
 from swarmer.models.workspace import Workspace
 
 log = logging.getLogger(__name__)
@@ -33,16 +39,34 @@ def _derive_namespace(display_name: str) -> str:
 
 
 @router.get("", response_model=list[WorkspaceOut])
-async def list_workspaces(db: AsyncSession = Depends(get_db)):
+async def list_workspaces(
+    db: AsyncSession = Depends(get_db),
+    token: str = Depends(get_bearer_token),
+):
     result = await db.execute(select(Workspace).order_by(Workspace.display_name))
-    return result.scalars().all()
+    workspaces = result.scalars().all()
+    return await filter_accessible_workspaces(token, workspaces)
 
 
 @router.post("", response_model=WorkspaceOut, status_code=status.HTTP_201_CREATED)
 async def create_workspace(
     body: WorkspaceCreate,
     db: AsyncSession = Depends(get_db),
+    identity: TokenIdentity = Depends(require_api_auth),
+    token: str = Depends(get_bearer_token),
 ):
+    if settings.k8s_namespace:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Workspace creation is disabled in namespace-scoped deployments.",
+        )
+    if not await can_create_namespaces(
+        token, settings.k8s_api_url, settings.k8s_in_cluster
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to create workspaces.",
+        )
     namespace = _derive_namespace(body.display_name)
     if not namespace:
         raise HTTPException(
@@ -66,12 +90,17 @@ async def create_workspace(
             detail=f"A workspace with namespace '{namespace}' already exists.",
         )
 
-    # Best-effort K8s namespace setup
+    # Best-effort K8s setup
+    eff_ns = k8s.effective_namespace(namespace)
     try:
         if not settings.k8s_namespace:
-            k8s.ensure_namespace(k8s.effective_namespace(namespace))
+            k8s.ensure_namespace(eff_ns)
+            k8s.grant_swarmer_user_access(eff_ns, identity.username)
+        from swarmer.agent_tools.registry import all_tools
+        for tool in all_tools():
+            k8s.apply_agent_config(eff_ns, agent_tool=tool.name)
     except Exception:
-        pass  # K8s namespace creation failure is non-fatal
+        pass  # K8s setup failure is non-fatal
 
     return ws
 
