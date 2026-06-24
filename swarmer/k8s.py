@@ -18,8 +18,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kubernetes.client import RbacV1Subject
 
-    from swarmer.models.github_app import GitHubApp
-
 log = logging.getLogger(__name__)
 
 _image_cache: dict[tuple[str, str], tuple[bool, float]] = {}

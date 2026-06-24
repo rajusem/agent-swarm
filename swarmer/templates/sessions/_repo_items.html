@@ -8,7 +8,8 @@
               border-bottom:1px solid var(--pf-t--global--border--color--default);">
     <div style="min-width:0; flex:1;">
       <div style="font-size:var(--pf-t--global--font--size--sm); word-break:break-all; margin-bottom:2px;">
-        {{ repo.repo_url }}
+        <a href="{{ repo.repo_url }}" target="_blank" rel="noopener noreferrer"
+           style="color:var(--pf-t--global--text--color--link--default);">{{ repo.repo_url }}</a>
         {% if info is not none and info.is_public is not none %}
           {% if info.is_public %}
           <span class="pf-v6-c-label pf-m-green pf-m-outline" style="margin-left:var(--pf-t--global--spacer--xs); vertical-align:middle;"><span class="pf-v6-c-label__content">Public</span></span>
