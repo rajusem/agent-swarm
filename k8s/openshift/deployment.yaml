@@ -52,7 +52,7 @@ spec:
             - name: DEFAULT_AGENT_TOOL
               value: "opencode"
             - name: OPENSHELL_GATEWAY_URL
-              value: "openshell.openshell.svc.cluster.local:8080"
+              value: "OPENSHELL_GATEWAY_URL_VALUE"
             - name: OPENSHELL_TLS_CERT
               value: "/auth/openshell/tls.crt"
             - name: OPENSHELL_TLS_KEY

@@ -79,16 +79,32 @@ def _override_get_current_user():
     return "test-user"
 
 
+def _override_get_bearer_token():
+    return "test-token"
+
+
 @pytest_asyncio.fixture(autouse=True)
-async def _setup_db():
+async def _setup_db(monkeypatch):
     from swarmer.crypto import init_crypto
     init_crypto("auth/secret.key")
 
     from swarmer.config import settings
     orig_ns = settings.k8s_namespace
     orig_max = settings.max_concurrent_agents
-    settings.k8s_namespace = "test-ns"
+    settings.k8s_namespace = ""  # must be empty to allow workspace creation
     settings.max_concurrent_agents = 0  # unlimited by default for these tests
+
+    async def _all_accessible(token, namespaces, api_url, in_cluster):
+        return list(namespaces)
+
+    async def _can_create_namespaces(token, api_url, in_cluster):
+        return True
+
+    monkeypatch.setattr("swarmer.api.deps.get_accessible_namespaces", _all_accessible)
+    monkeypatch.setattr("swarmer.api.v1.workspaces.can_create_namespaces", _can_create_namespaces)
+    monkeypatch.setattr("swarmer.k8s.ensure_namespace", lambda namespace: None)
+    monkeypatch.setattr("swarmer.k8s.grant_swarmer_user_access", lambda namespace, username: None)
+    monkeypatch.setattr("swarmer.k8s.delete_namespace", lambda namespace: None)
 
     import swarmer.models  # noqa: F401
 
@@ -103,7 +119,7 @@ async def _setup_db():
 
 @pytest_asyncio.fixture
 async def client():
-    from swarmer.api.deps import get_current_user, require_api_auth
+    from swarmer.api.deps import get_bearer_token, get_current_user, require_api_auth
     from swarmer.database import get_db
     from swarmer.deps import require_auth
     from swarmer.main import app
@@ -111,6 +127,7 @@ async def client():
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[require_api_auth] = _override_require_api_auth
     app.dependency_overrides[get_current_user] = _override_get_current_user
+    app.dependency_overrides[get_bearer_token] = _override_get_bearer_token
     app.dependency_overrides[require_auth] = lambda: None  # bypass browser session auth
 
     transport = ASGITransport(app=app)
@@ -602,9 +619,9 @@ class TestDoLaunchOpenshell:
         assert len(github_calls) == 1, (
             f"Expected 1 github provider call when PAT is set, got {len(github_calls)}"
         )
-        # Provider name must be per-PAT, not per-workspace
+        # Provider name must be per-PAT per-session (session-scoped)
         provider_name = github_calls[0].args[0]
-        expected_name = f"swarmer-ws-{ws['id']}-github-pat-{pat['id']}"
+        expected_name = f"swarmer-ws-{ws['id']}-github-pat-{pat['id']}-s{s['id']}"
         assert provider_name == expected_name, (
             f"Expected provider name '{expected_name}', got '{provider_name}'"
         )
@@ -658,6 +675,7 @@ class TestDoLaunchOpenshell:
              patch("swarmer.openshell_client.exec_command", new=_capture_exec):
             await _setup_openshell_sandbox(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 provider_names=[],
                 env_vars={},
                 policy=None,
@@ -675,6 +693,7 @@ class TestDoLaunchOpenshell:
                 mode="prompt",
                 main_cmd="opencode run",
                 resolved_prompt="",
+                has_git_token=True,
             )
 
         all_cmds = [" ".join(c) for c in exec_calls]
@@ -726,6 +745,7 @@ class TestDoLaunchOpenshell:
              patch("swarmer.openshell_client.exec_command", new=_capture_exec):
             await _setup_openshell_sandbox(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 provider_names=[],
                 env_vars={},
                 policy=None,
@@ -1158,6 +1178,7 @@ class TestSessionStopOpenshell:
              patch("swarmer.database.get_db", _test_get_db):
             await _run_openshell_agent(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 sandbox_name="sandbox-race-test",
                 cmd=["opencode", "run", "--prompt", "test"],
                 mode="prompt",
@@ -1218,7 +1239,7 @@ class TestRunOpenshellAgent:
              patch("swarmer.openshell_client.get_draft_chunks", new=AsyncMock(return_value=[])), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
             from swarmer.routers.sessions import _run_openshell_agent
-            await _run_openshell_agent(s["id"], "sandbox-prompt", ["sh", "-c", "opencode run"], "prompt", "opencode")
+            await _run_openshell_agent(s["id"], ws["id"], "sandbox-prompt", ["sh", "-c", "opencode run"], "prompt", "opencode")
 
         async with _TestSession() as db:
             from sqlalchemy import select
@@ -1246,7 +1267,7 @@ class TestRunOpenshellAgent:
              patch("swarmer.openshell_client.get_draft_chunks", new=AsyncMock(return_value=[])), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
             from swarmer.routers.sessions import _run_openshell_agent
-            await _run_openshell_agent(s["id"], "sandbox-fail", ["sh", "-c", "opencode run"], "prompt", "opencode")
+            await _run_openshell_agent(s["id"], ws["id"], "sandbox-fail", ["sh", "-c", "opencode run"], "prompt", "opencode")
 
         async with _TestSession() as db:
             from sqlalchemy import select
@@ -1274,7 +1295,7 @@ class TestRunOpenshellAgent:
              patch("swarmer.openshell_client.get_draft_chunks", new=AsyncMock(return_value=[])), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()) as mock_del:
             from swarmer.routers.sessions import _run_openshell_agent
-            await _run_openshell_agent(s["id"], "sandbox-autoclean", ["sh", "-c", "opencode run"], "prompt", "opencode")
+            await _run_openshell_agent(s["id"], ws["id"], "sandbox-autoclean", ["sh", "-c", "opencode run"], "prompt", "opencode")
 
         mock_del.assert_called_once_with("sandbox-autoclean")
 
@@ -1312,7 +1333,7 @@ class TestRunOpenshellAgent:
              patch("swarmer.openshell_client.get_draft_chunks", new=AsyncMock(return_value=[])), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
             from swarmer.routers.sessions import _run_openshell_agent
-            await _run_openshell_agent(s["id"], "sandbox-running", ["sh", "-c", "opencode run"], "prompt", "opencode")
+            await _run_openshell_agent(s["id"], ws["id"], "sandbox-running", ["sh", "-c", "opencode run"], "prompt", "opencode")
 
         assert "running" in phases_seen
 
@@ -1333,7 +1354,7 @@ class TestRunOpenshellAgent:
              patch("swarmer.openshell_client.exec_command_streaming", new=AsyncMock()) as mock_exec:
             from swarmer.routers.sessions import _run_openshell_agent
             await _run_openshell_agent(
-                s["id"], "sandbox-server", ["sh", "-c", "opencode serve"], "server", "opencode"
+                s["id"], ws["id"], "sandbox-server", ["sh", "-c", "opencode serve"], "server", "opencode"
             )
 
         mock_start.assert_called_once_with("sandbox-server", ["sh", "-c", "opencode serve"], env={})
@@ -1356,7 +1377,7 @@ class TestRunOpenshellAgent:
              patch("swarmer.openshell_client.start_agent", new=AsyncMock()) as mock_start:
             from swarmer.routers.sessions import _run_openshell_agent
             await _run_openshell_agent(
-                s["id"], "sandbox-tui", ["sh", "-c", "sleep infinity"], "tui", "opencode"
+                s["id"], ws["id"], "sandbox-tui", ["sh", "-c", "sleep infinity"], "tui", "opencode"
             )
 
         mock_start.assert_not_called()
@@ -1379,7 +1400,7 @@ class TestRunOpenshellAgent:
                 new=AsyncMock(side_effect=ConnectionError("gateway down")),
              ):
             from swarmer.routers.sessions import _run_openshell_agent
-            await _run_openshell_agent(s["id"], "sandbox-exc", ["sh", "-c", "opencode run"], "prompt", "opencode")
+            await _run_openshell_agent(s["id"], ws["id"], "sandbox-exc", ["sh", "-c", "opencode run"], "prompt", "opencode")
 
         async with _TestSession() as db:
             from sqlalchemy import select
@@ -1937,6 +1958,7 @@ def _make_crush_setup_patches(sandbox_name: str = "sandbox-crush-abc"):
 
 async def _call_crush_setup(
     session_id: int,
+    workspace_id: int = 0,
     model: str = "anthropic/claude-sonnet-4-6",
     mode: str = "prompt",
     resolved_prompt: str = "Write hello world",
@@ -1974,6 +1996,7 @@ async def _call_crush_setup(
          patch("swarmer.openshell_client.exec_command", new=_capture_exec):
         await _setup_openshell_sandbox(
             session_id=session_id,
+            workspace_id=workspace_id,
             provider_names=[],
             env_vars={},
             policy=None,
@@ -2024,7 +2047,7 @@ class TestCrushOpenshellSetup:
         model = "anthropic/claude-sonnet-4-6"
         captured_cmd: list[str] = []
 
-        def _capture_run_agent(session_id, sandbox_name, cmd, mode, agent_tool, env_vars=None):
+        def _capture_run_agent(session_id, workspace_id, sandbox_name, cmd, mode, agent_tool, env_vars=None, **kwargs):
             captured_cmd.extend(cmd)
             async def _noop():
                 pass
@@ -2053,6 +2076,7 @@ class TestCrushOpenshellSetup:
              )):
             await _setup_openshell_sandbox(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 provider_names=[],
                 env_vars={},
                 policy=None,
@@ -2088,7 +2112,7 @@ class TestCrushOpenshellSetup:
             )
             await db.commit()
 
-        exec_calls = await _call_crush_setup(s["id"])
+        exec_calls = await _call_crush_setup(s["id"], ws["id"])
 
         # share_cmd contains the symlink creation; model_setup_cmd contains printf
         share_idx = next(
@@ -2118,7 +2142,7 @@ class TestCrushOpenshellSetup:
             )
             await db.commit()
 
-        exec_calls = await _call_crush_setup(s["id"])
+        exec_calls = await _call_crush_setup(s["id"], ws["id"])
 
         # Both the symlink creation and model config write must use HOME=/sandbox
         setup_calls = [
@@ -2216,7 +2240,7 @@ class TestCrushOpenshellSetup:
 
         # Use a plain function (not async) so the cmd is captured synchronously
         # when asyncio.create_task calls it — before the task body ever runs.
-        def _capture_run_agent(session_id, sandbox_name, cmd, mode, agent_tool, env_vars=None):
+        def _capture_run_agent(session_id, workspace_id, sandbox_name, cmd, mode, agent_tool, env_vars=None, **kwargs):
             captured_cmd.extend(cmd)
             async def _noop():
                 pass
@@ -2241,6 +2265,7 @@ class TestCrushOpenshellSetup:
              )):
             await _setup_openshell_sandbox(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 provider_names=[],
                 env_vars={},
                 policy=None,
@@ -2291,7 +2316,7 @@ class TestCrushOpenshellSetup:
              patch("swarmer.openshell_client.read_opencode_response", new=AsyncMock(return_value="WRONG")) as mock_db_read:
             from swarmer.routers.sessions import _run_openshell_agent
             await _run_openshell_agent(
-                s["id"], "sb-crush-out", ["sh", "-c", "crush run"], "prompt", "crush"
+                s["id"], ws["id"], "sb-crush-out", ["sh", "-c", "crush run"], "prompt", "crush"
             )
 
         mock_db_read.assert_not_called()
@@ -2368,6 +2393,7 @@ class TestMcpPatchInjection:
              )):
             await _setup_openshell_sandbox(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 provider_names=[],
                 env_vars={},
                 policy=None,
@@ -2451,24 +2477,25 @@ class TestMcpPatchInjection:
                  )):
                 await _setup_openshell_sandbox(
                     session_id=s["id"],
+                    workspace_id=ws["id"],
                     provider_names=[],
                     env_vars={},
                     policy=None,
                     image=tool.get_image(),
                     tool_name="crush",
-                model=model,
-                model_setup_cmd=tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/"),
-                share_cmd=tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/"),
-                mcp_patch=mcp_patch,
-                repos_data=[],
-                git_username="",
-                pat_token="",
-                working_branch="",
-                agents_md="",
-                mode="prompt",
-                main_cmd=f"crush run --model {model} 'hello'",
-                resolved_prompt="hello",
-            )
+                    model=model,
+                    model_setup_cmd=tool.build_model_setup_cmd(model).replace("/workspace/", "/sandbox/"),
+                    share_cmd=tool.build_share_setup_cmd().replace("/workspace/", "/sandbox/"),
+                    mcp_patch=mcp_patch,
+                    repos_data=[],
+                    git_username="",
+                    pat_token="",
+                    working_branch="",
+                    agents_md="",
+                    mode="prompt",
+                    main_cmd=f"crush run --model {model} 'hello'",
+                    resolved_prompt="hello",
+                )
         finally:
             _settings.agent_image_crush = _orig_crush_image
 
@@ -2620,7 +2647,7 @@ class TestPolicyRulesEndpoints:
              patch("swarmer.openshell_client.get_draft_chunks", new=AsyncMock(return_value=fake_chunks)), \
              patch("swarmer.openshell_client.delete_sandbox", new=AsyncMock()):
             from swarmer.routers.sessions import _run_openshell_agent
-            await _run_openshell_agent(s["id"], "sb-policy", ["opencode", "run"], "prompt", "opencode")
+            await _run_openshell_agent(s["id"], ws["id"], "sb-policy", ["opencode", "run"], "prompt", "opencode")
 
         async with _TestSession() as db:
             from swarmer.models.session import Session

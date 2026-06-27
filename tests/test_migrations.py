@@ -37,13 +37,25 @@ async def _override_get_db():
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _setup():
+async def _setup(monkeypatch):
     from swarmer.crypto import init_crypto
     init_crypto("auth/secret.key")
 
     from swarmer.config import settings
     orig_ns = settings.k8s_namespace
-    settings.k8s_namespace = "test-ns"
+    settings.k8s_namespace = ""  # must be empty to allow workspace creation
+
+    async def _all_accessible(token, namespaces, api_url, in_cluster):
+        return list(namespaces)
+
+    async def _can_create_namespaces(token, api_url, in_cluster):
+        return True
+
+    monkeypatch.setattr("swarmer.api.deps.get_accessible_namespaces", _all_accessible)
+    monkeypatch.setattr("swarmer.api.v1.workspaces.can_create_namespaces", _can_create_namespaces)
+    monkeypatch.setattr("swarmer.k8s.ensure_namespace", lambda namespace: None)
+    monkeypatch.setattr("swarmer.k8s.grant_swarmer_user_access", lambda namespace, username: None)
+    monkeypatch.setattr("swarmer.k8s.delete_namespace", lambda namespace: None)
 
     import swarmer.models  # noqa: F401
 
@@ -170,16 +182,19 @@ class TestSessionFormCreatePath:
         from swarmer.k8s_auth import TokenIdentity
         from swarmer.main import app
 
+        from swarmer.api.deps import get_bearer_token
         app.dependency_overrides[require_api_auth] = lambda: TokenIdentity(
             username="test-user", uid="uid-1"
         )
         app.dependency_overrides[get_current_user] = lambda: "test-user"
+        app.dependency_overrides[get_bearer_token] = lambda: "test-token"
         ws_resp = await client.post(
             "/api/v1/workspaces",
             json={"display_name": "Form Test WS", "description": ""},
         )
         app.dependency_overrides.pop(require_api_auth, None)
         app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_bearer_token, None)
         assert ws_resp.status_code == 201, ws_resp.text
         ws_id = ws_resp.json()["id"]
 
@@ -206,16 +221,19 @@ class TestSessionFormCreatePath:
         from swarmer.k8s_auth import TokenIdentity
         from swarmer.main import app
 
+        from swarmer.api.deps import get_bearer_token
         app.dependency_overrides[require_api_auth] = lambda: TokenIdentity(
             username="test-user", uid="uid-1"
         )
         app.dependency_overrides[get_current_user] = lambda: "test-user"
+        app.dependency_overrides[get_bearer_token] = lambda: "test-token"
         ws_resp = await client.post(
             "/api/v1/workspaces",
             json={"display_name": "Dup Test WS", "description": ""},
         )
         app.dependency_overrides.pop(require_api_auth, None)
         app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_bearer_token, None)
         assert ws_resp.status_code == 201, ws_resp.text
         ws_id = ws_resp.json()["id"]
 

@@ -309,11 +309,18 @@ openshift-deploy:  ## Deploy to OpenShift: Route + OAuthClient + app  (SWARMER_H
 	grep -v '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null > .deploy-defaults.tmp || true; \
 	echo "MAX_CONCURRENT_AGENTS=$$MAX_VAL" >> .deploy-defaults.tmp; \
 	mv .deploy-defaults.tmp .deploy-defaults; \
+	OPENSHELL_GW=$$(kubectl get svc openshell -n $(OPENSHELL_NAMESPACE) \
+	  -o jsonpath='{.metadata.name}.{.metadata.namespace}.svc.cluster.local:{.spec.ports[?(@.appProtocol=="grpc")].port}' \
+	  2>/dev/null || true); \
+	if [ -z "$$OPENSHELL_GW" ]; then \
+	  OPENSHELL_GW="openshell.$(OPENSHELL_NAMESPACE).svc.cluster.local:8080"; \
+	fi; \
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
 	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g; \
-	     s|MAX_CONCURRENT_AGENTS_VALUE|$$MAX_VAL|g" \
+	     s|MAX_CONCURRENT_AGENTS_VALUE|$$MAX_VAL|g; \
+	     s|OPENSHELL_GATEWAY_URL_VALUE|$$OPENSHELL_GW|g" \
 	  k8s/openshift/deployment.yaml | kubectl apply -f -
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
 	echo ""
@@ -414,7 +421,7 @@ openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl c
 	  oci://ghcr.io/nvidia/openshell/helm-chart \
 	  --version $(OPENSHELL_VERSION) \
 	  --namespace $(OPENSHELL_NAMESPACE) \
-	  --set server.auth.allowUnauthenticatedUsers=true \
+	  --set server.auth.allowUnauthenticatedUsers=false \
 	  --wait --timeout 5m
 	$(MAKE) openshell-extract-tls
 	$(MAKE) openshell-sync-cli-certs 2>/dev/null || true
@@ -448,9 +455,10 @@ openshell-sync-cli-certs:  ## Sync fresh mTLS certs from auth/openshell/ into al
 	done
 
 openshell-gen-token:  ## Generate a JWT bearer token for the in-cluster OIDC provider and append to .env
-	@TOKEN=$$(python3 scripts/openshell_gen_token.py) && \
-	sed -i '/^OPENSHELL_BEARER_TOKEN=/d' .env 2>/dev/null || true && \
-	echo "OPENSHELL_BEARER_TOKEN=$$TOKEN" >> .env && \
+	@TOKEN=$$(python3 scripts/openshell_gen_token.py); \
+	[ -n "$$TOKEN" ] || (echo "Error: failed to generate OPENSHELL_BEARER_TOKEN" >&2 && exit 1); \
+	sed -i '/^OPENSHELL_BEARER_TOKEN=/d' .env 2>/dev/null || true; \
+	echo "OPENSHELL_BEARER_TOKEN=$$TOKEN" >> .env; \
 	echo "✓ OPENSHELL_BEARER_TOKEN appended to .env (valid 30 days)"
 
 openshell-connect:  ## Port-forward the OpenShell gateway gRPC port to the port configured in the active openshell CLI gateway

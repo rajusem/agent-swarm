@@ -123,16 +123,32 @@ def _override_get_current_user():
     return "test-user"
 
 
+def _override_get_bearer_token():
+    return "test-token"
+
+
 @pytest_asyncio.fixture(autouse=True)
-async def _setup_db():
+async def _setup_db(monkeypatch):
     from swarmer.crypto import init_crypto
     init_crypto("auth/secret.key")
 
     from swarmer.config import settings
     orig_ns = settings.k8s_namespace
     orig_max = settings.max_concurrent_agents
-    settings.k8s_namespace = "test-ns"
+    settings.k8s_namespace = ""  # must be empty to allow workspace creation
     settings.max_concurrent_agents = 0
+
+    async def _all_accessible(token, namespaces, api_url, in_cluster):
+        return list(namespaces)
+
+    async def _can_create_namespaces(token, api_url, in_cluster):
+        return True
+
+    monkeypatch.setattr("swarmer.api.deps.get_accessible_namespaces", _all_accessible)
+    monkeypatch.setattr("swarmer.api.v1.workspaces.can_create_namespaces", _can_create_namespaces)
+    monkeypatch.setattr("swarmer.k8s.ensure_namespace", lambda namespace: None)
+    monkeypatch.setattr("swarmer.k8s.grant_swarmer_user_access", lambda namespace, username: None)
+    monkeypatch.setattr("swarmer.k8s.delete_namespace", lambda namespace: None)
 
     import swarmer.models  # noqa: F401
 
@@ -147,7 +163,7 @@ async def _setup_db():
 
 @pytest_asyncio.fixture
 async def client():
-    from swarmer.api.deps import get_current_user, require_api_auth
+    from swarmer.api.deps import get_bearer_token, get_current_user, require_api_auth
     from swarmer.database import get_db
     from swarmer.deps import require_auth
     from swarmer.main import app
@@ -155,6 +171,7 @@ async def client():
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[require_api_auth] = _override_require_api_auth
     app.dependency_overrides[get_current_user] = _override_get_current_user
+    app.dependency_overrides[get_bearer_token] = _override_get_bearer_token
     app.dependency_overrides[require_auth] = lambda: None  # bypass browser session auth
 
     transport = ASGITransport(app=app)
@@ -498,6 +515,7 @@ class TestServerModeExposeService:
              patch("swarmer.routers.sessions.asyncio.sleep", AsyncMock()):
             await _run_openshell_agent(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 sandbox_name="sandbox-test-abc",
                 cmd=["opencode", "serve", "--port", "4096"],
                 mode="server",
@@ -528,6 +546,7 @@ class TestServerModeExposeService:
              patch("swarmer.database.get_db", _test_get_db):
             await _run_openshell_agent(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 sandbox_name="sandbox-test-abc",
                 cmd=["opencode"],
                 mode="tui",
@@ -557,6 +576,7 @@ class TestServerModeExposeService:
              patch("swarmer.routers.sessions.asyncio.sleep", AsyncMock()):
             await _run_openshell_agent(
                 session_id=s["id"],
+                workspace_id=ws["id"],
                 sandbox_name="sandbox-test-abc",
                 cmd=["opencode", "serve"],
                 mode="server",
