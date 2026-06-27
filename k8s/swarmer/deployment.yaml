@@ -51,10 +51,21 @@ spec:
               value: "AGENT_IMAGE_CRUSH_VALUE"
             - name: MAX_CONCURRENT_AGENTS
               value: "MAX_CONCURRENT_AGENTS_VALUE"
+            - name: OPENSHELL_GATEWAY_URL
+              value: "OPENSHELL_GATEWAY_URL_VALUE"
+            - name: OPENSHELL_TLS_CA
+              value: "/auth/openshell/ca.crt"
+            - name: OPENSHELL_TLS_CERT
+              value: "/auth/openshell/tls.crt"
+            - name: OPENSHELL_TLS_KEY
+              value: "/auth/openshell/tls.key"
 
           volumeMounts:
             - name: swarmer-data
               mountPath: /data
+            - name: openshell-tls
+              mountPath: /auth/openshell
+              readOnly: true
 
           resources:
             requests:
@@ -75,3 +86,6 @@ spec:
         - name: swarmer-data
           persistentVolumeClaim:
             claimName: swarmer-data
+        - name: openshell-tls
+          secret:
+            secretName: openshell-tls

@@ -12,7 +12,7 @@ Step-by-step guide to running Swarmer with a live OpenShell sandbox backend on a
 | Python | 3.12 | `python3 --version` |
 | `openshell` pip pkg | 0.0.0a0+ | `pip install openshell` |
 
-> **Note**: The `openshell` Python package must be the `0.0.0a0` build from the internal registry, not `0.0.51` from PyPI — the `0.0.51` PyPI build has a circular import bug. Run `pip show openshell` and confirm `Version: 0.0.0a0`.
+> **Note**: The `openshell` Python package must match the gateway version. Run `pip show openshell` and confirm the installed version matches `OPENSHELL_VERSION` in the Makefile.
 
 ## Quick Start
 
@@ -31,8 +31,8 @@ make openshell-setup
 ```
 
 This:
-1. Installs the Kubernetes Agent Sandbox CRDs (required for sandbox creation)
-2. Runs `helm upgrade --install` from `oci://ghcr.io/nvidia/openshell/helm-chart` (v`0.0.51`) into the `openshell` namespace with `allowUnauthenticatedUsers=true` (safe for local kind dev — mTLS still protects the channel)
+1. Installs the Kubernetes Agent Sandbox CRDs at `AGENT_SANDBOX_VERSION` (pinned to v0.4.6 — **do not upgrade to v0.5.0+** until the OpenShell gateway supports v1beta1 ownerReferences; see gotchas below)
+2. Runs `helm upgrade --install` from `oci://ghcr.io/nvidia/openshell/helm-chart` (version from `OPENSHELL_VERSION` in Makefile) into the `openshell` namespace with `allowUnauthenticatedUsers=true` (safe for local kind dev — mTLS still protects the channel)
 3. Waits for the gateway pod to be ready
 4. Extracts mTLS client certs to `auth/openshell/`
 
@@ -118,7 +118,7 @@ make kind-delete        # delete the kind cluster entirely
 ## Troubleshooting
 
 **`helm upgrade` fails with "OCI registry not found"**
-→ Ensure you can reach `ghcr.io`. The `helm pull oci://ghcr.io/nvidia/openshell/helm-chart --version 0.0.51` command will test auth.
+→ Ensure you can reach `ghcr.io`. Run `helm pull oci://ghcr.io/nvidia/openshell/helm-chart --version $(OPENSHELL_VERSION)` to test auth.
 
 **`make openshell-extract-tls` fails: secret not found**
 → The gateway certgen job may still be running. Wait 30 s and retry: `make openshell-extract-tls`.

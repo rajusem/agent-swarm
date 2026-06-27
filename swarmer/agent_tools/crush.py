@@ -8,10 +8,17 @@ from swarmer.config import settings
 _SMALL_MODEL = "gemini/gemini-3.5-flash"
 
 
+_SMALL_MODEL_VERTEX = "vertexai/claude-haiku-4-5-20251001"
+
+
 def _derive_small_model(model: str) -> str | None:
     """Return the small model paired with the given large model, or None if same."""
     if model == _SMALL_MODEL:
         return None  # already the small model — no separate small needed
+    if model.startswith("vertexai/claude-"):
+        if model == _SMALL_MODEL_VERTEX:
+            return None
+        return _SMALL_MODEL_VERTEX
     return _SMALL_MODEL
 
 
@@ -47,6 +54,15 @@ class CrushStrategy(AgentToolStrategy):
                 "api_key": "$GOOGLE_API_KEY",
             },
         }
+        # Add Vertex AI provider if the selected model uses it.
+        # The google-cloud OpenShell provider sets GCP_ADC_ACCESS_TOKEN; the GCE metadata
+        # emulator (127.0.0.1:8174) exposes it so the vertexai SDK obtains credentials
+        # without needing an explicit API key in the config.
+        if model.startswith("vertexai/"):
+            providers["vertexai"] = {
+                "name": "Vertex AI",
+                "type": "vertexai",
+            }
 
         config = {
             "$schema": "https://charm.land/crush.json",
@@ -141,10 +157,16 @@ class CrushStrategy(AgentToolStrategy):
             return " ".join(shlex.quote(p) for p in base_parts + prompt_parts)
 
     def is_valid_model(self, model: str) -> bool:
-        return model.startswith("gemini/")
+        return model.startswith(("gemini/", "vertexai/"))
 
-    def get_model_options(self, secret=None) -> list[dict]:
+    def get_model_options(self, secret=None, has_vertex: bool = False) -> list[dict]:
         options = []
+        if has_vertex:
+            options.extend([
+                {"value": "vertexai/claude-opus-4-6", "label": "Claude Opus 4.6 (most capable)", "group": "Claude (Vertex AI)"},
+                {"value": "vertexai/claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (balanced)", "group": "Claude (Vertex AI)"},
+                {"value": "vertexai/claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fast)", "group": "Claude (Vertex AI)"},
+            ])
         if secret and getattr(secret, "google_api_key_enc", ""):
             options.extend([
                 {"value": "gemini/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Gemini"},
@@ -152,5 +174,7 @@ class CrushStrategy(AgentToolStrategy):
             ])
         return options
 
-    def get_default_model(self, has_adc: bool, has_gemini: bool) -> str:
+    def get_default_model(self, has_adc: bool) -> str:
+        if has_adc:
+            return "vertexai/claude-sonnet-4-6"
         return "gemini/gemini-3.1-pro-preview"

@@ -125,7 +125,7 @@ async def _restart_prompt_pollers() -> None:
             from swarmer.routers.sessions import _run_openshell_agent
             from swarmer.agent_tools.registry import get as _get_tool
             _tool = _get_tool(s.agent_tool)
-            _model = s.model or _tool.get_default_model(False, False)
+            _model = s.model or _tool.get_default_model(False)
             # Reconstruct the same AGENTS.md-reading command used at initial launch
             # (ACM-35060).  build_main_cmd would embed a CLI arg that is unavailable
             # at restart time; AGENTS.md already exists in the sandbox from launch.

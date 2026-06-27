@@ -14,10 +14,19 @@ import logging
 import pathlib
 import queue
 import shlex
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# ── provider_exists TTL cache ─────────────────────────────────────────────────
+# Avoids a gRPC round-trip on every page-load that renders model options or the
+# secrets status badge.  Cache entries expire after _PROVIDER_CACHE_TTL seconds.
+# Invalidated explicitly by create_google_cloud_provider / delete_provider.
+
+_PROVIDER_CACHE_TTL: float = 30.0
+_provider_cache: dict[str, tuple[bool, float]] = {}  # name → (exists, expires_at)
 
 
 def _get_client():
@@ -150,6 +159,117 @@ async def delete_provider(name: str, client=None) -> None:
             raise
 
     await asyncio.to_thread(_do_delete)
+    _provider_cache.pop(name, None)  # invalidate cached existence check
+
+
+async def provider_exists(name: str, client=None) -> bool:
+    """Return True if a named provider exists on the gateway.
+
+    Results are cached for _PROVIDER_CACHE_TTL seconds to avoid a gRPC round-trip
+    on every page render.  The cache is invalidated by create_google_cloud_provider
+    and delete_provider.
+    """
+    now = time.monotonic()
+    cached = _provider_cache.get(name)
+    if cached is not None:
+        result, expires_at = cached
+        if now < expires_at:
+            return result
+
+    from openshell._proto import openshell_pb2
+    import grpc
+
+    if client is None:
+        client = _get_client()
+
+    def _do_check() -> bool:
+        req = openshell_pb2.GetProviderRequest()
+        req.name = name
+        try:
+            client._stub.GetProvider(req, timeout=client._timeout)
+            return True
+        except grpc.RpcError as exc:
+            if isinstance(exc, grpc.Call) and exc.code() == grpc.StatusCode.NOT_FOUND:
+                return False
+            raise
+
+    result = await asyncio.to_thread(_do_check)
+    _provider_cache[name] = (result, now + _PROVIDER_CACHE_TTL)
+    return result
+
+
+async def create_google_cloud_provider(
+    name: str,
+    project: str,
+    location: str,
+    client=None,
+) -> None:
+    """Delete any existing provider with this name and create a fresh google-cloud one.
+
+    The google-cloud provider type (OpenShell >= 0.0.69) runs a GCE metadata emulator
+    inside the sandbox (127.0.0.1:8174) so GCP SDKs that bypass HTTP_PROXY can still
+    obtain credentials. Config keys and credential key differ from google-vertex-ai:
+      config:      project_id, region  (lowercase)
+      credentials: GCP_ADC_ACCESS_TOKEN  (placeholder; refreshed by gateway)
+    """
+    await delete_provider(name, client=client)
+    await ensure_provider(
+        name, "google-cloud",
+        config={"project_id": project, "region": location},
+        credentials={"GCP_ADC_ACCESS_TOKEN": "__placeholder__"},
+        client=client,
+    )
+    # Provider now exists — update cache so the next page load doesn't need an RPC.
+    _provider_cache[name] = (True, time.monotonic() + _PROVIDER_CACHE_TTL)
+
+
+async def configure_google_cloud_provider(
+    provider_name: str,
+    adc_json: str,
+    client=None,
+) -> None:
+    """Configure a google-cloud provider with auto-refreshing credentials.
+
+    Parses the ADC JSON to choose the appropriate gateway refresh strategy:
+    - service_account → GOOGLE_SERVICE_ACCOUNT_JWT (gateway signs JWTs from SA key)
+    - authorized_user → OAUTH2_REFRESH_TOKEN (gateway exchanges refresh token)
+
+    The credential key for google-cloud is GCP_ADC_ACCESS_TOKEN (not GOOGLE_VERTEX_AI_TOKEN).
+    The GCE metadata emulator inside the sandbox resolves this placeholder so GCP SDKs
+    that bypass HTTP_PROXY still receive a valid access token.
+    """
+    import json as _json
+    from openshell._proto import openshell_pb2
+
+    if client is None:
+        client = _get_client()
+
+    adc = _json.loads(adc_json)
+    adc_type = adc.get("type", "")
+
+    def _do_configure():
+        req = openshell_pb2.ConfigureProviderRefreshRequest()
+        req.provider = provider_name
+
+        if adc_type == "service_account":
+            req.credential_key = "GCP_ADC_ACCESS_TOKEN"
+            req.strategy = openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT
+            req.material["client_email"] = adc.get("client_email", "")
+            req.material["private_key"] = adc.get("private_key", "")
+            req.secret_material_keys.append("private_key")
+        elif adc_type == "authorized_user":
+            req.credential_key = "GCP_ADC_ACCESS_TOKEN"
+            req.strategy = openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN
+            req.material["client_id"] = adc.get("client_id", "")
+            req.material["client_secret"] = adc.get("client_secret", "")
+            req.material["refresh_token"] = adc.get("refresh_token", "")
+            req.secret_material_keys.extend(["client_secret", "refresh_token"])
+        else:
+            raise ValueError(f"Unsupported ADC type for google-cloud provider: {adc_type!r}")
+
+        client._stub.ConfigureProviderRefresh(req, timeout=client._timeout)
+
+    await asyncio.to_thread(_do_configure)
 
 
 async def create_vertex_provider(
@@ -731,6 +851,55 @@ async def create_sandbox(
     return ref
 
 
+async def _exec_with_supervisor_retry(fn, *, max_attempts: int = 8, base_delay: float = 2.0) -> Any:
+    """Run a blocking exec callable, retrying on transient sandbox-not-ready errors.
+
+    The OpenShell gateway reports a sandbox as Ready before the supervisor process
+    has fully established its relay session.  Provider types that start extra
+    processes inside the sandbox (e.g. the GCE metadata emulator started by the
+    google-cloud provider in OpenShell >= 0.0.69) can widen this window.  Exec
+    RPCs issued in this window fail with one of two transient errors:
+
+        StatusCode.UNAVAILABLE   — "supervisor relay failed: supervisor session not connected"
+        StatusCode.FAILED_PRECONDITION — "sandbox is not ready"
+
+    Both are retried with exponential back-off (2 s → 4 s → 8 s … capped at 30 s).
+    """
+    import grpc
+
+    attempt = 0
+    delay = base_delay
+    while True:
+        try:
+            return await asyncio.to_thread(fn)
+        except Exception as exc:
+            attempt += 1
+            is_transient = (
+                isinstance(exc, grpc.RpcError)
+                and isinstance(exc, grpc.Call)
+                and (
+                    (
+                        exc.code() == grpc.StatusCode.UNAVAILABLE
+                        and "supervisor session not connected" in (exc.details() or "")
+                    )
+                    or (
+                        exc.code() == grpc.StatusCode.FAILED_PRECONDITION
+                        and "sandbox is not ready" in (exc.details() or "")
+                    )
+                )
+            )
+            if is_transient and attempt < max_attempts:
+                log.warning(
+                    "_exec_with_supervisor_retry: sandbox not ready (attempt %d/%d, %s), "
+                    "retrying in %.1fs",
+                    attempt, max_attempts, exc.details(), delay,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30.0)
+            else:
+                raise
+
+
 async def _wait_sandbox_ready(
     sandbox_name: str,
     client=None,
@@ -829,7 +998,7 @@ async def write_agent_config(
     def _do_write(s=sid):
         client.exec(s, ["sh", "-c", script], stdin=config_json.encode())
 
-    await asyncio.to_thread(_do_write)
+    await _exec_with_supervisor_retry(_do_write)
 
 
 async def write_agents_md(sandbox_name: str, content: str, client=None) -> None:
@@ -841,7 +1010,7 @@ async def write_agents_md(sandbox_name: str, content: str, client=None) -> None:
     def _do_write(s=sid):
         client.exec(s, ["sh", "-c", "cat > /sandbox/AGENTS.md"], stdin=content.encode())
 
-    await asyncio.to_thread(_do_write)
+    await _exec_with_supervisor_retry(_do_write)
 
 
 async def write_file(sandbox_name: str, path: str, content: str, client=None) -> None:
@@ -856,7 +1025,7 @@ async def write_file(sandbox_name: str, path: str, content: str, client=None) ->
     def _do_write(s=sid):
         client.exec(s, ["sh", "-c", script], stdin=content.encode())
 
-    await asyncio.to_thread(_do_write)
+    await _exec_with_supervisor_retry(_do_write)
 
 
 async def start_agent(
@@ -953,7 +1122,7 @@ async def exec_command(
         return client.exec(s, cmd, stdin=stdin, timeout_seconds=timeout_seconds,
                            env=env or {})
 
-    return await asyncio.to_thread(_do_exec)
+    return await _exec_with_supervisor_retry(_do_exec)
 
 
 async def exec_command_streaming(

@@ -33,9 +33,14 @@ OPENSHIFT_OAUTH_URL  ?=
 SWARMER_HOST         ?=
 
 # OpenShell gateway
-OPENSHELL_VERSION   ?= 0.0.58
-OPENSHELL_NAMESPACE ?= openshell
-OPENSHELL_TLS_DIR   ?= auth/openshell
+OPENSHELL_VERSION        ?= 0.0.70
+# agent-sandbox v0.4.6 is required — v0.5.0+ graduates the CRD to v1beta1 and
+# sets ownerReference apiVersion=agents.x-k8s.io/v1beta1 on sandbox pods, but
+# the OpenShell gateway (through at least 0.0.70) checks for v1alpha1 in
+# IssueSandboxToken, causing "Policy fetch failed" on every sandbox launch.
+AGENT_SANDBOX_VERSION    ?= v0.4.6
+OPENSHELL_NAMESPACE      ?= openshell
+OPENSHELL_TLS_DIR        ?= auth/openshell
 
 # agent-containers build defaults (registry + image tag — checked in)
 AC_DEFAULTS ?= .push-defaults
@@ -48,7 +53,7 @@ AC_DEFAULTS ?= .push-defaults
         image-build image-push image-build-crush \
         k8s-deploy k8s-delete k8s-connect \
         openshift-deploy \
-        kind-create kind-load kind-deploy kind-delete kind-connect \
+        kind-create kind-load kind-deploy kind-delete kind-connect kind-openshell-setup \
         openshell-setup openshell-extract-tls openshell-sync-cli-certs openshell-gen-token openshell-status openshell-delete \
         sync-images help
 
@@ -185,16 +190,18 @@ k8s-deploy:  ## Deploy swarmer to the current kubectl context  (IMAGE_REF, NAMES
 	OAUTH_URL="$(OPENSHIFT_OAUTH_URL)"; \
 	if [ -z "$$OAUTH_URL" ]; then \
 	  DETECTED=$$(kubectl get route oauth-openshift -n openshift-authentication \
-	    -o jsonpath='{.spec.host}' 2>/dev/null); \
+	    -o jsonpath='{.spec.host}' 2>/dev/null || true); \
 	  if [ -n "$$DETECTED" ]; then \
 	    OAUTH_URL="https://$$DETECTED"; \
 	    echo "Auto-detected OpenShift OAuth URL: $$OAUTH_URL"; \
 	  else \
-	    printf "OPENSHIFT_OAUTH_URL (leave blank for token-paste-only login): "; \
-	    read OAUTH_URL; \
+	    if [ "$(SILENT)" != "1" ]; then \
+	      printf "OPENSHIFT_OAUTH_URL (leave blank for token-paste-only login): "; \
+	      read OAUTH_URL; \
+	    fi; \
 	  fi; \
 	fi; \
-	PREV_MAX=$$(grep '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null | cut -d= -f2); \
+	PREV_MAX=$$(grep '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null | cut -d= -f2 || true); \
 	DEF_MAX=$${PREV_MAX:-5}; \
 	MAX_VAL="$(MAX_CONCURRENT_AGENTS)"; \
 	if [ -z "$$MAX_VAL" ] && [ "$(SILENT)" != "1" ]; then \
@@ -207,18 +214,25 @@ k8s-deploy:  ## Deploy swarmer to the current kubectl context  (IMAGE_REF, NAMES
 	grep -v '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null > .deploy-defaults.tmp || true; \
 	echo "MAX_CONCURRENT_AGENTS=$$MAX_VAL" >> .deploy-defaults.tmp; \
 	mv .deploy-defaults.tmp .deploy-defaults; \
+	OPENSHELL_GW=$$(kubectl get svc openshell -n $(OPENSHELL_NAMESPACE) \
+	  -o jsonpath='{.metadata.name}.{.metadata.namespace}.svc.cluster.local:{.spec.ports[?(@.appProtocol=="grpc")].port}' \
+	  2>/dev/null || true); \
+	if [ -z "$$OPENSHELL_GW" ]; then \
+	  OPENSHELL_GW="openshell.$(OPENSHELL_NAMESPACE).svc.cluster.local:8080"; \
+	fi; \
 	sed "s|SWARMER_IMAGE|$(IMAGE_REF)|g; \
 	     s|OPENSHIFT_OAUTH_URL_VALUE|$$OAUTH_URL|g; \
 	     s|REDIRECT_BASE_URL_VALUE||g; \
 	     s|AGENT_IMAGE_OPENCODE_VALUE|$(AGENT_IMAGE_OPENCODE)|g; \
 	     s|AGENT_IMAGE_CRUSH_VALUE|$(AGENT_IMAGE_CRUSH)|g; \
-	     s|MAX_CONCURRENT_AGENTS_VALUE|$$MAX_VAL|g" \
+	     s|MAX_CONCURRENT_AGENTS_VALUE|$$MAX_VAL|g; \
+	     s|OPENSHELL_GATEWAY_URL_VALUE|$$OPENSHELL_GW|g" \
 	  k8s/swarmer/deployment.yaml | kubectl apply -f -
 	# 4. Wait for rollout
 	kubectl rollout status deployment/swarmer -n $(NAMESPACE) --timeout=120s
 	echo ""
 	echo "✓ Swarmer deployed."
-	ROUTE=$$(kubectl get route swarmer -n $(NAMESPACE) -o jsonpath='{.spec.host}' 2>/dev/null); \
+	ROUTE=$$(kubectl get route swarmer -n $(NAMESPACE) -o jsonpath='{.spec.host}' 2>/dev/null || true); \
 	if [ -n "$$ROUTE" ]; then \
 	  echo "  Dashboard → https://$$ROUTE"; \
 	else \
@@ -233,9 +247,11 @@ k8s-deploy:  ## Deploy swarmer to the current kubectl context  (IMAGE_REF, NAMES
 	  fi; \
 	fi
 
-k8s-connect:  ## Port-forward the swarmer dashboard to localhost:8080
-	@echo "Forwarding http://localhost:8080 → swarmer service..."
-	kubectl port-forward -n $(NAMESPACE) service/swarmer 8080:8080
+LOCAL_PORT    ?= 8080
+
+k8s-connect:  ## Port-forward the swarmer dashboard to localhost:$(LOCAL_PORT)  (LOCAL_PORT=8080)
+	@echo "Forwarding http://localhost:$(LOCAL_PORT) → swarmer service..."
+	kubectl port-forward -n $(NAMESPACE) service/swarmer $(LOCAL_PORT):8080
 
 openshift-deploy:  ## Deploy to OpenShift: Route + OAuthClient + app  (SWARMER_HOST=optional)
 	test -f auth/secret.key || (echo "Run 'make setup-secret' first." && exit 1)
@@ -270,15 +286,17 @@ openshift-deploy:  ## Deploy to OpenShift: Route + OAuthClient + app  (SWARMER_H
 	sed "s|SWARMER_HOST|$$ROUTE_HOST|g" k8s/openshift/oauth-client.yaml | kubectl apply -f -; \
 	echo "OAuthClient registered → https://$$ROUTE_HOST/auth/callback"; \
 	OAUTH_HOST=$$(kubectl get route oauth-openshift -n openshift-authentication \
-	  -o jsonpath='{.spec.host}' 2>/dev/null); \
+	  -o jsonpath='{.spec.host}' 2>/dev/null || true); \
 	if [ -n "$$OAUTH_HOST" ]; then \
 	  OAUTH_URL="https://$$OAUTH_HOST"; \
 	  echo "Auto-detected OpenShift OAuth URL: $$OAUTH_URL"; \
 	else \
-	  printf "OPENSHIFT_OAUTH_URL (e.g. https://oauth-openshift.apps.example.com): "; \
-	  read OAUTH_URL; \
+	  if [ "$(SILENT)" != "1" ]; then \
+	    printf "OPENSHIFT_OAUTH_URL (e.g. https://oauth-openshift.apps.example.com): "; \
+	    read OAUTH_URL; \
+	  fi; \
 	fi; \
-	PREV_MAX=$$(grep '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null | cut -d= -f2); \
+	PREV_MAX=$$(grep '^MAX_CONCURRENT_AGENTS=' .deploy-defaults 2>/dev/null | cut -d= -f2 || true); \
 	DEF_MAX=$${PREV_MAX:-5}; \
 	MAX_VAL="$(MAX_CONCURRENT_AGENTS)"; \
 	if [ -z "$$MAX_VAL" ] && [ "$(SILENT)" != "1" ]; then \
@@ -344,21 +362,34 @@ image-build-crush:  ## Build the Crush agent container image
 kind-deploy:  ## Create kind cluster + build image + deploy swarmer  (one-shot local dev)
 	@test -f auth/secret.key || (echo "Run 'make setup-secret' first." && exit 1)
 	$(MAKE) kind-create
-	$(MAKE) image-build
+	$(MAKE) kind-openshell-setup
+	$(MAKE) image-build SILENT=1
 	$(MAKE) kind-load
-	$(MAKE) k8s-deploy
+	$(MAKE) k8s-deploy SILENT=1
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════╗"
 	@echo "║  Swarmer is running in kind!                         ║"
 	@echo "║  Dashboard → http://localhost:8080                   ║"
 	@echo "╚══════════════════════════════════════════════════════╝"
 
-kind-connect:  ## Open a port-forward to the kind-deployed dashboard on localhost:8080
-	$(MAKE) k8s-connect
+kind-connect:  ## Open a port-forward to the kind-deployed dashboard  (LOCAL_PORT=8080)
+	$(MAKE) k8s-connect LOCAL_PORT=$(LOCAL_PORT)
 
 kind-delete:  ## Delete the kind cluster (removes all data inside it)
 	kind delete cluster --name $(KIND_CLUSTER)
 	@echo "✓ kind cluster '$(KIND_CLUSTER)' deleted."
+
+kind-openshell-setup:  ## Ensure OpenShell is installed in kind and TLS secret is in swarmer namespace
+	@echo "Checking OpenShell installation..."
+	@if ! helm status openshell -n $(OPENSHELL_NAMESPACE) > /dev/null 2>&1; then \
+	  echo "OpenShell not found — installing..."; \
+	  $(MAKE) openshell-setup; \
+	else \
+	  echo "OpenShell already installed."; \
+	  $(MAKE) openshell-extract-tls; \
+	fi
+	kubectl create namespace $(NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	$(MAKE) k8s-openshell-tls-secret NAMESPACE=$(NAMESPACE)
 
 # ──────────────────────────────────────────────────────────────
 #  OpenShell gateway (installs to the CURRENT kubectl context)
@@ -372,10 +403,13 @@ openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl c
 	  echo "Error: Helm 3.8+ required for OCI chart support (found: $$(helm version --short 2>/dev/null || echo 'not installed'))"; \
 	  exit 1; \
 	fi
-	@echo "Installing Agent Sandbox CRDs..."
-	kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/manifest.yaml
+	@echo "Installing Agent Sandbox CRDs ($(AGENT_SANDBOX_VERSION))..."
+	kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/$(AGENT_SANDBOX_VERSION)/manifest.yaml
 	@echo "Installing OpenShell $(OPENSHELL_VERSION)..."
 	kubectl create namespace $(OPENSHELL_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
+	@echo "Granting anyuid SCC for OpenShift (no-op on non-OCP clusters)..."
+	oc adm policy add-scc-to-user anyuid -z openshell -n $(OPENSHELL_NAMESPACE) 2>/dev/null || true
+	oc adm policy add-scc-to-user anyuid -z openshell-sandbox -n $(OPENSHELL_NAMESPACE) 2>/dev/null || true
 	DOCKER_CONFIG=$$(mktemp -d) helm upgrade --install openshell \
 	  oci://ghcr.io/nvidia/openshell/helm-chart \
 	  --version $(OPENSHELL_VERSION) \
@@ -387,7 +421,7 @@ openshell-setup:  ## Install OpenShell + Agent Sandbox CRDs on current kubectl c
 	$(MAKE) k8s-openshell-tls-secret NAMESPACE=$(NAMESPACE) 2>/dev/null || true
 	@echo ""
 	@echo "✓ OpenShell $(OPENSHELL_VERSION) installed."
-	@echo "  Port-forward: kubectl port-forward -n $(OPENSHELL_NAMESPACE) svc/openshell 17670:8080"
+	@echo "  Port-forward: make openshell-connect  (auto-detects port from active CLI gateway)"
 	@echo "  TLS certs:    $(OPENSHELL_TLS_DIR)/"
 
 openshell-extract-tls:  ## Extract mTLS client certs from cluster to auth/openshell/
@@ -418,6 +452,13 @@ openshell-gen-token:  ## Generate a JWT bearer token for the in-cluster OIDC pro
 	sed -i '/^OPENSHELL_BEARER_TOKEN=/d' .env 2>/dev/null || true && \
 	echo "OPENSHELL_BEARER_TOKEN=$$TOKEN" >> .env && \
 	echo "✓ OPENSHELL_BEARER_TOKEN appended to .env (valid 30 days)"
+
+openshell-connect:  ## Port-forward the OpenShell gateway gRPC port to the port configured in the active openshell CLI gateway
+	@GW=$$(cat $(HOME)/.config/openshell/active_gateway 2>/dev/null || echo ""); \
+	META="$(HOME)/.config/openshell/gateways/$$GW/metadata.json"; \
+	PORT=$$(python3 -c "import json,sys; d=json.load(open('$$META')); ep=d.get('gateway_endpoint',''); print(ep.rsplit(':',1)[-1] if ':' in ep else '17670')" 2>/dev/null || echo "17670"); \
+	echo "Active gateway: $${GW:-unknown} → localhost:$$PORT (Ctrl-C to stop)"; \
+	kubectl port-forward -n $(OPENSHELL_NAMESPACE) svc/openshell $$PORT:8080
 
 openshell-status:  ## Show OpenShell installation status on current kubectl context
 	@echo "=== Helm release ==="

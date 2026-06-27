@@ -385,3 +385,294 @@ async def test_stop_does_not_call_cleanup_session_secrets(sdk_client):
     # OpenShell migration dead-code cleanup.  delete_sandbox() cannot call it.
     with patch.object(oc, "_get_client", return_value=sdk_client):
         await oc.delete_sandbox(sandbox_name="sandbox-s42-abc1")
+
+
+# ---------------------------------------------------------------------------
+# 5. provider_exists — TTL cache + gRPC interaction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_provider_exists_returns_true_when_found(sdk_client):
+    """provider_exists() returns True when GetProvider succeeds."""
+    sdk_client._stub.GetProvider.return_value = MagicMock()
+    oc._provider_cache.clear()
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        result = await oc.provider_exists("swarmer-ws-1-google-cloud")
+    assert result is True
+    sdk_client._stub.GetProvider.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_provider_exists_returns_false_on_not_found(sdk_client):
+    """provider_exists() returns False on gRPC NOT_FOUND."""
+    import grpc
+
+    class _NotFound(grpc.RpcError, grpc.Call):
+        def code(self): return grpc.StatusCode.NOT_FOUND
+        def details(self): return "provider not found"
+
+    sdk_client._stub.GetProvider.side_effect = _NotFound()
+    oc._provider_cache.clear()
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        result = await oc.provider_exists("swarmer-ws-1-google-cloud")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_provider_exists_cache_hit_skips_grpc(sdk_client):
+    """provider_exists() uses cached result and skips the gRPC call."""
+    import time
+    oc._provider_cache["swarmer-ws-2-google-cloud"] = (True, time.monotonic() + 30)
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        result = await oc.provider_exists("swarmer-ws-2-google-cloud")
+    assert result is True
+    sdk_client._stub.GetProvider.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_provider_exists_cache_miss_calls_grpc(sdk_client):
+    """provider_exists() calls gRPC when cache entry is expired."""
+    import time
+    oc._provider_cache["swarmer-ws-3-google-cloud"] = (True, time.monotonic() - 1)  # expired
+    sdk_client._stub.GetProvider.return_value = MagicMock()
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        result = await oc.provider_exists("swarmer-ws-3-google-cloud")
+    assert result is True
+    sdk_client._stub.GetProvider.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_provider_invalidates_cache(sdk_client):
+    """delete_provider() removes the name from _provider_cache."""
+    import time
+    oc._provider_cache["swarmer-ws-4-google-cloud"] = (True, time.monotonic() + 30)
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        await oc.delete_provider("swarmer-ws-4-google-cloud")
+    assert "swarmer-ws-4-google-cloud" not in oc._provider_cache
+
+
+# ---------------------------------------------------------------------------
+# 6. create_google_cloud_provider + configure_google_cloud_provider
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_google_cloud_provider_creates_correct_type(sdk_client):
+    """create_google_cloud_provider() creates a 'google-cloud' provider after deleting any existing one."""
+    oc._provider_cache.clear()
+    with patch.object(oc, "_get_client", return_value=sdk_client), \
+         patch.object(oc, "delete_provider", new=AsyncMock()) as mock_delete, \
+         patch.object(oc, "ensure_provider", new=AsyncMock()) as mock_ensure:
+        await oc.create_google_cloud_provider(
+            "swarmer-ws-1-google-cloud", "my-project", "us-central1"
+        )
+    mock_delete.assert_awaited_once_with("swarmer-ws-1-google-cloud", client=None)
+    mock_ensure.assert_awaited_once()
+    _args, _kwargs = mock_ensure.call_args
+    assert _args[0] == "swarmer-ws-1-google-cloud"
+    assert _args[1] == "google-cloud"
+    assert _kwargs["config"] == {"project_id": "my-project", "region": "us-central1"}
+    assert "GCP_ADC_ACCESS_TOKEN" in _kwargs["credentials"]
+
+
+@pytest.mark.asyncio
+async def test_create_google_cloud_provider_populates_cache(sdk_client):
+    """create_google_cloud_provider() updates _provider_cache to True after creation."""
+    oc._provider_cache.clear()
+    with patch.object(oc, "_get_client", return_value=sdk_client), \
+         patch.object(oc, "delete_provider", new=AsyncMock()), \
+         patch.object(oc, "ensure_provider", new=AsyncMock()):
+        await oc.create_google_cloud_provider(
+            "swarmer-ws-5-google-cloud", "proj", "us-east1"
+        )
+    assert oc._provider_cache.get("swarmer-ws-5-google-cloud", (False,))[0] is True
+
+
+@pytest.mark.asyncio
+async def test_configure_google_cloud_provider_service_account(sdk_client):
+    """configure_google_cloud_provider() uses GOOGLE_SERVICE_ACCOUNT_JWT for service_account ADC."""
+    import json
+    adc = {
+        "type": "service_account",
+        "client_email": "sa@project.iam.gserviceaccount.com",
+        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n",
+    }
+    req_mock = MagicMock()
+    req_mock.material = {}
+    req_mock.secret_material_keys = []
+    sdk_client._stub.ConfigureProviderRefresh = MagicMock()
+
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        with patch("openshell._proto.openshell_pb2.ConfigureProviderRefreshRequest",
+                   return_value=req_mock):
+            await oc.configure_google_cloud_provider(
+                "swarmer-ws-1-google-cloud", json.dumps(adc)
+            )
+
+    assert sdk_client._stub.ConfigureProviderRefresh.called
+    from openshell._proto import openshell_pb2
+    assert req_mock.strategy == openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT
+    assert req_mock.credential_key == "GCP_ADC_ACCESS_TOKEN"
+    assert req_mock.material["client_email"] == adc["client_email"]
+    assert req_mock.material["private_key"] == adc["private_key"]
+    assert "private_key" in req_mock.secret_material_keys
+
+
+@pytest.mark.asyncio
+async def test_configure_google_cloud_provider_authorized_user(sdk_client):
+    """configure_google_cloud_provider() uses OAUTH2_REFRESH_TOKEN for authorized_user ADC."""
+    import json
+    adc = {
+        "type": "authorized_user",
+        "client_id": "1234.apps.googleusercontent.com",
+        "client_secret": "secret",
+        "refresh_token": "1//refresh-token",
+    }
+    req_mock = MagicMock()
+    req_mock.material = {}
+    req_mock.secret_material_keys = []
+    sdk_client._stub.ConfigureProviderRefresh = MagicMock()
+
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        with patch("openshell._proto.openshell_pb2.ConfigureProviderRefreshRequest",
+                   return_value=req_mock):
+            await oc.configure_google_cloud_provider(
+                "swarmer-ws-1-google-cloud", json.dumps(adc)
+            )
+
+    assert sdk_client._stub.ConfigureProviderRefresh.called
+    from openshell._proto import openshell_pb2
+    assert req_mock.strategy == openshell_pb2.PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN
+    assert req_mock.credential_key == "GCP_ADC_ACCESS_TOKEN"
+    assert req_mock.material["client_id"] == adc["client_id"]
+    assert req_mock.material["refresh_token"] == adc["refresh_token"]
+    assert "client_secret" in req_mock.secret_material_keys
+    assert "refresh_token" in req_mock.secret_material_keys
+
+
+@pytest.mark.asyncio
+async def test_configure_google_cloud_provider_unsupported_type_raises(sdk_client):
+    """configure_google_cloud_provider() raises ValueError for unknown ADC types."""
+    import json
+    adc = {"type": "external_account", "audience": "//iam.googleapis.com/..."}
+    with patch.object(oc, "_get_client", return_value=sdk_client):
+        with pytest.raises(ValueError, match="Unsupported ADC type"):
+            await oc.configure_google_cloud_provider(
+                "swarmer-ws-1-google-cloud", json.dumps(adc)
+            )
+
+
+# ---------------------------------------------------------------------------
+# 7. _exec_with_supervisor_retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_with_supervisor_retry_succeeds_first_attempt():
+    """_exec_with_supervisor_retry() returns immediately on success."""
+    call_count = 0
+
+    def _fn():
+        nonlocal call_count
+        call_count += 1
+        return "ok"
+
+    result = await oc._exec_with_supervisor_retry(_fn)
+    assert result == "ok"
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_exec_with_supervisor_retry_retries_on_unavailable():
+    """_exec_with_supervisor_retry() retries on UNAVAILABLE 'supervisor session not connected'."""
+    import grpc
+
+    class _Unavailable(grpc.RpcError, grpc.Call):
+        def code(self): return grpc.StatusCode.UNAVAILABLE
+        def details(self): return "supervisor relay failed: supervisor session not connected"
+
+    call_count = 0
+
+    def _fn():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise _Unavailable()
+        return "done"
+
+    with patch.object(oc.asyncio, "sleep", new=AsyncMock()):
+        result = await oc._exec_with_supervisor_retry(_fn, base_delay=0.001)
+
+    assert result == "done"
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_exec_with_supervisor_retry_retries_on_failed_precondition():
+    """_exec_with_supervisor_retry() retries on FAILED_PRECONDITION 'sandbox is not ready'."""
+    import grpc
+
+    class _NotReady(grpc.RpcError, grpc.Call):
+        def code(self): return grpc.StatusCode.FAILED_PRECONDITION
+        def details(self): return "sandbox is not ready"
+
+    call_count = 0
+
+    def _fn():
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise _NotReady()
+        return "ready"
+
+    with patch.object(oc.asyncio, "sleep", new=AsyncMock()):
+        result = await oc._exec_with_supervisor_retry(_fn, base_delay=0.001)
+
+    assert result == "ready"
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_exec_with_supervisor_retry_does_not_retry_other_errors():
+    """_exec_with_supervisor_retry() re-raises non-transient errors immediately."""
+    import grpc
+
+    class _PermDenied(grpc.RpcError, grpc.Call):
+        def code(self): return grpc.StatusCode.PERMISSION_DENIED
+        def details(self): return "permission denied"
+
+    call_count = 0
+
+    def _fn():
+        nonlocal call_count
+        call_count += 1
+        raise _PermDenied()
+
+    with pytest.raises(grpc.RpcError):
+        await oc._exec_with_supervisor_retry(_fn, base_delay=0.001)
+
+    assert call_count == 1  # no retry
+
+
+@pytest.mark.asyncio
+async def test_exec_with_supervisor_retry_gives_up_after_max_attempts():
+    """_exec_with_supervisor_retry() re-raises after max_attempts transient failures."""
+    import grpc
+
+    class _Unavailable(grpc.RpcError, grpc.Call):
+        def code(self): return grpc.StatusCode.UNAVAILABLE
+        def details(self): return "supervisor relay failed: supervisor session not connected"
+
+    call_count = 0
+
+    def _fn():
+        nonlocal call_count
+        call_count += 1
+        raise _Unavailable()
+
+    with patch.object(oc.asyncio, "sleep", new=AsyncMock()):
+        with pytest.raises(grpc.RpcError):
+            await oc._exec_with_supervisor_retry(_fn, max_attempts=3, base_delay=0.001)
+
+    assert call_count == 3  # initial + 2 retries = max_attempts

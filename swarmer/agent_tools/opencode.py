@@ -19,19 +19,29 @@ class OpenCodeStrategy(AgentToolStrategy):
         return settings.agent_image_opencode
 
     def build_config_data(self, secret=None, mcp_servers=None, use_inference_local: bool = False, model: str = "") -> dict[str, str]:  # noqa: ARG002 (use_inference_local retained for interface compat)
-        # Derive small_model from the chosen model: swap pro→flash within same provider.
-        # Fall back to fixed defaults if the model is unrecognised.
+        # Derive small_model from the chosen model: swap pro→flash / opus/sonnet→haiku
+        # within same provider. Fall back to fixed defaults if the model is unrecognised.
         _model = model or "google/gemini-3.1-pro-preview"
         _small_model = "google/gemini-3.5-flash"
         if "/" in _model:
             _provider, _mid = _model.split("/", 1)
-            if "pro" in _mid:
+            # Strip @version suffix for comparison
+            _mid_base = _mid.split("@")[0]
+            if _provider == "google-vertex-anthropic":
+                # Claude on Vertex: use haiku as the small model
+                _small_model = "google-vertex-anthropic/claude-haiku-4-5@20251001"
+            elif "pro" in _mid_base:
                 _small_model = f"{_provider}/{_mid.replace('pro', 'flash')}"
-            elif "flash" in _mid:
+            elif "flash" in _mid_base:
                 _small_model = _model  # already the small model
+
+        _enabled_providers = ["google"]
+        if "/" in _model and _model.split("/")[0] == "google-vertex-anthropic":
+            _enabled_providers = ["google", "google-vertex-anthropic"]
+
         config: dict = {
             "$schema": "https://opencode.ai/config.json",
-            "enabled_providers": ["google"],
+            "enabled_providers": _enabled_providers,
             "model": _model,
             "small_model": _small_model,
             "lsp": {
@@ -112,10 +122,16 @@ class OpenCodeStrategy(AgentToolStrategy):
             return " ".join(shlex.quote(p) for p in base_parts + prompt_parts)
 
     def is_valid_model(self, model: str) -> bool:
-        return model.startswith("google/")
+        return model.startswith(("google/", "google-vertex-anthropic/"))
 
-    def get_model_options(self, secret=None) -> list[dict]:
+    def get_model_options(self, secret=None, has_vertex: bool = False) -> list[dict]:
         options = []
+        if has_vertex:
+            options.extend([
+                {"value": "google-vertex-anthropic/claude-opus-4-6@default", "label": "Claude Opus 4.6 (most capable)", "group": "Claude (Vertex AI)"},
+                {"value": "google-vertex-anthropic/claude-sonnet-4-6@default", "label": "Claude Sonnet 4.6 (balanced)", "group": "Claude (Vertex AI)"},
+                {"value": "google-vertex-anthropic/claude-haiku-4-5@20251001", "label": "Claude Haiku 4.5 (fast)", "group": "Claude (Vertex AI)"},
+            ])
         if secret and getattr(secret, "google_api_key_enc", ""):
             options.extend([
                 {"value": "google/gemini-3.5-flash", "label": "Gemini 3.5 Flash (fast)", "group": "Gemini"},
@@ -123,5 +139,7 @@ class OpenCodeStrategy(AgentToolStrategy):
             ])
         return options
 
-    def get_default_model(self, has_adc: bool, has_gemini: bool) -> str:
+    def get_default_model(self, has_adc: bool) -> str:
+        if has_adc:
+            return "google-vertex-anthropic/claude-sonnet-4-6@default"
         return "google/gemini-3.1-pro-preview"

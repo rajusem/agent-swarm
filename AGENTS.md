@@ -4,6 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) and other AI agents 
 
 A FastAPI + HTMX dashboard for managing AI coding agent workloads on Kubernetes. Supports multiple agent tools (OpenCode, Crush). Server-rendered UI with PatternFly 6 dark theme. Token-based auth via Kubernetes ServiceAccount bearer tokens (+ optional OpenShift OAuth).
 
+## Tool Availability
+
+**GitHub:** MCP tools (`mcp__github-*`) and the `gh` CLI are equally valid — use whichever is configured. Never mix both in the same operation.
+
+**Jira:** MCP tools (`mcp__jira-mcp-server__*`) and the `jira` CLI are equally valid — use whichever is configured. Never run raw `curl` against the Jira API.
+
 ## Commands
 
 ```sh
