@@ -125,7 +125,6 @@ class AgentSwarmClient:
         instruction_prompt: str = "",
         github_pat_id: int | None = None,
         prompt_id: int | None = None,
-        persist: bool = False,
         working_branch: str = "",
         mcp_server_ids: list[int] | None = None,
     ) -> dict:
@@ -135,7 +134,6 @@ class AgentSwarmClient:
             "model": model,
             "agent_tool": agent_tool,
             "instruction_prompt": instruction_prompt,
-            "persist": persist,
             "working_branch": working_branch,
         }
         if github_pat_id is not None:

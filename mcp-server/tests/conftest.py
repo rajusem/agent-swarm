@@ -86,7 +86,6 @@ def sample_session() -> dict:
         "mode": "prompt",
         "model": "google-vertex-anthropic/claude-sonnet-4-6@default",
         "agent_tool": "opencode",
-        "persist": False,
         "working_branch": "swarmer/session-10-abc",
         "prompt_id": None,
         "instruction_prompt": "",

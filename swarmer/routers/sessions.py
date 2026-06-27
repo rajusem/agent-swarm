@@ -383,6 +383,10 @@ async def session_create(
             await db.commit()
     except IntegrityError:
         await db.rollback()
+        # Re-fetch ws from the database: rollback expires all ORM objects,
+        # and accessing expired attributes (e.g. ws.k8s_namespace) in an
+        # async context triggers MissingGreenlet.
+        ws = await _get_workspace(ws_id, db)
         pats = await _visible_pats(ws_id, db, user_id=_current_user(request))
         _tools = all_tools()
         try:
@@ -393,6 +397,9 @@ async def session_create(
         _avail = await asyncio.gather(
             *[k8s.get_image_available(t.get_image(), ws.k8s_namespace) for t in _tools]
         )
+        from swarmer.routers.mcp_servers import get_enabled_mcp_servers
+        mcp_servers = await get_enabled_mcp_servers(ws_id, db, user_id=_current_user(request))
+        prompt_sources = await _get_prompt_sources(ws_id, db)
         return templates.TemplateResponse(
             request,
             "sessions/new.html",
@@ -406,6 +413,8 @@ async def session_create(
                 "agent_tools": _tools,
                 "default_agent_tool": default_agent_tool,
                 "tool_image_available": dict(zip([t.name for t in _tools], _avail, strict=False)),
+                "mcp_servers": mcp_servers,
+                "prompt_sources": prompt_sources,
             },
             status_code=422,
         )

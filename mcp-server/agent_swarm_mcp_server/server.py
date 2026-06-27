@@ -39,7 +39,6 @@ def _fmt_session(s: dict, repos: list[dict] | None = None) -> dict:
         "mode": s.get("mode"),
         "model": s.get("model"),
         "agent_tool": s.get("agent_tool"),
-        "persist": s.get("persist"),
         "working_branch": s.get("working_branch"),
         "prompt_id": s.get("prompt_id"),
         "instruction_prompt": s.get("instruction_prompt"),
@@ -137,7 +136,6 @@ class AgentSwarmMCPServer:
         agent_tool: str = "opencode",
         mode: str = "prompt",
         model: str = "",
-        persist: bool = False,
         working_branch: str = "",
         instruction_prompt: str = "",
         github_pat_id: Optional[int] = None,
@@ -152,7 +150,6 @@ class AgentSwarmMCPServer:
             instruction_prompt=instruction_prompt,
             github_pat_id=github_pat_id,
             prompt_id=prompt_id,
-            persist=persist,
             working_branch=working_branch,
         )
         return _fmt_session(session)
@@ -166,7 +163,6 @@ class AgentSwarmMCPServer:
         model: Optional[str] = None,
         instruction_prompt: Optional[str] = None,
         prompt_id: Optional[int] = None,
-        persist: Optional[bool] = None,
         working_branch: Optional[str] = None,
         github_pat_id: Optional[int] = None,
     ) -> dict:
@@ -181,8 +177,6 @@ class AgentSwarmMCPServer:
             fields["instruction_prompt"] = instruction_prompt
         if prompt_id is not None:
             fields["prompt_id"] = prompt_id
-        if persist is not None:
-            fields["persist"] = persist
         if working_branch is not None:
             fields["working_branch"] = working_branch
         if github_pat_id is not None:
@@ -385,7 +379,6 @@ class AgentSwarmMCPServer:
             agent_tool: str = "opencode",
             mode: str = "prompt",
             model: str = "",
-            persist: bool = False,
             working_branch: str = "",
             instruction_prompt: str = "",
             github_pat_id: Optional[int] = None,
@@ -401,7 +394,6 @@ class AgentSwarmMCPServer:
                 model: LLM model identifier. Empty string uses the tool default.
                        OpenCode: google-vertex-anthropic/claude-sonnet-4-6@default
                        Crush: vertexai/claude-sonnet-4-6
-                persist: Keep workspace PVC between runs. Default: false.
                 working_branch: Git branch to create/checkout in the pod.
                 instruction_prompt: Additional instructions prepended to the base prompt.
                 github_pat_id: GitHub PAT id for private repos (from list_github_pats).
@@ -409,7 +401,7 @@ class AgentSwarmMCPServer:
             """
             return await self._create_session(
                 workspace_id, name, agent_tool, mode, model,
-                persist, working_branch, instruction_prompt, github_pat_id, prompt_id,
+                working_branch, instruction_prompt, github_pat_id, prompt_id,
             )
 
         @mcp.tool()
@@ -421,7 +413,6 @@ class AgentSwarmMCPServer:
             model: Optional[str] = None,
             instruction_prompt: Optional[str] = None,
             prompt_id: Optional[int] = None,
-            persist: Optional[bool] = None,
             working_branch: Optional[str] = None,
             github_pat_id: Optional[int] = None,
         ) -> dict:
@@ -435,13 +426,12 @@ class AgentSwarmMCPServer:
                 model: New model identifier.
                 instruction_prompt: New additional instructions.
                 prompt_id: New base prompt id.
-                persist: New persistence setting.
                 working_branch: New working branch.
                 github_pat_id: New GitHub PAT id.
             """
             return await self._update_session(
                 workspace_id, session_id, name, mode, model,
-                instruction_prompt, prompt_id, persist, working_branch, github_pat_id,
+                instruction_prompt, prompt_id, working_branch, github_pat_id,
             )
 
         @mcp.tool()

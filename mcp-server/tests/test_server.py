@@ -183,7 +183,7 @@ async def test_find_sessions_by_repo_matches_normalized():
         {
             "id": 1, "name": "agent-swarm-session", "phase": "idle",
             "mode": "prompt", "model": "", "agent_tool": "opencode",
-            "persist": False, "working_branch": "", "prompt_id": None,
+            "working_branch": "", "prompt_id": None,
             "instruction_prompt": "", "status_detail": "", "run_duration": None,
             "run_started_at": None, "run_completed_at": None,
             "is_active": False, "workspace_id": 1,
@@ -191,7 +191,7 @@ async def test_find_sessions_by_repo_matches_normalized():
         {
             "id": 2, "name": "other-session", "phase": "idle",
             "mode": "prompt", "model": "", "agent_tool": "opencode",
-            "persist": False, "working_branch": "", "prompt_id": None,
+            "working_branch": "", "prompt_id": None,
             "instruction_prompt": "", "status_detail": "", "run_duration": None,
             "run_started_at": None, "run_completed_at": None,
             "is_active": False, "workspace_id": 1,
@@ -225,7 +225,7 @@ async def test_find_sessions_by_repo_no_match():
     server.client.list_sessions = AsyncMock(return_value=[
         {
             "id": 1, "name": "s", "phase": "idle", "mode": "prompt", "model": "",
-            "agent_tool": "opencode", "persist": False, "working_branch": "",
+            "agent_tool": "opencode", "working_branch": "",
             "prompt_id": None, "instruction_prompt": "", "status_detail": "",
             "run_duration": None, "run_started_at": None, "run_completed_at": None,
             "is_active": False, "workspace_id": 1,
@@ -310,6 +310,43 @@ async def test_wait_for_session_already_terminal():
 # ------------------------------------------------------------------
 # AgentSwarmConfig.from_env — SSL options
 # ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Regression tests for K8s cleanup (OBSINTA-1336 / ACM-35375)
+# ------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_session_does_not_send_persist():
+    """Regression: create_session must NOT send 'persist' to the API."""
+    server = make_server()
+    server.client.create_session = AsyncMock(return_value={
+        "id": 99, "name": "test-sess", "phase": "idle", "mode": "prompt",
+        "model": "", "agent_tool": "opencode", "working_branch": "",
+        "prompt_id": None, "instruction_prompt": "", "status_detail": "",
+        "run_duration": None, "run_started_at": None, "run_completed_at": None,
+        "is_active": False, "workspace_id": 1,
+    })
+    await server._create_session(1, "test-sess")
+    call_kwargs = server.client.create_session.call_args
+    # persist must not appear as a keyword argument
+    assert "persist" not in (call_kwargs.kwargs if call_kwargs.kwargs else {}), \
+        "'persist' should not be sent to the API"
+
+
+def test_fmt_session_does_not_include_persist():
+    """Regression: _fmt_session output must not contain 'persist' key."""
+    from agent_swarm_mcp_server.server import _fmt_session
+    session_data = {
+        "id": 1, "name": "s", "phase": "idle", "mode": "prompt",
+        "model": "", "agent_tool": "opencode", "working_branch": "",
+        "prompt_id": None, "instruction_prompt": "", "status_detail": "",
+        "run_duration": None, "run_started_at": None, "run_completed_at": None,
+        "is_active": False, "workspace_id": 1,
+    }
+    result = _fmt_session(session_data)
+    assert "persist" not in result, \
+        "_fmt_session should not include 'persist' in output"
+
 
 def test_config_ssl_ca_bundle_from_env(monkeypatch):
     monkeypatch.setenv("AGENT_SWARM_API_URL", "https://swarmer.example.com")
